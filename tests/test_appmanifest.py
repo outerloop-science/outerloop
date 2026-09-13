@@ -34,6 +34,8 @@ def test_build_manifest_declares_least_privilege() -> None:
     assert m["public"] is False
     assert m["redirect_url"] == SETUP_URL  # GitHub returns the code to the hosted page
     assert m["default_permissions"] == {
+        "actions": "read",
+        "checks": "read",
         "contents": "write",
         "issues": "write",
         "members": "read",  # a private org member's issue reads as MEMBER, not CONTRIBUTOR

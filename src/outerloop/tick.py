@@ -563,28 +563,88 @@ def _base_dial(
         return "manual"
 
 
-def _arm_quiet_pr(root: Path, record: RunRecord, github: Any, pr: dict) -> None:
+def _observe_auto_pr(
+    root: Path, record: RunRecord, github: Any, pr: dict, now: float, bot_login: str
+) -> None:
+    from outerloop.github import is_own_login
+    from outerloop.inbox import Message, append, thread_for
+
+    if _base_dial(github, record.target, pr, None) != "auto":
+        return
+    number = int(record.pr_url.rstrip("/").split("/")[-1])
+    if is_own_login(
+        str(((pr.get("auto_merge") or {}).get("enabled_by") or {}).get("login") or ""),
+        bot_login,
+    ):
+        disarmed = github.disable_auto_merge(record.target, number)
+        log.info("auto-merge withdrawal on %s#%s: %s", record.target, number, disarmed)
+    if record.state != PARKED:
+        return
+    head = str((pr.get("head") or {}).get("sha") or "")
+    if record.auto_blessed_head and head and head != record.auto_blessed_head:
+        append(
+            run_dir(root, record.run_id),
+            Message(
+                0,
+                "head-moved",
+                "git",
+                thread_for(record),
+                now,
+                f"head:{head}",
+                {
+                    "head": head,
+                    "text": f"The PR head moved to {head}; it is not the head "
+                    "the kernel measured, so it will not merge itself. Fold it in and submit "
+                    "again, or a human merges it.",
+                },
+            ),
+        )
+
+
+def _merge_blessed_pr(
+    root: Path, record: RunRecord, github: Any, pr: dict, holder: str, now: float
+) -> None:
     from outerloop.inbox import wake_pending
 
-    if (
-        record.agent_id.startswith("steward")
-        or not record.auto_blessed_head
-        or _poll_targets(record)
-        or read_lease(root, record.run_id)
-        or wake_pending(run_dir(root, record.run_id), record)
-        or pr.get("state") != "open"
-        or pr.get("merged")
-        or pr.get("draft")
-        or pr.get("mergeable_state") != "clean"
-        or str((pr.get("head") or {}).get("sha", "")) != record.auto_blessed_head
-        or _base_dial(github, record.target, pr, None) != "auto"
-    ):
+    number = int(record.pr_url.rstrip("/").split("/")[-1])
+
+    def eligible(record: RunRecord, pr: dict) -> bool:
+        return not (
+            record.state != PARKED
+            or record.agent_id.startswith("steward")
+            or not record.auto_blessed_head
+            or _poll_targets(record)
+            or wake_pending(run_dir(root, record.run_id), record)
+            or pr.get("state") != "open"
+            or pr.get("merged")
+            or pr.get("draft")
+            or pr.get("mergeable_state") != "clean"
+            or str((pr.get("head") or {}).get("sha", "")) != record.auto_blessed_head
+            or (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha")
+            or _base_dial(github, record.target, pr, None) != "auto"
+        )
+
+    if not eligible(record, pr):
         return
-    github.arm_auto_merge_auto_mode(
-        record.target,
-        int(record.pr_url.rstrip("/").split("/")[-1]),
-        expected_head=record.auto_blessed_head,
-    )
+    if not acquire_lease(root, record.run_id, holder, "", now):
+        return
+    try:
+        # re-read both under the lease: a wake may have moved the record, and
+        # the base may have moved since the sweep read the PR (the merge API
+        # guards only the head)
+        record = load_record(root, record.run_id)
+        pr = github.get_pull_request(record.target, number)
+        if not eligible(record, pr):
+            return
+        methods = github.allowed_merge_methods(record.target)
+        if not methods:
+            log.warning("no allowed merge methods for %s; skipping merge this sweep", record.target)
+            return
+        github.merge_pull(
+            record.target, number, methods[0].lower(), expected_head=record.auto_blessed_head
+        )
+    finally:
+        release_lease(root, record.run_id)
 
 
 def _last_worked_ts(root: Path) -> float | None:
@@ -919,14 +979,15 @@ def sweep(
                     if ending:
                         ended.append((record.run_id, ending))
                         continue
+                    pr = github.get_pull_request(
+                        record.target, int(record.pr_url.rstrip("/").split("/")[-1])
+                    )
+                    _observe_auto_pr(root, record, github, pr, now, bot_login)
                     if record.state == PARKED:
-                        pr = github.get_pull_request(
-                            record.target, int(record.pr_url.rstrip("/").split("/")[-1])
-                        )
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        _arm_quiet_pr(root, record, github, pr)
+                        _merge_blessed_pr(root, record, github, pr, holder, now)
             except Exception as exc:
                 log.warning(
                     "GitHub polling failed on %s: %s: %s", record.run_id, type(exc).__name__, exc

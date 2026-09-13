@@ -1147,6 +1147,12 @@ def _merge_afterany(*parts: str) -> str:
     return "afterany:" + ":".join(ids) if ids else ""
 
 
+def _render_author_inbox(
+    messages: list[Message], *, budgets: str, redact_secrets: tuple[str, ...]
+) -> str:
+    return redact(render_inbox(messages, budgets=budgets, protocol=AUTHOR_PROTOCOL), redact_secrets)
+
+
 def attempt_once(
     config: RunConfig,
     contract_text: str,
@@ -1173,6 +1179,7 @@ def attempt_once(
     inbox_seq: int = 0,
     on_inbox_delivered: Callable[[int], None] | None = None,
     inbox_thread: str = "",
+    redact_secrets: tuple[str, ...] = (),
     launcher: Callable[[str, SyscallRequest], str] | None = None,
     # the session watcher: a context manager around each harness run (None =
     # no watcher in this deployment); docs/design/session-watcher.md
@@ -1270,6 +1277,7 @@ def attempt_once(
         # rejected request (a forged type, an unknown key) posts nothing
         request = read_syscall_request(workspace)
         if request is not None and on_replies is not None:
+            # The callback stages replies with thread_for(record) before posting.
             on_replies(request.replies)
         return request
 
@@ -1347,10 +1355,10 @@ def attempt_once(
             role_result = run_role(
                 spec,
                 harness,
-                render_inbox(
+                _render_author_inbox(
                     messages,
                     budgets=_budgets_line(),
-                    protocol=AUTHOR_PROTOCOL,
+                    redact_secrets=redact_secrets,
                 ),
                 workspace,
                 resume_session_id=resume_session_id,
@@ -1451,10 +1459,10 @@ def attempt_once(
             on_meter(launches_used, sleeps_used, gpu_hours_used)
         append(inbox_dir, message)
         messages = pending_messages(inbox_dir, inbox_seq)
-        prompt = render_inbox(
+        prompt = _render_author_inbox(
             messages,
             budgets=_budgets_line(),
-            protocol=AUTHOR_PROTOCOL,
+            redact_secrets=redact_secrets,
         )
         # the tool the author is about to use is this kernel's, whatever the
         # session started with (a wake refreshed it too; this covers a refusal)
@@ -1537,6 +1545,7 @@ def attempt_once(
                             "text": "Your syscall request was REFUSED and nothing was launched: "
                             f"{request.problem}"
                         },
+                        origin=inbox_dir.name,
                     )
                 )
                 if failed is not None:
@@ -1685,6 +1694,7 @@ def attempt_once(
                         "text": "Your syscall request was REFUSED and nothing was launched: "
                         f"{problem}"
                     },
+                    origin=inbox_dir.name,
                 )
             )
             if failed is not None:
@@ -1827,6 +1837,7 @@ def attempt_once(
                         time.time(),
                         f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
                         panel_payload(verdict, candidate_sha),
+                        origin=inbox_dir.name,
                     ),
                 )
             if (
@@ -1871,6 +1882,7 @@ def attempt_once(
                                 outcome.baseline or 0, bench.min_delta, bench.min_delta_rel
                             ),
                         },
+                        origin=inbox_dir.name,
                     )
                 )
                 if failed is not None:
@@ -1927,6 +1939,7 @@ def attempt_once(
             time.time(),
             f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
             {**panel_payload(verdict, candidate_sha), "wake_author": False},
+            origin=inbox_dir.name,
         )
         append(inbox_dir, panel_message)
         # only the FINAL read's degradation matters: an earlier outage that a
@@ -1953,6 +1966,7 @@ def attempt_once(
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
                 },
+                origin=inbox_dir.name,
             ),
         )
 

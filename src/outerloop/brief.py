@@ -300,11 +300,12 @@ def render(brief: SessionBrief) -> str:
                 fence,
             ]
         parts += [
-            "Maintain the memory before you finish: update AGENT_MEMORY.md "
-            "with what you now believe and why (it is your index — keep it "
-            "within its budget), and move detail into agent_memory/<topic>.md "
-            "files beside it; read those from your checkout when you need "
-            "them. What you write here is all your next session gets.",
+            "A session ends whenever you stage a launch, a sleep, a submit or an end, "
+            "or end your turn. Write durable findings into AGENT_MEMORY.md as you learn "
+            "them, and bring it up to date before each of those. It is your index; "
+            "keep it within its budget. Detail goes in agent_memory/<topic>.md beside "
+            "it; read those files from your checkout when needed. The next session "
+            "gets this file, the inbox, and on a resume its own context.",
         ]
     if brief.lessons:
         fence = code_fence(brief.lessons)
@@ -432,7 +433,9 @@ def render(brief: SessionBrief) -> str:
             "Stage `submit [--report <file>]` and then `sleep` to seal the tree, "
             "run the paired gate and panel, and receive their verdicts. A credited "
             "verdict opens a PR or fast-forwards its head. Submit needs no prior "
-            "launch. The optional report becomes the PR's research report.",
+            "launch. The optional report becomes the PR's research report. "
+            "The repo's own CI runs on the PR, a failed check comes back as a message, "
+            "and running the repo's checks before a submit avoids that round trip.",
             "A submit spends a sleep and its gate's GPU-hours, but no launch count. "
             "Stopping without a submit ends unmeasured; with a PR open it returns "
             "to review. An edit in review is measured and pushed only on submit.",

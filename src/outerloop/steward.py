@@ -623,7 +623,7 @@ def live_steward(
             body=body,
         )
         pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
-        if pr_number.isdigit():
+        if pr_number.isdigit() and getattr(contract, "merge", "manual") != "auto":
             _best_effort(
                 "auto-merge arming",
                 lambda: github.arm_auto_merge_when_review_required(config.target, int(pr_number)),

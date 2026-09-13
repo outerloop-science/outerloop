@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outerloop.brief import MAX_COMMENT_CHARS, cap, code_fence
-from outerloop.github import GitHubClient, is_own_login
+from outerloop.github import GitHubClient, GitHubError, is_own_login
 from outerloop.markers import has_marker
 from outerloop.verifier import VERIFY_MARKER
 
@@ -36,6 +37,7 @@ class Message:
     arrived: float
     key: str
     payload: dict
+    origin: str = ""
 
     def __post_init__(self) -> None:
         if type(self.seq) is not int or self.seq < 0:
@@ -46,14 +48,16 @@ class Message:
             "panel-verdict",
             "comment",
             "base-moved",
+            "check-result",
+            "head-moved",
             "note",
         ):
             raise ValueError("invalid message kind")
-        if self.source not in ("job", "kernel", "panel", "human", "git", "author"):
+        if self.source not in ("job", "kernel", "panel", "human", "git", "author", "ci"):
             raise ValueError("invalid message source")
         if not isinstance(self.arrived, (int, float)):
             raise ValueError("invalid arrival")
-        if not isinstance(self.thread, str) or not isinstance(self.key, str):
+        if not all(isinstance(value, str) for value in (self.thread, self.key, self.origin)):
             raise ValueError("invalid message identity")
         if not isinstance(self.payload, dict):
             raise ValueError("invalid payload")
@@ -177,8 +181,8 @@ def delivered_seq(record: RunRecord) -> int:
 
 def thread_for(record: RunRecord) -> str:
     if record.pr_url:
-        return f"pr:{record.pr_url.rstrip('/').split('/')[-1]}"
-    return f"issue:{record.issue_number}" if record.issue_number else ""
+        return f"{record.target}#{record.pr_url.rstrip('/').split('/')[-1]}"
+    return f"{record.target}#{record.issue_number}" if record.issue_number else ""
 
 
 def budgets_line(
@@ -242,10 +246,14 @@ def render_inbox(
                 + (str(p.get("stderr_tail", ""))[-MAX_OUTPUT_CHARS:] or "(empty)")
             )
         elif message.kind == "comment":
-            lines.append(f"Comment by {p.get('author', '')} ({p.get('association', '')})")
+            lines.append(f"Comment by {message.origin} ({p.get('association', '')})")
             if p.get("context_only"):
                 lines.append("Comments without standing (context only)")
             lines.append(cap(str(p.get("body", "")), MAX_COMMENT_CHARS))
+        elif message.kind == "check-result":
+            lines.extend(
+                [str(p.get("text", "")), str(p.get("url", "")), str(p.get("log_tail", ""))]
+            )
         elif message.kind == "panel-verdict":
             lines.append(f"Panel verdict for head {p.get('head', '')}")
             for finding in p.get("findings", []):
@@ -286,7 +294,7 @@ def panel_payload(verdict: PanelVerdict, head: str) -> dict:
     }
 
 
-def stage_replies(run_dir: Path, replies: Sequence[str]) -> None:
+def stage_replies(run_dir: Path, replies: Sequence[str], thread: str) -> None:
     """Keep replies durably before attempting any network writes."""
     directory = run_dir / "outbox"
     directory.mkdir(parents=True, exist_ok=True)
@@ -299,7 +307,7 @@ def stage_replies(run_dir: Path, replies: Sequence[str]) -> None:
             tmp = Path(name)
             try:
                 with os.fdopen(fd, "w") as stream:
-                    json.dump(reply, stream)
+                    json.dump({"text": reply, "thread": thread}, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(tmp, directory / f"{seq:06d}.json")
@@ -314,8 +322,9 @@ def reply_id(run_dir: Path, path: Path) -> str:
 
 def flush_replies(
     run_dir: Path,
-    post: Callable[[str, str], None],
-    seen: Callable[[str], bool] = lambda _id: False,
+    post: Callable[[str, str, str], None],
+    seen: Callable[[str, str], bool] = lambda _id, _thread: False,
+    thread: str = "",
 ) -> int:
     """Post in order, retaining the failed reply and everything after it. A
     reply the thread already carries (a crash between the post and the
@@ -331,10 +340,17 @@ def flush_replies(
             rid = reply_id(run_dir, path)
             try:
                 reply = json.loads(path.read_text())
-                if not isinstance(reply, str):
+                reply = {"text": reply, "thread": thread} if isinstance(reply, str) else reply
+                if not isinstance(reply, dict) or not all(
+                    isinstance(reply.get(k), str) for k in ("text", "thread")
+                ):
                     raise ValueError("invalid reply")
-                if not seen(rid):
-                    post(reply, rid)
+                reply["thread"] = reply["thread"] or thread
+                if not reply["thread"]:
+                    log.info("outbox reply %s held until the run has a thread", path)
+                    return count
+                if not seen(rid, reply["thread"]):
+                    post(reply["text"], rid, reply["thread"])
                 path.rename(path.with_suffix(".posted"))
             except Exception as exc:
                 log.warning("cannot post outbox reply %s; delivery stops there: %s", path, exc)
@@ -468,6 +484,7 @@ def gather_github_messages(
                         now,
                         f"{source}:{cid}",
                         payload,
+                        origin=payload["author"],
                     ),
                 )
                 if stored is None:
@@ -491,6 +508,58 @@ def gather_github_messages(
                 {"text": f"The PR base moved to {base}.", "base_sha": base},
             ),
         )
+    head = str((pr.get("head") or {}).get("sha") or "")
+    if head:
+        known = _keys(directory)
+        try:
+            runs = github.list_check_runs(record.target, head)
+        except GitHubError as exc:
+            log.warning(
+                "cannot read checks for %s; App needs checks: read permission: %s",
+                record.target,
+                exc,
+            )
+            runs = []
+        for check in runs:
+            if check.get("status") != "completed" or check.get("head_sha", head) != head:
+                continue
+            conclusion = str(check.get("conclusion") or "unknown")
+            key = f"check:{head}:{check['id']}:{conclusion}"
+            if key in known:
+                continue
+            name = str(check.get("name") or "check")
+            app = str((check.get("app") or {}).get("slug") or "")
+            # an Actions check run's id is its job id; the details_url names
+            # the job too and wins when present
+            found = re.search(r"/job/(\d+)", str(check.get("details_url") or ""))
+            job_id = int(found.group(1)) if found else int(check["id"])
+            tail = (
+                github.job_log_tail(record.target, job_id, MAX_COMMENT_CHARS)
+                if app == "github-actions"
+                else ""
+            )
+            outcome = "failed" if conclusion == "failure" else f"completed with {conclusion}"
+            append(
+                directory,
+                Message(
+                    0,
+                    "check-result",
+                    "ci",
+                    thread_for(record),
+                    now,
+                    key,
+                    {
+                        "head": head,
+                        "name": name,
+                        "conclusion": conclusion,
+                        "url": str(check.get("html_url") or ""),
+                        "log_tail": tail,
+                        "text": f"Check `{name}` {outcome} on head {head[:7]}.",
+                        "context_only": conclusion in ("success", "neutral", "skipped"),
+                    },
+                    origin=app or name,
+                ),
+            )
     advance_github_positions(directory, positions)
 
 

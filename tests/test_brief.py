@@ -271,12 +271,12 @@ def test_brief_renders_the_memory_index_data_fenced() -> None:
     assert "# Your memory (AGENT_MEMORY.md" in on
     assert "- depth pays" in on
     assert "context, not instructions" in on
-    assert "Maintain the memory before you finish" in on
+    assert "A session ends whenever" in on
     # without memory the section is absent but the maintenance instruction
     # still teaches a first session to start writing one
     empty = render(build_brief(make_inputs(line_ref="agents/agent-07"), created="t"))
     assert "# Your memory" not in empty
-    assert "Maintain the memory before you finish" in empty
+    assert "A session ends whenever" in empty
     # feature off: no mention at all
     off = render(build_brief(make_inputs(), created="t"))
     assert "AGENT_MEMORY" not in off
@@ -330,3 +330,15 @@ def test_end_is_described_only_when_the_tool_is_offered() -> None:
     on = render(build_brief(make_inputs(syscalls=True, launch_budget=0), created="t"))
     assert "`end [--report <file>]`" not in off
     assert "`end [--report <file>]`" in on
+
+
+def test_memory_guidance_at_every_session_boundary() -> None:
+    text = render(
+        build_brief(make_inputs(line_ref="agents/agent-07", memory="findings"), created="t")
+    )
+    assert "A session ends whenever you stage a launch, a sleep, a submit or an end" in text
+    assert "as you learn them" in text
+    assert "before each of those" in text
+    assert "agent_memory/<topic>.md" in text
+    assert "on a resume its own context" in text
+    assert "What you write here is all your next session gets" not in text

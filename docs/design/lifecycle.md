@@ -83,9 +83,10 @@ waiting spends no wake attempt and cannot end as stuck.
 
 ### Messages
 
-A message is the unit the kernel delivers. Every message has a source, a
-thread (the PR when one exists, else the issue the run claimed), a trust
-level (everything but the kernel's own budget and clock lines is data, never
+A message is the unit the kernel delivers. Every message has a source and an
+origin (the login, job name or run behind that source), a qualified thread
+such as `owner/repo#9` (the PR when one exists, else the issue the run claimed),
+a trust level (everything but the kernel's own budget and clock lines is data, never
 instructions), and an arrival time. The tick writes messages into the run's
 inbox; the wake drains it in arrival order.
 
@@ -95,6 +96,8 @@ inbox; the wake drains it in arrival order.
 | gate verdict: the paired numbers, the floor, the suite, or an eval error; the sealed tree, the base and the contract it was measured under | the kernel's measurement of a submitted tree | the sweep, when the gate jobs are terminal | at the wake |
 | panel verdict: blocking and advisory findings, the transcript | judge sessions | the panel run | at the wake |
 | human comment or review, on the run's thread | a person with standing; others as context, never as triggers | the tick's poll | at the next wake |
+| check result: the current PR head, check name, conclusion, URL and bounded log tail | CI, with the app slug or check name as origin | the tick, once per check run and conclusion | failures wake runs sleeping on no jobs; success, neutral and skipped wait as context |
+| head moved: the PR head no longer matches the blessed head | git | the tick, once per new head in auto mode | at the next wake |
 | base moved: the digest of what merged and the siblings' numbers | git, main | the tick, once per new base | at the next wake |
 | budget and clock: counts remaining, the review top-up, walltime | the kernel | the wake itself | leads every wake |
 | PR merged or closed | a human, on GitHub | the tick's poll | ends the run; not delivered |
@@ -211,7 +214,7 @@ comment never does.
 | scope on the diff before anything is sealed, launched or measured | the out-of-scope edit could be to the ruler |
 | containment, the lane from the contract, `--nice` on launches, always queue, cancel on end | the session cannot hold GPUs or credentials |
 | launch, sleep and GPU-hour counts; refusal on exhaustion with the numbers | the meter is the only bound on spend |
-| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, never arm when the base moved, refuse when a human pushed or the contract moved, humans merge unless the owner opted in with `merge: auto` | credit, merge authority, and nobody's work overwritten |
+| the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, refuse when a human pushed or the contract moved; under `merge: auto`, record the blessed head and let the sweep merge a clean, quiet PR at that head only, never arm GitHub auto-merge; otherwise humans merge | credit, merge authority, and nobody's work overwritten |
 | the steward's ruler measurement: full suite, sibling smoke checks, baseline reset | a ruler change must be verified as one |
 | standing: which comments are messages, the bot's own markers, the task label; the issue claim and its release; one delivery per message | authorization and liveness |
 | leases, the sweep, deadline floors, the stuck cap, the outage latch, the tamper guard, the report on every ending, the line seal at every terminal | liveness and audit |
@@ -274,11 +277,19 @@ Settled (Mengye, 2026-09-12):
 4. `end` is a verb, so a report is asked for at the moment the author
    decides; a session that simply stops still ends the run with what it has.
 
-5. **Auto-merge** (Mengye, 2026-09-13): the per-repo opt-in `install.md`
-   documents and the code implements stands; `architecture.md`'s "never" is
-   corrected to "off by default, never the kernel's decision". The blessing,
-   the arming and the disarm rule stay in the publish, and `auto_blessed_head`
-   stays on the record.
+5. **Auto-merge** (Mengye, 2026-09-13): the owner opts in with `merge: auto`.
+   Publish records `auto_blessed_head` and never arms GitHub auto-merge in
+   this mode. The sweep merges a clean, quiet PR at that head only, with the
+   API's expected-head guard, while its base contract still permits auto.
+   Old arms are withdrawn; a changed head is a message to the author.
+   Manual mode keeps its required-human-review arming guard.
+
+### Later
+
+Multi-agent collaboration and sub-agent teams will need real addressing:
+sender and recipient, with routable messages. That is a future design item.
+The per-run inbox and outbox stay until then. Replies store their qualified
+thread when staged, so a later PR change does not change their destination.
 
 ## Sequencing
 
@@ -305,6 +316,12 @@ between stages.
    `followup_stage` or a follow-up job; the tick reports the count until it is zero.
    `followup.py`, the steward's pipeline copy, and the counters are deleted
    with their tests.
+
+5. **Session memory, message identities, CI results and direct merging.** Status: landed.
+   Memory guidance covers every session boundary. Messages carry origins and
+   qualified threads; staged replies keep their destinations. CI results and
+   head moves use the inbox. Auto mode merges through the sweep at the blessed
+   head and never arms GitHub auto-merge.
 
 ## Standing contradictions this settles
 

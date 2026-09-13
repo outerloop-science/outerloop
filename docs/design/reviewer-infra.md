@@ -404,5 +404,6 @@ The habit exists because later rounds have repeatedly found real defects in
 earlier rounds' own fixes. Bot-authored improvement PRs sit outside this gate:
 the reviewer skips them by design, and their gate is the target repo's
 required human review, or its required checks where the owner opted in with
-`merge: auto` (the publish step arms auto-merge only when the target's branch
-protection requires that review or the contract opts in).
+`merge: auto` (the sweep merges a clean PR only at the blessed head; it never
+arms GitHub auto-merge in this mode). In manual mode, publish arms auto-merge
+only when branch protection requires a human review.

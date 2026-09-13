@@ -45,6 +45,10 @@ SETUP_URL = os.environ.get("OUTERLOOP_SETUP_URL") or "https://setup.outerloop.sc
 # to push commits, pull_requests to open/label PRs, issues for the courtesy note
 # on the requesting issue. Nothing else (least privilege; matches the live bot).
 DEFAULT_PERMISSIONS = {
+    # Read CI job log tails.
+    "actions": "read",
+    # Deliver completed check results.
+    "checks": "read",
     "contents": "write",
     "issues": "write",
     # so the App sees a private org member's issue as MEMBER, not CONTRIBUTOR

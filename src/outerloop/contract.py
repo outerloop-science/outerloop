@@ -358,9 +358,9 @@ class Contract(_StrictModel):
     # target owner's declaration like a harness permission mode:
     #   manual (default): the bot opens PRs and arms auto-merge only when a
     #     required human review stands between arming and merging.
-    #   auto: a gate+panel-clean PR merges itself. Repo prerequisites the
-    #     owner sets alongside this knob: "Allow auto-merge" on; branch
-    #     protection whose required checks are the repo's own CI with
+    #   auto: the sweep merges a clean PR at the blessed head, never arming
+    #     GitHub auto-merge. The owner sets branch protection whose required
+    #     checks are the repo's own CI with
     #     STRICT up-to-date enforcement (the branch must match the base —
     #     this is what closes the race where the base moves between our
     #     freshness check and a direct merge: GitHub itself refuses a

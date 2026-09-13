@@ -540,7 +540,7 @@ not yet build-gating.
 - Third-party / self-hosted models
 - Auto-merge on code is off by default and is never the kernel's decision.
   A repo owner may turn it on with `merge: auto` in the contract: a PR whose
-  gate and panel read are clean then merges itself, still through the repo's
-  required checks and branch protection, never around them, and the kernel
-  disarms it before it moves a PR head. The prose-only notebook repo merges
-  on its secret-scan check alone.
+  gate and panel read are clean is merged by the kernel sweep, at the blessed
+  head only, through the repo's required checks and branch protection. The
+  kernel never arms GitHub auto-merge in this mode and withdraws old arms.
+  The prose-only notebook repo merges on its secret-scan check alone.

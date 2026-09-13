@@ -2037,3 +2037,23 @@ def test_review_topup_meter_file_brief_and_wake(tmp_path, added):
             resume_session_id=resume,
         )
         assert result.outcome == "no-improvement"
+
+
+@pytest.mark.parametrize("kind", ["comment", "check-result"])
+def test_author_inbox_redacts_rendered_content(kind):
+    from outerloop.inbox import Message
+    from outerloop.orchestrator import _render_author_inbox
+
+    secret = "planted-kernel-secret"
+    message = Message(
+        1,
+        kind,
+        "ci" if kind == "check-result" else "human",
+        "org/repo#9",
+        0,
+        "key",
+        {"text": secret, "body": secret, "log_tail": secret, "url": "https://example.com"},
+    )
+    prompt = _render_author_inbox([message], budgets="budget", redact_secrets=(secret,))
+    assert secret not in prompt
+    assert "[redacted]" in prompt
