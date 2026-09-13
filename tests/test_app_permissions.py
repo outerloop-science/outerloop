@@ -87,36 +87,32 @@ def test_access_uses_one_installation_lookup(app):
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_upgrade_guidance_is_best_effort(app, monkeypatch, capsys, fail):
+    """The check runs as a fresh `outerloop permissions` process (the upgrade
+    itself still runs the pre-upgrade code); its exit code decides whether
+    the next command is named, and a failed check never fails the upgrade."""
     provider, _, _ = app
     gaps = init.app_permission_gaps(provider, "org/repo")
-    monkeypatch.setattr(
-        cli,
-        "env_file_values",
-        lambda *a: {"OUTERLOOP_GITHUB_APP_FILE": "/app.json", "OUTERLOOP_TARGET": "org/repo"},
-    )
-    monkeypatch.delenv("OUTERLOOP_GITHUB_APP_FILE", raising=False)
-    monkeypatch.delenv("OUTERLOOP_TARGET", raising=False)
-    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: provider)
-    monkeypatch.setattr(
-        cli.subprocess, "run", lambda *a, **kw: type("Proc", (), {"returncode": 0})()
-    )
+    ran: list[list[str]] = []
+
+    def run(cmd, check=False):
+        ran.append(list(cmd))
+        if cmd[-1] == "permissions":
+            print("could not check the App permissions on GitHub." if fail else gaps.problem)
+            return type("Proc", (), {"returncode": 1})()
+        return type("Proc", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
     versions = iter(["old", "new"])
     monkeypatch.setattr(cli, "_installed_version", lambda *a: next(versions))
-
-    def check(*args):
-        if fail:
-            raise ValueError("unavailable")
-        return gaps
-
-    monkeypatch.setattr(init, "app_permission_gaps", check)
     assert cli.main(["upgrade"]) == 0
     captured = capsys.readouterr()
+    assert ran[-1][-3:] == ["-m", "outerloop", "permissions"]
     if not fail:
         assert gaps.problem in captured.out
         assert captured.out.index(gaps.problem) < captured.out.index("Restart")
-        assert captured.out.rstrip().endswith("outerloop permissions --open")
     else:
         assert "could not check" in captured.out
+    assert captured.out.rstrip().endswith("outerloop permissions --open")
 
 
 @pytest.mark.parametrize("lookup_fails", [False, True])

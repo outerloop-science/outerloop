@@ -796,7 +796,11 @@ def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
 
     monkeypatch.setattr(appmanifest, "request_manifest_code", never)
     monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
-    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    monkeypatch.setattr(
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps((), "", "", "", known=True),
+    )
     argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
     assert init.main(argv) == 0
     env = (tmp_path / ".env").read_text()
@@ -805,7 +809,11 @@ def test_github_app_rerun_rechecks_the_existing_app_instead_of_creating_one(
     capsys.readouterr()  # drop the successful run's output
     # still failing: exit 1, credentials kept, the fix and the re-check named, never `start`
     monkeypatch.setattr(
-        init, "_check_app_access", lambda provider, target: "the App lacks write on contents (x)"
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps(
+            ("contents",), "", "", "the App lacks write on contents (x)", known=True
+        ),
     )
     assert init.main(argv) == 1
     captured = capsys.readouterr()
@@ -830,7 +838,11 @@ def test_github_app_rerun_captures_a_missing_installation_id(
     )
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 7)
     monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
-    monkeypatch.setattr(init, "_check_app_access", lambda provider, target: "")
+    monkeypatch.setattr(
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps((), "", "", "", known=True),
+    )
     argv = ["--yes", "--force", "--github-app", "--compute", "local", "--target", "o/r"]
     assert init.main(argv) == 0
     assert json.loads(app_json.read_text())["installation_id"] == 7
@@ -839,7 +851,11 @@ def test_github_app_rerun_captures_a_missing_installation_id(
     app_json.write_text(json.dumps(creds))
     monkeypatch.setattr(appmanifest, "capture_installation_id", lambda app_id, pem, owner: 0)
     monkeypatch.setattr(
-        init, "_check_app_access", lambda provider, target: "the App is not installed on o/r"
+        init,
+        "app_permission_gaps",
+        lambda provider, target: init.AppPermissionGaps(
+            ("contents",), "", "", "the App is not installed on o/r"
+        ),
     )
     assert init.main(argv) == 1
     err = capsys.readouterr().err

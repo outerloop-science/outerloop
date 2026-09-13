@@ -347,6 +347,12 @@ again. That is `pip install --upgrade outerloop-science` under one verb.
    when permissions are missing; their shapes are listed in the App section above.
 3. Stop the running loop, then restart it with `outerloop start`.
 
+`outerloop upgrade` is for a local install. On Slurm the resident tick runs
+the checkout under `OUTERLOOP_HOME` and moves it as `OUTERLOOP_AUTO_UPDATE`
+says (or pull it by hand); then run `outerloop permissions --open` from that
+checkout's environment. The sweep's log names the same pages until the
+permissions are accepted.
+
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.

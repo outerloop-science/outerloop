@@ -426,13 +426,14 @@ def permissions(args: argparse.Namespace) -> int:
                 "App permissions need OUTERLOOP_GITHUB_APP_FILE; run outerloop init --github-app."
             )
             return 1
+        labels = {name: f"{name}: {level}" for name, level in DEFAULT_PERMISSIONS.items()}
+        width = max(map(len, labels.values()))
+        if gaps.known:
+            for name, label in labels.items():
+                print(f"{label:<{width}}  {'missing' if name in gaps.missing else 'ok'}")
         if gaps.problem and not gaps.edit_url:
             print(gaps.problem)
             return 1
-        labels = {name: f"{name}: {level}" for name, level in DEFAULT_PERMISSIONS.items()}
-        width = max(map(len, labels.values()))
-        for name, label in labels.items():
-            print(f"{label:<{width}}  {'missing' if name in gaps.missing else 'ok'}")
         if not gaps.problem:
             print(
                 "All required App permissions are granted; restart the loop with outerloop start."
@@ -608,14 +609,9 @@ def upgrade(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return proc.returncode
-    gaps = None
-    try:
-        values = {**env_file_values(ENV_FILE, APP_PERMISSION_KEYS), **os.environ}
-        gaps = _app_gaps_from_env(values)
-        if gaps is not None and gaps.problem:
-            print(gaps.problem)
-    except Exception:
-        print("could not check the App permissions after upgrade.", file=sys.stderr)
+    # the permission check runs in a fresh process so it is the NEW code's
+    # (this process is still the pre-upgrade one)
+    check = subprocess.run([sys.executable, "-m", "outerloop", "permissions"], check=False)
     after = _installed_version(sys.executable)
     if before == after:
         print(f"already up to date: outerloop {after}.")
@@ -624,7 +620,7 @@ def upgrade(args: argparse.Namespace) -> int:
             f"upgraded outerloop {before} -> {after}. Restart the loop to pick it up: "
             f"stop the running tick, then `outerloop start`."
         )
-    if gaps is not None and gaps.problem:
+    if check.returncode != 0:
         print("outerloop permissions --open")
     return 0
 

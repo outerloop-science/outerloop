@@ -234,6 +234,7 @@ class AppPermissionGaps:
     accept_url: str
     problem: str
     configured_missing: tuple[str, ...] = ()
+    known: bool = False  # the installation's permissions were read
 
 
 def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
@@ -242,6 +243,7 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
     from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
     missing = tuple(DEFAULT_PERMISSIONS)
+    known = False
     names = ", ".join(f"{name}: {DEFAULT_PERMISSIONS[name]}" for name in missing)
     try:
         jwt = build_app_jwt(provider.app_id, time.time(), provider._sign)
@@ -279,8 +281,9 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
             for name, level in DEFAULT_PERMISSIONS.items()
             if perms.get(name) not in (("read", "write") if level == "read" else ("write",))
         )
+        known = True
         if not missing:
-            return AppPermissionGaps((), "", "", "")
+            return AppPermissionGaps((), "", "", "", known=True)
         names = ", ".join(f"{name}: {DEFAULT_PERMISSIONS[name]}" for name in missing)
         app = provider._transport(urllib.request.Request(f"{API}/app", headers=headers))
         configured = app.get("permissions") or {}
@@ -318,6 +321,7 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
                 f"{edit_url}; accept the permissions at {accept_url}."
             ),
             configured_missing,
+            known=True,
         )
     except urllib.error.HTTPError as exc:
         prefix = "could not reach GitHub" if exc.code == 429 or exc.code >= 500 else "GitHub"
@@ -329,6 +333,7 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
                 f"{prefix}: returned {exc.code} while checking the App; check {names} "
                 "in the App settings and accept them on the installation."
             ),
+            known=known,
         )
     except Exception:
         return AppPermissionGaps(
@@ -339,6 +344,7 @@ def app_permission_gaps(provider: Any, target: str) -> AppPermissionGaps:
                 f"could not check the App permissions on GitHub; check {names} "
                 "in the App settings and accept them on the installation."
             ),
+            known=known,
         )
 
 
@@ -478,6 +484,7 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
     write the target, then point the .env at it."""
     from outerloop import appmanifest
     from outerloop.appauth import app_provider_from_file
+    from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
     slug = app_json.name[len("github_app.") : -len(".json")]
     print(f"Re-checking the existing App '{slug}' ({app_json}) against {answers.target}.")
@@ -491,14 +498,22 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
             if iid:
                 appmanifest.set_installation_id(app_json, iid)
                 print(f"  installation id {iid} recorded")
-        problem = _check_app_access(app_provider_from_file(app_json), answers.target)
+        gaps = app_permission_gaps(app_provider_from_file(app_json), answers.target)
+        problem = gaps.problem
+        # a missing read permission is a warning: the loop runs without check
+        # results; a missing write, or no installation, is what fails setup
+        fatal = _auth_is_fatal(problem) and (
+            not gaps.known or any(DEFAULT_PERMISSIONS[n] == "write" for n in gaps.missing)
+        )
     except Exception as exc:
-        problem = f"could not read the App credentials: {exc}"
+        problem, fatal = f"could not read the App credentials: {exc}", False
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(env_path, render_env(answers, app_file=str(app_json), bot_login=f"{slug}[bot]"))
-    if _auth_is_fatal(problem):
+    if fatal:
         return _app_failure(answers, slug, problem)
     print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
+    if problem:
+        print("  next: outerloop permissions --open")
     print(f"wrote {env_path}")
     _author_key_hint(answers)
     _harness_hint(answers)
