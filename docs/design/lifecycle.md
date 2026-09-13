@@ -1,6 +1,6 @@
 # The run lifecycle: states, messages, and what the kernel decides
 
-**Status: design pass (2026-09-12), for review before code.** A re-read of the
+**Status: lifecycle redesign landed (2026-09-12).** A re-read of the
 whole lifecycle against one rule, from Mengye: benchmark verification and
 launching jobs are rigid; everything else is the author deciding, through
 tool calls. It absorbs Phase C of `research-loop-buildout.md` and supersedes
@@ -34,50 +34,19 @@ goes.
 
 ## What exists
 
-Five states, one of them dead. `implementing` (a session runs), `waiting`
-(parked on jobs), `in-review` (a PR is open), `concluding` (declared, never
-written), `ended` with six endings. A run parks in three shapes: an
-author-sleep park (the author launched and slept), a candidate park (the
-gate's measures are jobs) and a submitted park (a candidate park the author
-asked for). Each shape has its own wake path with its own decisions.
+The lifecycle is now the three-state one: `running`, `parked`, `ended`.
+A PR is recorded in `pr_url`. The sweep polls parked runs for terminal jobs,
+checkpoint deadlines and inbox messages. GitHub comments and base moves enter
+the inbox; a run sleeping on jobs receives them with the job results. A PR
+at rest waits without a deadline or idle wake cost. Every author leg resumes
+through `attempt.run_author_leg`, including the steward's review work.
 
-A run in review does not park in the record's sense. The tick services it on
-a separate pipeline of two thousand lines that reads new comments, resumes
-the session with a fixed prompt, and then decides for it: an in-scope edit is
-re-measured as the PR's new candidate, which on a cluster is a fourth park
-shape kept in `followup_stage`; a number inside the floor leaves the ledger
-row alone; the row is folded into the sealed commit and pushed; a moved base
-has a ladder of sync, conflict, withheld and superseded; a pushed change gets
-a panel re-read with its own revision cap; the steward repeats most of this
-under another key. Reviewers who asked for an ablation got the ablation
-pushed as the PR head or, until this week, nothing when the push step failed.
-
-The inventory counts fifty-six places where the kernel decides something
-about the science or a reviewer's intent. About half are the gate, the meter,
-authorization and merge authority, and stay. The rest cluster in five places:
-
-| Cluster | Examples | Inventory |
-| --- | --- | --- |
-| review time | re-measure any edit; the base-sync ladder; six withhold wordings; "worse than before, stated plainly"; abandon when the head moved; the panel re-read cap | 25–37 |
-| submit policy | on a metered benchmark a submit is refused until the run has launched; a metered finish without a submit is scored no-improvement, panel only; a submit needs a report | 7, 49, 50 |
-| the finish | blocking findings at a plain finish open a draft; a degraded panel drafts; never arm when the base moved | 13–18 |
-| base moves | the kernel re-pins the base and instructs the agent to merge; conflict and behind prompts written by the kernel | 26, 54 |
-| the outer loop | an issue must name exactly one benchmark; which benchmark to climb next; the steward's mission text | 39, 42, 43 |
-
-Messages reach a session by five channels: the brief at start, the launch
-wake text, an `extra_update` that leads a submitted park's wake, the panel's
-wake text, and the follow-up prompt with its four preambles. Thirteen verbs
-exist, two of them the judges'. A session has no verb that posts anything to
-GitHub. A comment cannot reach a session parked on jobs. A follow-up session
-has no syscalls at all. Advisory panel findings never reach the author. The
-sibling view is frozen at session start. The wake text and the brief also
-carry research advice (keep experimenting while budget remains, conclude when
-launches are exhausted, ready means measured, one hypothesis one change-set)
-written into kernel code. Eleven retry counters bound the pipeline, most of
-them protecting one hard-coded step from another. Two copies of the first
-publish exist, one for a candidate wake and one for an inline finish, and an
-inline submit drops the sibling launches staged beside it and asks the
-author to stage them again.
+`followup.py` and its job are gone. GitHub collection positions live beside
+the inbox, while the run record carries the delivered sequence. Replies are
+posted by the author leg; only a submit invokes the gate and one publish.
+The six endings and reports remain. Old state names and collection positions
+migrate on read. Each tick logs `legacy follow-up records: N` from raw live
+records; operators must confirm zero across every fleet before deployment.
 
 ## The lifecycle
 
@@ -163,7 +132,7 @@ wake the tick sooner than its cadence; that is a trigger, not a transport.
 | `launch` | stages a contained job for the contract's lane; the author keeps working | metering |
 | `sleep` | seals the tree, submits the staged jobs, records them in the ledger, parks the run on them (possibly none); the results arrive at the wake | containment, placement, the sleep count |
 | `submit` | seals the tree, runs the gate and the panel as jobs, delivers the verdict as a message; a credited verdict publishes | the gate; the publish |
-| `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, as the follow-up's reply is today | standing of the poster; redaction |
+| `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, through the author leg | standing of the poster; redaction |
 | `end` | without a PR, ends with the report and last failed verdict; with an open PR, posts a supplied report and parks for messages | the report |
 
 `reply` and `end` are new. A session that stops without sleeping or
@@ -286,9 +255,12 @@ wake_attempts                          liveness only
 ```
 
 Gone from the record: `followup_stage`, `followup_job_id`, `panel_wake_head`,
-`panel_wake_text`, `panel_wake_rounds`, `dirty_wake_head`, the candidate and
-submitted phases inside `stage`. `auto_blessed_head` stays only as long as
-`merge: auto` does.
+`panel_wake_text`, `panel_wake_rounds`, `dirty_wake_head`. `auto_blessed_head`
+stays only as long as `merge: auto` does.
+
+The candidate and submitted phases remain inside `stage`: they describe what
+its jobs measure and what result handling the shared wake must resume. They
+are metadata within the one park, not separate lifecycle states or wake paths.
 
 ## Decisions
 
@@ -332,9 +304,9 @@ between stages.
    fast-forward; a gate verdict is a message on every path; the meter's
    top-up exists; the submit policies [7, 49, 50] go; the follow-up
    re-measure path no longer runs.
-4. **Three states.** `running`, `parked`, `ended`; the record migrates on
+4. **Three states.** Status: landed. `running`, `parked`, `ended`; the record migrates on
    read. This stage lands only when no live record on any fleet carries
-   `followup_stage`; the tick reports the count until it is zero. Then
+   `followup_stage` or a follow-up job; the tick reports the count until it is zero.
    `followup.py`, the steward's pipeline copy, and the counters are deleted
    with their tests.
 

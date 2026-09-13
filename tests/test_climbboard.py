@@ -49,12 +49,12 @@ def _terminal_run(root: Path, run_id: str, *, state="ended", ending="negative-re
 def test_collect_rows_reads_terminal_records_and_reports(tmp_path: Path) -> None:
     _terminal_run(tmp_path, "speedrun-1")
     _terminal_run(tmp_path, "speedrun-2", ending="merged")
-    # non-terminal runs stay off the board: an in-review run's outcome is not
+    # non-terminal runs stay off the board: an parked run's outcome is not
     # known yet (its PR may be rejected), and a waiting run is mid-flight
-    _terminal_run(tmp_path, "speedrun-3", state="in-review", ending="")
+    _terminal_run(tmp_path, "speedrun-3", state="parked", ending="")
     save_record(
         tmp_path,
-        RunRecord(run_id="w", target="org/repo", task_title="t", state="waiting"),
+        RunRecord(run_id="w", target="org/repo", task_title="t", state="parked"),
         1.0,
     )
     # the ledger's marker gates the report link: archived -> linked,
@@ -170,7 +170,7 @@ def test_terminal_transition_keeps_the_spend_for_the_board(tmp_path: Path) -> No
         run_id="r",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         stage={"phase": "candidate", "afterany": "afterany:1", "gpu_hours_used": 36.0},
         wake_attempts=2,
@@ -436,7 +436,7 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
         run_id="live-1",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         agent_id="agent-02",
         created=100.0,
@@ -447,7 +447,7 @@ def test_status_strip_publishes_on_shape_change_only(tmp_path: Path) -> None:
     assert service_status(tmp_path, gh, "org/repo", 300.0) is True
     body = json.loads(gh.files["climb/status.json"])
     assert body["runs"][0]["agent"] == "agent-02"
-    assert body["runs"][0]["state"] == "waiting" and body["runs"][0]["since"] == 200.0
+    assert body["runs"][0]["state"] == "parked" and body["runs"][0]["since"] == 200.0
     # same shape, later timestamp: no write
     assert service_status(tmp_path, gh, "org/repo", 999.0) is False
     # spend moving with no state/phase change (a same-phase re-park after new
@@ -491,7 +491,7 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
         run_id="live-1",
         target="org/repo",
         task_title="t",
-        state="implementing",
+        state="running",
         benchmark="speedrun",
         agent_id="agent-01",
         created=100.0,
@@ -519,7 +519,7 @@ def test_service_boards_publishes_strip_and_views_before_any_terminal_run(tmp_pa
             run_id="live-2",
             target="org/repo",
             task_title="t",
-            state="waiting",
+            state="parked",
             benchmark="speedrun",
             agent_id="agent-02",
             created=100.0,
@@ -545,7 +545,7 @@ def test_status_outage_is_not_a_missing_file(tmp_path: Path) -> None:
     assert service_status(tmp_path / "no-runs", gh, "org/repo", 1.5) is True
     assert json.loads(gh.files["climb/status.json"])["runs"] == []
     gh.files["climb/status.json"] = json.dumps(["not", "a", "dict"])
-    _live = RunRecord(run_id="r", target="org/repo", task_title="t", state="waiting", benchmark="b")
+    _live = RunRecord(run_id="r", target="org/repo", task_title="t", state="parked", benchmark="b")
     save_record(tmp_path, _live, 1.0)
     assert service_status(tmp_path, gh, "org/repo", 2.0) is True
     assert json.loads(gh.files["climb/status.json"])["runs"][0]["run_id"] == "r"
@@ -902,7 +902,7 @@ def test_rows_carry_the_gates_verdict_note(tmp_path: Path) -> None:
 
 
 def test_report_link_uses_the_markers_own_path(tmp_path: Path) -> None:
-    """An in-review archive keeps its date after the ENDED transition
+    """An parked archive keeps its date after the ENDED transition
     re-stamps `updated`: the marker's second line wins over a re-derived
     date (which could 404 across a UTC midnight)."""
     _terminal_run(tmp_path, "speedrun-9")
@@ -960,7 +960,7 @@ def test_status_carries_the_working_direction(tmp_path: Path) -> None:
         run_id="live-9",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         agent_id="agent-03",
         created=1.0,
@@ -989,7 +989,7 @@ def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
         run_id="bare-1",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         agent_id="agent-04",
         created=1.0,
@@ -1031,7 +1031,7 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
         run_id="live-10",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         agent_id="agent-01",
         created=1.0,
@@ -1125,7 +1125,7 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
         run_id="speedrun-20260905-063328-agent-01",
         target="org/repo",
         task_title="t",
-        state="waiting",
+        state="parked",
         benchmark="speedrun",
         agent_id="agent-01",
         created=1.0,

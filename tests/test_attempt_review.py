@@ -1,4 +1,4 @@
-"""The in-review follow-up path: comments wake the author; replies go back."""
+"""The parked follow-up path: comments wake the author; replies go back."""
 
 from __future__ import annotations
 
@@ -9,24 +9,18 @@ from typing import cast
 
 import pytest
 
-from outerloop.followup import (
-    REPLY_MARKER,
-    close_if_done,
-    qualifying_comments,
-    respond_once,
-)
-from outerloop.github import GitHubClient, GitHubError
+from outerloop.attempt import REPLY_MARKER
+from outerloop.github import GitHubClient
 from outerloop.harness import SessionResult
+from outerloop.inbox import advance_github_positions, qualifying_comments
 from outerloop.review import MARKER as ADVISORY_MARKER
 from outerloop.runstate import (
-    IN_REVIEW,
+    PARKED,
     RunRecord,
     load_record,
-    outage_active,
     run_dir,
     save_record,
 )
-from outerloop.steward import RELEASE_MARKER
 from outerloop.verifier import VERIFY_MARKER
 
 CONTRACT = """\
@@ -41,6 +35,7 @@ roadmap: docs/roadmap.md
 """
 
 NOW = 2_000_000.0
+
 BOT = "agentic-learning-bot"
 
 
@@ -137,20 +132,9 @@ class ResumingHarness:
         )
 
 
-@dataclass
-class QueueEvaluator:
-    values: list = field(default_factory=list)
-
-    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
-        value = self.values.pop(0)
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-
 @pytest.fixture
 def review_run(tmp_path: Path, monkeypatch):
-    """A bare origin + an in-review run with a retained workspace on a branch.
+    """A bare origin + an parked run with a retained workspace on a branch.
     The canonical clone URL is patched to the bare: the follow-up pins its
     fetch/push source to it, never the workspace's mutable remote config."""
     seed = tmp_path / "seed"
@@ -176,146 +160,67 @@ def review_run(tmp_path: Path, monkeypatch):
         target="org/pilot",
         task_title="improve tsp",
         benchmark="tsp",
-        state=IN_REVIEW,
+        state=PARKED,
         pr_url="https://github.com/org/pilot/pull/9",
         resume_session_id="sess-original",
-        last_comment_id=100,
     )
     save_record(root, record, NOW - 1000)
+    advance_github_positions(ws.parent, {"comment": 100})
     monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
     return root, bare
 
 
-def respond(root, github, harness=None, evaluator=None):
-    return respond_once(
+def wake_review(
+    root,
+    run_id,
+    harness,
+    github,
+    bot_login=BOT,
+    now=NOW,
+    secrets=(),
+    spec=None,
+    panel_lenses=(),
+    panel_skip="",
+    dispatch=None,
+):
+    from types import SimpleNamespace
+
+    from outerloop.attempt import resume_run
+    from outerloop.compute import LocalCompute
+    from outerloop.inbox import gather_github_messages
+    from outerloop.measure import DispatchSettings
+    from outerloop.roles import author_spec
+
+    record = load_record(root, run_id)
+    gather_github_messages(run_dir(root, run_id), record, github, bot_login, now, github.pr)
+    result = resume_run(
         root,
-        "tsp-r1",
-        harness or ResumingHarness(),
-        evaluator or QueueEvaluator(values=[10.5]),
-        github,
-        bot_login=BOT,
-        now=NOW,
-        secrets=("sk-x",),
+        run_id,
+        dispatch=dispatch
+        or DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+        github=github,
+        bot_auth=github.auth,
+        now=now,
+        secrets=secrets,
+        harness=harness,
+        spec=spec or author_spec(),
+        panel_lenses=panel_lenses,
+        panel_skip=panel_skip,
+    )
+    return SimpleNamespace(
+        action="replied" if result.outcome in ("improved", "publish-refused") else result.outcome,
+        note=result.outcome,
     )
 
 
-def test_merged_pr_ends_the_run(review_run) -> None:
-    root, _ = review_run
-    outcome = respond(root, FakeGitHub(pr={"state": "closed", "merged": True}))
-    assert outcome.action == "ended-merged"
-    assert load_record(root, "tsp-r1").ending == "merged"
-
-
-def test_closed_pr_ends_rejected(review_run) -> None:
-    root, _ = review_run
-    outcome = respond(root, FakeGitHub(pr={"state": "closed", "merged": False}))
-    assert outcome.action == "ended-rejected"
-    assert load_record(root, "tsp-r1").ending == "rejected"
-
-
-def test_deleted_pr_404_ends_rejected(review_run) -> None:
-    root, _ = review_run
-
-    class GonePR(FakeGitHub):
-        def get_pull_request(self, repo, number):
-            raise GitHubError(404, f"/repos/{repo}/pulls/{number}", "Not Found")
-
-    # close_if_done is what the tick calls every cycle; a deleted PR (404) is
-    # terminal — end the run rather than re-fetching a 404 forever.
-    record = load_record(root, "tsp-r1")
-    ending = close_if_done(root, record, cast(GitHubClient, GonePR()), NOW)
-    assert ending == "rejected"
-    assert load_record(root, "tsp-r1").ending == "rejected"
-
-
-def _link_issue(root, number: int, agent_id: str = "agent-01") -> None:
-    record = load_record(root, "tsp-r1")
-    save_record(root, replace(record, issue_number=number, agent_id=agent_id), NOW - 900)
-
-
-def test_merged_pr_without_issue_stays_silent(review_run) -> None:
-    root, _ = review_run
-    gh = FakeGitHub(pr={"state": "closed", "merged": True})
-    respond(root, gh)
-    assert gh.posted == []
-
-
-def test_merged_pr_tells_the_requesting_issue(review_run) -> None:
-    root, _ = review_run
-    _link_issue(root, 21)
-    gh = FakeGitHub(pr={"state": "closed", "merged": True})
-    outcome = respond(root, gh)
-    assert outcome.action == "ended-merged"
-    assert gh.posted_to == [21]
-    (body,) = gh.posted
-    assert "merged" in body and "Close this issue" in body
-    assert "fresh issue" in body  # leaving it open queues nothing
-    assert RELEASE_MARKER not in body  # merged claims stay held: never re-picked
-
-
-def test_rejected_steward_pr_releases_its_claim(review_run) -> None:
-    root, _ = review_run
-    _link_issue(root, 22, agent_id="steward-01")
-    gh = FakeGitHub(pr={"state": "closed", "merged": False})
-    outcome = respond(root, gh)
-    assert outcome.action == "ended-rejected"
-    (body,) = gh.posted
-    assert body.startswith(RELEASE_MARKER)
-    assert "closed without merging" in body
-
-
-def test_rejected_solver_pr_notes_the_claim_is_held(review_run) -> None:
-    root, _ = review_run
-    _link_issue(root, 23)
-    gh = FakeGitHub(pr={"state": "closed", "merged": False})
-    respond(root, gh)
-    (body,) = gh.posted
-    assert RELEASE_MARKER not in body
-    assert "stays claimed" in body and "fresh" in body
-
-
-def test_session_outage_refunds_the_wake_attempt(review_run) -> None:
-    """The tick bills a wake attempt at submit; a session the API refused
-    gives it back and stamps the latch, so a dead key cannot burn a run's
-    retry cap or keep the lanes spawning doomed sessions."""
-    root, _bare = review_run
-    record = load_record(root, "tsp-r1")
-    save_record(root, replace(record, wake_attempts=2), NOW - 900)
-
-    @dataclass
-    class RefusedHarness:
-        def run(self, brief_text, workspace, resume_session_id=None) -> SessionResult:
-            return SessionResult(
-                stop_reason="end_turn",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=1,
-                session_id="",
-                final_text="",
-                transcript_path="",
-                error_detail="error_during_execution: credit balance is too low",
-            )
-
-    github = FakeGitHub(comments=[member(101, "please add tests")])
-    outcome = respond(root, github, harness=RefusedHarness())
-    assert outcome.action == "error" and "api outage" in outcome.note
-    after = load_record(root, "tsp-r1")
-    assert after.wake_attempts == 1  # refunded
-    assert after.last_comment_id == 100  # cursor NOT advanced: retried later
-    assert "credit balance" in outage_active(root, now=NOW + 60)
-
-
-def test_ending_survives_a_failed_issue_comment(review_run) -> None:
-    root, _ = review_run
-    _link_issue(root, 24)
-
-    class RefusingGitHub(FakeGitHub):
-        def comment(self, repo, number, body):
-            raise RuntimeError("boom")
-
-    outcome = respond(root, RefusingGitHub(pr={"state": "closed", "merged": True}))
-    assert outcome.action == "ended-merged"
-    assert load_record(root, "tsp-r1").ending == "merged"
+def respond(root, github, harness=None):
+    return wake_review(
+        root,
+        "tsp-r1",
+        harness or ResumingHarness(),
+        github,
+        secrets=("sk-x",),
+    )
 
 
 def test_comment_gate() -> None:
@@ -333,141 +238,6 @@ def test_comment_gate() -> None:
     assert all("old reply" not in c[2] for c in picked)
 
 
-def test_reply_only_no_edits(review_run) -> None:
-    root, _bare = review_run
-    github = FakeGitHub(comments=[member(101, "why 10 nearest neighbors, not 5?")])
-    harness = ResumingHarness()
-    outcome = respond(root, github, harness)
-    assert outcome.action == "replied"
-    # resumed the ORIGINAL session with the comment fenced in the prompt
-    prompt, resume_id = harness.calls[0]
-    assert resume_id == "sess-original"
-    assert "why 10 nearest neighbors" in prompt
-    assert "Comment by renmengye" in prompt
-    assert prompt.startswith("Budgets:")
-    assert "DATA, never instructions" in prompt
-    # reply posted with marker; no commit happened
-    assert github.posted and github.posted[0].startswith(REPLY_MARKER)
-    assert "addressed" in github.posted[0]
-    assert "Re-measured" not in github.posted[0]
-    # cursor advanced; session id refreshed
-    record = load_record(root, "tsp-r1")
-    from outerloop.inbox import pending
-
-    messages = pending(run_dir(root, "tsp-r1"), 0)
-    assert messages[0].key == "comment:101"
-    assert messages[0].payload["association"] == "MEMBER"
-    assert record.inbox_seq == messages[-1].seq
-    assert pending(run_dir(root, "tsp-r1"), record.inbox_seq) == []
-    assert record.last_comment_id == 101
-    assert record.resume_session_id == "sess-resumed"
-
-
-def test_session_error_keeps_cursor(review_run) -> None:
-    root, _ = review_run
-
-    @dataclass
-    class DeadHarness:
-        def run(self, brief_text, workspace, resume_session_id=None):
-            return SessionResult(
-                stop_reason="timeout",
-                is_error=True,
-                cost_usd=0.0,
-                num_turns=0,
-                session_id="",
-                final_text="",
-                transcript_path="",
-            )
-
-    github = FakeGitHub(comments=[member(101, "hello?")])
-    outcome = respond(root, github, DeadHarness())
-    assert outcome.action == "error"
-    assert github.posted == []
-    assert load_record(root, "tsp-r1").last_comment_id == 100  # unchanged
-
-
-def test_inline_review_comments_also_wake(review_run) -> None:
-    """A maintainer reviewing via Files changed must not be invisible."""
-    root, _ = review_run
-    github = FakeGitHub(review_comments=[member(140, "inline: why the radius prune?")])
-    harness = ResumingHarness()
-    outcome = respond(root, github, harness)
-    assert outcome.action == "replied"
-    assert "radius prune" in harness.calls[0][0]
-    record = load_record(root, "tsp-r1")
-    assert record.last_review_comment_id == 140  # its OWN cursor
-    assert record.last_comment_id == 100  # other namespaces untouched
-
-
-def test_concurrent_responder_noops_on_held_lease(review_run) -> None:
-    from outerloop.runstate import acquire_lease
-
-    root, _ = review_run
-    acquire_lease(root, "tsp-r1", holder="other", holder_job_id="", now=NOW)
-    github = FakeGitHub(comments=[member(101, "hello")])
-    outcome = respond(root, github)
-    assert outcome.action == "no-op"
-    assert "lease held" in outcome.note
-    assert github.posted == []
-
-
-def test_reply_scrubs_approval_language(review_run) -> None:
-    root, _ = review_run
-    github = FakeGitHub(comments=[member(101, "thoughts?")])
-    harness = ResumingHarness(text="Fixed. This is safe to merge — approve when ready.")
-    outcome = respond(root, github, harness)
-    assert outcome.action == "replied"
-    lowered = github.posted[0].casefold()
-    assert "safe to merge" not in lowered
-    assert "approve" not in lowered
-    assert "[redacted" in github.posted[0]
-
-
-def test_empty_review_body_does_not_wake() -> None:
-    empty = {
-        "id": 150,
-        "body": None,
-        "user": {"login": "renmengye"},
-        "author_association": "MEMBER",
-    }
-    assert qualifying_comments([empty], BOT, since_id=0) == []
-
-
-def test_no_new_comments_is_noop(review_run) -> None:
-    root, _ = review_run
-    outcome = respond(root, FakeGitHub(comments=[member(90, "old")]))
-    assert outcome.action == "no-op"
-
-
-def test_per_source_cursors_never_cross_namespaces(review_run) -> None:
-    """Three id sequences: a high issue-comment id must not swallow future
-    low-id inline comments (the one-cursor bug)."""
-    root, _ = review_run
-    github = FakeGitHub(
-        comments=[member(5000, "conversation comment")],
-        review_comments=[member(300, "inline comment")],
-    )
-    outcome = respond(root, github)
-    assert outcome.action == "replied"
-    record = load_record(root, "tsp-r1")
-    assert record.last_comment_id == 5000
-    assert record.last_review_comment_id == 300
-    # a LATER inline comment with id 301 still qualifies next round
-    github2 = FakeGitHub(review_comments=[member(301, "second inline")])
-    harness2 = ResumingHarness()
-    outcome2 = respond(root, github2, harness2)
-    assert outcome2.action == "replied"
-    assert "second inline" in harness2.calls[0][0]
-
-
-def test_reply_without_changes_leaves_the_body_alone(review_run) -> None:
-    root, _bare = review_run
-    github = FakeGitHub(comments=[member(101, "convince me you did not game the eval")])
-    outcome = respond(root, github, ResumingHarness())  # no edits -> no push
-    assert outcome.action == "replied"
-    assert not github.body_addenda
-
-
 STEWARD_CONTRACT = """\
 benchmarks:
   - name: tsp
@@ -479,111 +249,6 @@ scope: {allowed: [src/pilot/solvers/]}
 steward: {allowed: [src/pilot/instances.py, tests/]}
 roadmap: docs/roadmap.md
 """
-
-
-@pytest.fixture
-def steward_review_run(tmp_path: Path, monkeypatch):
-    """An in-review STEWARD run with a retained workspace on a branch."""
-    seed = tmp_path / "seed"
-    (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (seed / "docs").mkdir()
-    (seed / "results").mkdir()
-    (seed / ".autoresearch.yaml").write_text(STEWARD_CONTRACT)
-    (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
-    (seed / "src" / "pilot" / "solvers" / "tsp.py").write_text("v1\n")
-    (seed / "src" / "pilot" / "instances.py").write_text("SEED = 1\n")
-    (seed / "results" / "leader.json").write_text(
-        '{"tsp": {"benchmark": "tsp", "metric": "mean_tour_length", "direction": "min",'
-        ' "baseline": 14.9, "best": 14.9, "best_run": "baseline-s1", "updated": "2026-08-09"}}\n'
-    )
-    _git(seed, "init", "-q", "-b", "main")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
-    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed")
-    bare = tmp_path / "origin.git"
-    _git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
-
-    root = tmp_path / "state"
-    ws = run_dir(root, "steward-tsp-r1") / "ws"
-    ws.parent.mkdir(parents=True)
-    _git(tmp_path, "clone", "-q", str(bare), str(ws))
-    _git(ws, "switch", "-qc", "feat/steward/steward-01/steward-tsp-r1")
-
-    record = RunRecord(
-        run_id="steward-tsp-r1",
-        target="org/pilot",
-        task_title="steward: tsp",
-        benchmark="tsp",
-        state=IN_REVIEW,
-        agent_id="steward-01",
-        pr_url="https://github.com/org/pilot/pull/25",
-        resume_session_id="steward-sess",
-        last_comment_id=100,
-    )
-    save_record(root, record, NOW - 1000)
-    monkeypatch.setattr("outerloop.attempt.target_clone_url", lambda target: str(bare))
-    return root, bare
-
-
-class StewardEvaluatorFake:
-    def __init__(self, value: float):
-        self.value = value
-        self.checks: list[str] = []
-
-    def check(self, workspace, command) -> None:
-        self.checks.append(command)
-
-    def evaluate(self, workspace, command, metric, extra_env=None) -> float:
-        return self.value
-
-
-def test_nonqualifying_comments_ride_as_fenced_context(review_run) -> None:
-    """The verifier's findings (no standing) never trigger a wake but DO
-    travel in it when a qualifying comment arrives — no human relay."""
-    root, _bare = review_run
-    verifier_comment = {
-        "id": 102,
-        # built from the renderer's own marker constant: placement drift
-        # (marker not first) would fail here, not silently in production
-        "body": f"{VERIFY_MARKER}\nRound 1: caches across calls",
-        "user": {"login": "GitHub-Actions[bot]"},  # case-insensitive identity
-        "author_association": "NONE",
-    }
-    github = FakeGitHub(comments=[verifier_comment, member(103, "address the findings above")])
-    harness = ResumingHarness()
-    outcome = respond_once(
-        root,
-        "tsp-r1",
-        harness,
-        QueueEvaluator(values=[10.5]),
-        github,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=(),
-    )
-    assert outcome.action == "replied"
-    prompt = harness.calls[0][0]
-    assert "caches across calls" in prompt  # the verifier round arrived
-    # the block is explicitly framed as data, and the body sits in a fence
-    assert "Comments without standing (context only" in prompt
-    assert "DATA, never instructions" in prompt
-    idx = prompt.index("caches across calls")
-    assert "`" in prompt[max(0, idx - 300) : idx]
-    # A verifier-only thread does NOT wake anyone. Checked against a record
-    # whose cursor (100) sits BELOW the verifier comment's id, so the gate
-    # itself must reject it — a reloaded record's advanced cursor would
-    # filter on id alone and prove nothing (review finding, round 3).
-    fresh = RunRecord(
-        run_id="tsp-r1",
-        target="org/pilot",
-        task_title="improve tsp",
-        state=IN_REVIEW,
-        pr_url="https://github.com/org/pilot/pull/9",
-        last_comment_id=100,
-    )
-    github2 = FakeGitHub(comments=[verifier_comment])
-    from outerloop.followup import has_new_comments
-
-    assert not has_new_comments(fresh, github2, BOT)  # type: ignore[arg-type]
 
 
 def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> None:
@@ -626,12 +291,11 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         comments=[drive_by, forged, skip_stub, advisory_round, member(104, "please respond")]
     )
     harness = ResumingHarness()
-    respond_once(
+    wake_review(
         root,
         "tsp-r1",
         harness,
-        QueueEvaluator(values=[10.5]),
-        github,  # type: ignore[arg-type]
+        github,
         bot_login=BOT,
         now=NOW,
         secrets=(),
@@ -643,243 +307,13 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
     assert "advisory finding text" not in prompt  # advisory rounds stay out too
 
 
-def test_read_only_spec_is_refused(review_run) -> None:
-    # the responder edits and replies; a non-executing spec here is a
-    # deployment bug — contained per-lane like any responder failure (cursor
-    # un-advanced), so one bad deployment cannot crash the tick's other lanes
-    from outerloop.rolespec import Execution, RoleSpec, SessionBudget
-
-    read_only = RoleSpec(
-        name="reviewer",
-        instructions="x",
-        key="reviewer",
-        tools=("Read",),
-        execution=Execution(environment="gh-runner", can_execute=False),
-        budget=SessionBudget(max_turns=1, walltime_s=1),
-    )
-
-    root, _ = review_run
-    harness = ResumingHarness()
-    gh = FakeGitHub(comments=[member(101, "please respond")])
-    outcome = respond_once(
-        root,
-        "tsp-r1",
-        harness,
-        QueueEvaluator(values=[10.5]),
-        gh,  # type: ignore[arg-type]
-        bot_login=BOT,
-        now=NOW,
-        secrets=(),
-        spec=read_only,
-    )
-    assert outcome.action == "error"
-    assert "must allow execution" in outcome.note
-    assert harness.calls == []  # refused before any session spend
-    assert load_record(root, "tsp-r1").last_comment_id == 100  # cursor un-advanced
-
-
-def _dirty_pr(head="h" * 40) -> dict:
-    return {
-        "state": "open",
-        "merged": False,
-        "mergeable": False,
-        "mergeable_state": "dirty",
-        "head": {"sha": head},
-        "base": {"ref": "main"},
-    }
-
-
-def test_conflicted_pr_wakes_the_author_without_comments(review_run) -> None:
-    root, _bare = review_run
-    head = _ws_head(root)
-    github = FakeGitHub(pr=_dirty_pr(head=head))
-    harness = ResumingHarness()
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
-    assert outcome.action == "replied"
-    prompt, resume_id = harness.calls[0]
-    assert "Your PR conflicts with its base" in prompt
-    assert "origin/main` has been fetched" in prompt
-    assert resume_id == "sess-original"  # same session lineage, full context
-    # once per head: the cursor is persisted, the next pass no-ops
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == head
-    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
-    assert outcome2.action == "no-op"
-
-
-def _ws_head(root) -> str:
-    """The workspace's pre-session HEAD — what the remote PR tip really is."""
-    return _git(run_dir(root, "tsp-r1") / "ws", "rev-parse", "HEAD").strip()
-
-
-def _behind_pr(head="h" * 40) -> dict:
-    return {
-        "state": "open",
-        "merged": False,
-        "mergeable": True,
-        "mergeable_state": "behind",
-        "head": {"sha": head},
-        "base": {"ref": "main"},
-    }
-
-
-def test_behind_pr_wakes_the_author_with_a_sync_order(review_run) -> None:
-    """A cleanly-mergeable PR whose base moved wakes its author exactly like
-    a conflicted one — the claim is stale (publish declined to arm), so the
-    author merges the base in and the result is re-measured. First seen live:
-    gpt-speedrun#5 (the 8640 record) sat BEHIND after the lines-flip landed
-    mid-attempt, with no path back to the board."""
-    root, _bare = review_run
-    head = _ws_head(root)
-    github = FakeGitHub(pr=_behind_pr(head=head))
-    harness = ResumingHarness()
-    outcome = respond(root, github, harness, QueueEvaluator(values=[10.5]))
-    assert outcome.action == "replied"
-    prompt, resume_id = harness.calls[0]
-    assert "Your PR is behind its base" in prompt
-    assert "no conflicts were detected" in prompt
-    assert "Only a submit measures and publishes" in prompt
-    assert resume_id == "sess-original"
-    # once per head, same cursor as the conflict wake
-    record = load_record(root, "tsp-r1")
-    assert record.dirty_wake_head == head
-    outcome2 = respond(root, github, ResumingHarness(), QueueEvaluator(values=[10.5]))
-    assert outcome2.action == "no-op"
-
-
-def test_conflict_wake_action_lifecycle(review_run) -> None:
-    from outerloop.followup import conflict_wake_action
-
-    root, _ = review_run
-    record = load_record(root, "tsp-r1")
-    assert conflict_wake_action(record, _dirty_pr()) == "wake"
-    never_woken = {"state": "open", "merged": False}
-    assert conflict_wake_action(record, never_woken) == ""  # clean, never woken
-    woken = replace(record, dirty_wake_head="h" * 40)
-    assert conflict_wake_action(woken, _dirty_pr()) == ""  # once/head
-    # a new head (author pushed, conflicted again) re-arms
-    assert conflict_wake_action(woken, _dirty_pr(head="i" * 40)) == ("wake")
-    # a PR that turned CLEAN clears the cursor so the SAME head can re-wake
-    clean = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "clean"}
-    assert conflict_wake_action(woken, clean) == "clear"
-    # BEHIND (clean merge, stale base) wakes exactly like a conflict
-    assert conflict_wake_action(record, _behind_pr()) == "wake"
-    assert conflict_wake_action(woken, _behind_pr()) == ""  # once/head
-    # blocked-but-current does NOT wake (nothing to sync)
-    blocked = {"state": "open", "merged": False, "mergeable": True, "mergeable_state": "blocked"}
-    assert conflict_wake_action(record, blocked) == ""
-
-
-def test_gate_and_route_changes_are_in_the_signature(review_run) -> None:
-    """direction (claim meaning), eval_minutes (execution route), floors, and
-    baseline protocol all sit in the measurement signature — a base change
-    to any of them re-measures instead of skipping (terra #226 r1). The
-    signature is built by EXCLUSION, so a future Benchmark field joins it by
-    default."""
-    from outerloop.contract import load_contract
-
-    base = load_contract(CONTRACT, "o/r").benchmarks[0]
-    for mutation in (
-        ("direction: min", "direction: max"),
-        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    eval_minutes: 6"),
-        ("    metric: mean_tour_length", "    metric: mean_tour_length\n    min_delta: 0.5"),
-        (
-            "    metric: mean_tour_length",
-            "    metric: mean_tour_length\n    baseline: cached\n    min_delta: 0.1",
-        ),
-    ):
-        changed = load_contract(CONTRACT.replace(*mutation), "o/r").benchmarks[0]
-        assert changed.measurement_signature() != base.measurement_signature(), mutation
-    # the pure dials stay OUT: the live lines flip still skips
-    dial = load_contract(
-        CONTRACT.replace("direction: min", "direction: min\n    lines: true\n    depth_k: 4"),
-        "o/r",
-    ).benchmarks[0]
-    assert dial.measurement_signature() == base.measurement_signature()
-
-
-# --- the follow-up re-read: a pushed change is read by the panel before the
-# tick may arm it (docs/design/orchestrator-verify.md, "Re-reading a follow-up")
-
 AUTO_CONTRACT = CONTRACT + "merge: auto\n"
-
-
-# --- the revise loop as a wake type: a blocking re-read wakes the author
-
-
-# --- a GPU benchmark's change is measured on the GPU lane as a job: the
-# follow-up seals it and parks; a later follow-up finishes on the sealed tree
 
 GPU_CONTRACT = CONTRACT.replace(
     "    direction: min\n", "    direction: min\n    gpus: 1\n    eval_minutes: 30\n"
 )
 
-
 PR_BRANCH = "feat/auto/agent-01/tsp-r1"
-
-
-def test_followup_cli_dispatches_uncontained_and_refuses_a_missing_image(
-    tmp_path, monkeypatch, capsys
-):
-    """A follow-up's revision evals dispatch and meter like a climb's: with
-    --uncontained the CLI builds the dispatch settings (they come from the
-    backend, not from an image file), and a --image path that is not a file is
-    refused by the parser. Before this, an uncontained follow-up left dispatch
-    None and a GPU revision evaluated inline on an unmetered host GPU."""
-    import sys
-
-    import pytest
-
-    import outerloop.attempt as attempt_mod
-    import outerloop.followup as followup_mod
-
-    class _Stop(BaseException):
-        pass
-
-    seen: dict = {}
-
-    def fake_dispatch_settings(args):
-        seen["args"] = args
-        raise _Stop
-
-    monkeypatch.setattr(attempt_mod, "_dispatch_settings", fake_dispatch_settings)
-    base = ["followup", "--run-root", str(tmp_path), "--run-id", "r1", "--bot-login", "bot[bot]"]
-    monkeypatch.setattr(sys, "argv", [*base, "--uncontained"])
-    with pytest.raises(_Stop):
-        followup_mod.main()
-    assert seen["args"].image == "" and seen["args"].uncontained is True
-    monkeypatch.setattr(sys, "argv", [*base, "--image", str(tmp_path / "missing.sif")])
-    with pytest.raises(SystemExit):
-        followup_mod.main()
-    assert "is not a file" in capsys.readouterr().err
-
-
-def seed_panel(root, head, text):
-    from outerloop.inbox import Message, append
-
-    append(
-        run_dir(root, "tsp-r1"),
-        Message(
-            0,
-            "panel-verdict",
-            "panel",
-            "pr:9",
-            NOW,
-            f"panel:{head}",
-            {"head": head, "findings": [{"blocking": True, "detail": text}]},
-        ),
-    )
-
-
-def panel_text(root, record):
-    from outerloop.inbox import pending, render_inbox
-
-    messages = [
-        m
-        for m in pending(run_dir(root, record.run_id), record.inbox_seq)
-        if m.kind == "panel-verdict" and m.payload.get("wake_author", True)
-    ]
-    return render_inbox(messages, budgets="") if messages else ""
 
 
 @pytest.mark.parametrize("pr_url,number", [("https://github.com/org/pilot/pull/7", 7), ("", 42)])
@@ -932,161 +366,6 @@ def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, fail
     assert "<!-- outerloop:reply-id " in github.posted[1].split("\n", 2)[1]
 
 
-@pytest.mark.parametrize("sleep_again", [False, True])
-def test_review_sleep_tick_inbox_and_sweep_wake(review_run, monkeypatch, sleep_again) -> None:
-    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
-    import json
-
-    from outerloop.attempt import resume_run
-    from outerloop.compute import LocalCompute
-    from outerloop.inbox import pending
-    from outerloop.measure import DispatchSettings
-    from outerloop.roles import followup_spec
-    from outerloop.syscall_cli import main
-    from outerloop.tick import FollowupSpec, service_in_review
-
-    root, _bare = review_run
-    record = load_record(root, "tsp-r1")
-    ws = run_dir(root, record.run_id) / "ws"
-    record = replace(record, stage={"launches_used": 1, "sleeps_used": 1, "gpu_hours_used": 0.25})
-    save_record(root, record, NOW)
-
-    class NoAuth:
-        def token(self) -> str:
-            return "unused"
-
-    compute = LocalCompute()
-    submitted = []
-
-    def submit(self, spec):
-        submitted.append(spec)
-        return "501"
-
-    monkeypatch.setattr(LocalCompute, "submit", submit)
-    monkeypatch.setattr(LocalCompute, "status", lambda self, job_id: "COMPLETED")
-    dispatch = DispatchSettings(compute=compute, image="", account="", partition="")
-    github = FakeGitHub(comments=[member(101, "run an experiment")])
-
-    class SleepingHarness(ResumingHarness):
-        def run(self, brief_text, workspace, resume_session_id=None):
-            budget = json.loads((workspace / ".outerloop/budget.json").read_text())
-            assert budget["launches_remaining"] == 9
-            assert budget["sleeps_remaining"] == 19
-            assert main(["reply", "working on it"], root=workspace) == 0
-            assert (
-                main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
-                == 0
-            )
-            assert main(["sleep"], root=workspace) == 0
-            return super().run(brief_text, workspace, resume_session_id)
-
-    out = respond_once(
-        root,
-        record.run_id,
-        SleepingHarness(),
-        QueueEvaluator(),
-        cast(GitHubClient, github),
-        bot_login=BOT,
-        now=NOW,
-        dispatch=dispatch,
-    )
-    assert out.action == "parked", out.note
-    parked = load_record(root, record.run_id)
-    assert parked.state == "waiting" and parked.pr_url == record.pr_url
-    assert parked.stage["phase"] == "author-sleep"
-    assert parked.stage["launches_used"] == 2 and parked.stage["sleeps_used"] == 2
-    assert parked.stage["gpu_hours_used"] == 0.25
-    assert len(submitted) == 1 and github.posted_to == [9]
-
-    github.comments.append(member(102, "try five neighbors"))
-    github.reviews.append(member(12, "review message"))
-    github.review_comments.append(member(22, "inline message"))
-    github.pr = _behind_pr(head=_ws_head(root))
-    github.pr["base"] = {"ref": "main", "sha": _git(ws, "rev-parse", "origin/main").strip()}
-    tick_spec = FollowupSpec(
-        account="", partition="", run_root=root, image="", home=root, bot_login=BOT
-    )
-    from outerloop.runstate import acquire_lease, release_lease
-
-    assert acquire_lease(root, record.run_id, "armed-wake", "502", NOW)
-    assert service_in_review(root, github, compute, tick_spec, NOW + 1) == ([], [])
-    assert len(pending(run_dir(root, record.run_id), parked.inbox_seq)) == 4
-    assert load_record(root, record.run_id).last_comment_id == 101
-    release_lease(root, record.run_id)
-    for _ in range(2):
-        assert service_in_review(root, github, compute, tick_spec, NOW + 1) == ([], [])
-    queued = pending(run_dir(root, record.run_id), parked.inbox_seq)
-    assert [m.kind for m in queued].count("base-moved") == 1
-    assert [m.kind for m in queued].count("comment") == 3
-    assert len(submitted) == 1
-
-    # The sweep's resume entry gathers the job result and drains the inbox.
-    job = run_dir(root, record.run_id) / "eval-launch-probe"
-    job.mkdir(exist_ok=True)
-    (job / "exit-code").write_text("0")
-    (job / "stdout").write_text("probe finished")
-    (job / "stderr").write_text("")
-    github.pr = {"state": "open", "merged": False}
-    evaluator = QueueEvaluator([10.2])
-    monkeypatch.setattr("outerloop.orchestrator.SubprocessEvaluator", lambda **kwargs: evaluator)
-    monkeypatch.setattr(
-        "outerloop.attempt._finish_attempt",
-        lambda **kwargs: pytest.fail("PR wake used climb terminal"),
-    )
-    if sleep_again:
-        checkpoint = ResumingHarness(edits={".outerloop/syscall.json": '{"type":"sleep"}'})
-        again = resume_run(
-            root,
-            record.run_id,
-            dispatch=dispatch,
-            github=cast(GitHubClient, github),
-            bot_auth=None,  # type: ignore[arg-type]
-            now=NOW + 2,
-            harness=checkpoint,
-            spec=followup_spec(),
-        )
-        assert again.outcome == "parked"
-        assert load_record(root, record.run_id).pr_url == record.pr_url
-        assert "try five neighbors" in checkpoint.calls[0][0]
-        github.comments.append(member(103, "try five neighbors after checkpoint"))
-        service_in_review(root, github, compute, tick_spec, NOW + 3)
-    wake = ResumingHarness(edits={"src/pilot/solvers/tsp.py": "v2 after experiment\n"})
-
-    class Dispatcher:
-        def dispatch(self, waking, reason):
-            out_wake = resume_run(
-                root,
-                record.run_id,
-                dispatch=dispatch,
-                github=cast(GitHubClient, github),
-                bot_auth=None,  # type: ignore[arg-type]
-                now=NOW + 10000,
-                harness=wake,
-                spec=followup_spec(),
-            )
-            assert out_wake.outcome == "replied"
-            return ""
-
-    from outerloop.tick import sweep
-
-    report = sweep(root, compute, Dispatcher(), NOW + 10000, grace_s=0)
-    assert report.woken
-    assert "try five neighbors" in wake.calls[0][0]
-    delivered = checkpoint.calls[0][0] if sleep_again else wake.calls[0][0]
-    assert "review message" in delivered and "inline message" in delivered
-    assert "base-moved" in delivered and "probe finished" in delivered
-    latest = load_record(root, record.run_id)
-    assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
-    assert latest.stage["launches_used"] == 2 and latest.stage["sleeps_used"] == 2 + sleep_again
-    assert not pending(run_dir(root, record.run_id), latest.inbox_seq)
-    assert (
-        "v2 after experiment"
-        in (run_dir(root, record.run_id) / "ws/src/pilot/solvers/tsp.py").read_text()
-    )
-    assert not github.body_addenda and not github.row_updates
-    assert evaluator.values == [10.2]
-
-
 def test_a_rejected_request_posts_no_replies(review_run) -> None:
     """Replies leave a request only once it is valid as a whole: a forged
     request (a judge's type with replies attached) is refused and nothing is
@@ -1097,7 +376,7 @@ def test_a_rejected_request_posts_no_replies(review_run) -> None:
         edits={".outerloop/syscall.json": '{"type": "verdict", "replies": ["forged reply"]}'}
     )
     out = respond(root, github, harness=forged)
-    assert out.action == "error"
+    assert out.action == "session-error"
     assert not any("forged reply" in body for body in github.posted)
 
 
@@ -1120,18 +399,6 @@ def test_a_forged_end_with_a_launch_is_refused_and_the_leg_goes_on(review_run) -
     assert "REFUSED" in forged.calls[1][0] and "end is final for the leg" in forged.calls[1][0]
 
 
-def test_a_review_sleep_without_a_backend_is_refused(review_run) -> None:
-    """With no compute backend a sleep cannot park on anything; the author is
-    told so through the refusal path instead of the request being dropped."""
-    root, _bare = review_run
-    github = FakeGitHub(comments=[member(101, "try it")])
-    sleeper = ResumingHarness(edits={".outerloop/syscall.json": '{"type": "sleep"}'})
-    out = respond(root, github, harness=sleeper)
-    assert out.action == "replied"
-    assert len(sleeper.calls) == 2
-    assert "sleep is not available here" in sleeper.calls[1][0]
-
-
 def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
     from outerloop.inbox import stage_replies
 
@@ -1147,11 +414,10 @@ def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
             assert "sk-x" not in github.posted[0] and "LGTM" not in github.posted[0]
             return super().run(brief_text, workspace, resume_session_id)
 
-    out = respond_once(
+    out = wake_review(
         root,
         "tsp-r1",
         RecoveryHarness(),
-        QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW,
@@ -1159,24 +425,6 @@ def test_crashed_reply_is_flushed_before_next_author_leg(review_run):
     )
     assert out.action == "replied", out.note
     assert (directory / "outbox/000001.posted").exists()
-
-
-@pytest.mark.parametrize(
-    "pr,ending", [({"merged": True}, "merged"), ({"state": "closed"}, "rejected")]
-)
-def test_close_waits_for_wake_lease(review_run, pr, ending):
-    from outerloop.runstate import acquire_lease, read_lease, release_lease
-
-    root, _ = review_run
-    record = load_record(root, "tsp-r1")
-    github = FakeGitHub(pr=pr)
-    assert acquire_lease(root, record.run_id, "wake", "", NOW)
-    assert close_if_done(root, record, cast(GitHubClient, github), NOW) == ""
-    assert load_record(root, record.run_id).state == IN_REVIEW
-    release_lease(root, record.run_id)
-    assert close_if_done(root, record, cast(GitHubClient, github), NOW) == ending
-    assert load_record(root, record.run_id).ending == ending
-    assert read_lease(root, record.run_id) is None
 
 
 def test_review_launch_checks_committed_edits(review_run, monkeypatch):
@@ -1199,18 +447,20 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
             assert main(["sleep"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
-    out = respond_once(
+    out = wake_review(
         root,
         "tsp-r1",
         CommittingHarness(),
-        QueueEvaluator(),
         cast(GitHubClient, FakeGitHub(comments=[member(101, "experiment")])),
         bot_login=BOT,
         now=NOW,
         dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
     )
-    assert out.action == "error"
-    assert "out-of-scope paths at launch: docs/roadmap.md" in out.note
+    assert out.action == "scope-violation"
+    assert (
+        "out-of-scope paths at launch: docs/roadmap.md"
+        in (run_dir(root, "tsp-r1") / "report.md").read_text()
+    )
 
 
 @pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
@@ -1367,7 +617,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
         assert "Worse" in github.posted[0]
     latest = load_record(root, record.run_id)
     assert latest.stage["review_topup"] is True
-    assert latest.state == IN_REVIEW
+    assert latest.state == PARKED
     assert latest.auto_blessed_head == ("" if panel_skip else pushed)
     if panel_skip:
         assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
@@ -1467,26 +717,11 @@ def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
     assert load_record(root, record.run_id).auto_blessed_head == ""
 
     if reason == "push":
-        from outerloop.compute import CommandResult, SlurmCompute
-        from outerloop.runstate import release_lease
-        from outerloop.tick import FollowupSpec, service_in_review
-
-        def runner(argv, timeout_s):
-            assert argv[0] == "sbatch"
-            return CommandResult(0, "77\n", "")
-
-        spec = FollowupSpec(account="", partition="", run_root=root, image="", home=root)
-        ended, submitted = service_in_review(
-            root, cast(GitHubClient, github), SlurmCompute(runner=runner), spec, NOW + 1
-        )
-        assert ended == [] and submitted == [(record.run_id, "77")]
-        release_lease(root, record.run_id)
         author = ResumingHarness()
-        wake = respond_once(
+        wake = wake_review(
             root,
             record.run_id,
             author,
-            QueueEvaluator(),
             cast(GitHubClient, github),
             bot_login=BOT,
             now=NOW + 2,
@@ -1496,56 +731,27 @@ def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
         assert not pending(ws.parent, load_record(root, record.run_id).inbox_seq)
 
 
-def test_unsubmitted_review_edit_is_not_measured_or_pushed(review_run):
+def test_unsubmitted_review_edit_is_not_measured_or_pushed(review_run, monkeypatch):
+    from outerloop.measure import DispatchedMeasurer
+
+    def refuse_measurement(*args, **kwargs):
+        pytest.fail("an unsubmitted edit must not be measured")
+
+    monkeypatch.setattr(DispatchedMeasurer, "results", refuse_measurement)
     root, bare = review_run
     ws = run_dir(root, "tsp-r1") / "ws"
     before = _git(bare, "show-ref")
-    evaluator = QueueEvaluator([])
     github = FakeGitHub(comments=[member(101, "try this")])
     outcome = respond(
         root,
         github,
         harness=ResumingHarness(edits={"src/pilot/solvers/tsp.py": "experiment\n"}),
-        evaluator=evaluator,
     )
     assert outcome.action == "replied"
     assert (ws / "src/pilot/solvers/tsp.py").read_text() == "experiment\n"
     assert _git(bare, "show-ref") == before
     assert not github.row_updates
-    assert load_record(root, "tsp-r1").state == IN_REVIEW
-
-
-def test_legacy_remeasure_is_retired_at_wake(review_run, caplog):
-    import json
-
-    from outerloop.dispatch import snapshot_tree
-    from outerloop.github import Workspace
-    from outerloop.runstate import RECORD_NAME
-
-    root, _ = review_run
-    ws = run_dir(root, "tsp-r1") / "ws"
-    snap = snapshot_tree(Workspace(root=ws), "HEAD")
-    path = ws.parent / RECORD_NAME
-    raw = json.loads(path.read_text())
-    raw["followup_stage"] = {
-        "candidate_ref": snap.ref,
-        "candidate_sha": snap.commit,
-        "job_ids": ["9"],
-    }
-    path.write_text(json.dumps(raw))
-    record = load_record(root, "tsp-r1")
-    assert "followup_stage" in json.loads(path.read_text())
-    save_record(root, record, NOW)
-    assert "followup_stage" in json.loads(path.read_text())
-    harness = ResumingHarness()
-    with caplog.at_level("INFO"):
-        result = respond(root, FakeGitHub(), harness=harness)
-    assert result.action == "no-op"
-    assert not harness.calls
-    assert "followup_stage" not in json.loads(path.read_text())
-    assert load_record(root, "tsp-r1").state == IN_REVIEW
-    assert not _git(ws, "for-each-ref", snap.ref).strip()
-    assert sum("retired legacy" in r.message for r in caplog.records) == 1
+    assert load_record(root, "tsp-r1").state == PARKED
 
 
 @pytest.mark.parametrize("credited", [False, True, None])
@@ -1625,12 +831,11 @@ def test_review_submit_parks_and_delivers_verdict(
             ".outerloop/syscall.json": json.dumps({"type": "sleep", "submit": True}),
         }
     )
-    outcome = respond_once(
+    outcome = wake_review(
         root,
         record.run_id,
         author,
-        QueueEvaluator([]),
-        github,  # type: ignore[arg-type]
+        github,
         bot_login=BOT,
         now=NOW,
         dispatch=dispatch,
@@ -1638,7 +843,7 @@ def test_review_submit_parks_and_delivers_verdict(
     )
     assert outcome.action == "parked"
     parked = load_record(root, record.run_id)
-    assert parked.state == "waiting" and parked.pr_url == record.pr_url
+    assert parked.state == "parked" and parked.pr_url == record.pr_url
     assert parked.stage["review_topup"] is True
     assert "Review top-up added when the PR opened" in author.calls[0][0]
     assert parked.stage["submitted"] and parked.stage["launches_used"] == 0
@@ -1660,7 +865,7 @@ def test_review_submit_parks_and_delivers_verdict(
         panel_lenses=(object(),),  # type: ignore[arg-type]
     )
     latest = load_record(root, record.run_id)
-    assert latest.state == IN_REVIEW and latest.pr_url == record.pr_url
+    assert latest.state == PARKED and latest.pr_url == record.pr_url
     messages = pending(run_dir(root, record.run_id), 0)
     assert "gate-verdict" in {m.kind for m in messages}
     if panel_skip:
@@ -1674,12 +879,11 @@ def test_review_submit_parks_and_delivers_verdict(
         if panel_skip:
             assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
         # The next review wake delivers both verdicts after publication.
-        respond_once(
+        wake_review(
             root,
             record.run_id,
             wake,
-            QueueEvaluator([]),
-            github,  # type: ignore[arg-type]
+            github,
             bot_login=BOT,
             now=NOW + 20,
             dispatch=dispatch,
@@ -1701,11 +905,10 @@ def test_review_reply_suppresses_final_text(review_run):
             assert main(["reply", "the staged reply"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
-    outcome = respond_once(
+    outcome = wake_review(
         root,
         "tsp-r1",
         Author(text="duplicate final"),
-        QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW,
@@ -1777,11 +980,10 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
             return session
 
     author = Author(merge_base=contains_base, edits={"src/pilot/solvers/tsp.py": "submitted\n"})
-    outcome = respond_once(
+    outcome = wake_review(
         root,
         record.run_id,
         author,
-        QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW,
@@ -1808,7 +1010,7 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
             assert refusal.payload["sealed_sha"] in refusal.payload["text"]
         else:
             assert len(author.calls) == 2
-            assert latest.state == IN_REVIEW
+            assert latest.state == PARKED
 
 
 @pytest.mark.parametrize("edit", ["none", "working", "committed"])
@@ -1891,69 +1093,16 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
             return session
 
     author = Author()
-    if panel_skip:
-        import shlex
-        import sys
-        from types import SimpleNamespace
-
-        from outerloop.followup import main as followup_main
-        from outerloop.tick import FollowupSpec, service_in_review
-
-        jobs = []
-        outcomes = []
-        compute = LocalCompute()
-
-        def capture_job(self, job):
-            jobs.append(job)
-            return "42"
-
-        monkeypatch.setattr(LocalCompute, "submit", capture_job)
-        monkeypatch.setattr("outerloop.tick._panel_preflight_error", lambda spec: panel_skip)
-        spec = FollowupSpec(
-            account="",
-            partition="",
-            run_root=root,
-            image="",
-            home=root,
-            bot_login=BOT,
-            panel="verify,review",
-        )
-        assert service_in_review(root, github, compute, spec, NOW)[1] == [("tsp-r1", "42")]
-        argv = shlex.split(jobs[0].command)
-        argv = argv[argv.index("outerloop.followup") :]
-        assert argv[argv.index("--panel-skip") + 1] == panel_skip
-        monkeypatch.setattr(sys, "argv", argv)
-        monkeypatch.setattr("outerloop.followup.role_key", lambda *args: "")
-        monkeypatch.setattr(
-            "outerloop.appauth.resolve_bot_auth", lambda *args: SimpleNamespace(token=lambda: "")
-        )
-        monkeypatch.setattr("outerloop.followup.GitHubClient", lambda **kwargs: github)
-        monkeypatch.setattr("outerloop.role_runner.build_harness", lambda *args, **kwargs: author)
-        monkeypatch.setattr("outerloop.attempt.arm_self_deadline", lambda *args: 0)
-        monkeypatch.setattr(
-            "outerloop.attempt._dispatch_settings",
-            lambda args: DispatchSettings(compute=compute, image="", account="", partition=""),
-        )
-
-        def respond_from_job(*args, **kwargs):
-            assert kwargs["panel_skip"] == panel_skip
-            outcomes.append(respond_once(*args, **kwargs))
-            return outcomes[-1]
-
-        monkeypatch.setattr("outerloop.followup.respond_once", respond_from_job)
-        assert followup_main() == 0
-        outcome = outcomes[0]
-    else:
-        outcome = respond_once(
-            root,
-            "tsp-r1",
-            author,
-            QueueEvaluator(),
-            cast(GitHubClient, github),
-            bot_login=BOT,
-            now=NOW,
-            dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
-        )
+    outcome = wake_review(
+        root,
+        "tsp-r1",
+        author,
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        panel_skip=panel_skip,
+        dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
+    )
     assert outcome.action == "replied", outcome.note
     messages = pending(ws.parent, 0)
     if edit == "none":
@@ -1994,18 +1143,17 @@ def test_review_end_parks_without_jobs_and_next_comment_wakes(review_run, with_r
             assert main(args, root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
-    outcome = respond_once(
+    outcome = wake_review(
         root,
         "tsp-r1",
         Author(text="Do not post this final text."),
-        QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW,
     )
     assert outcome.action == "replied"
     record = load_record(root, "tsp-r1")
-    assert record.state == "in-review" and record.pr_url
+    assert record.state == "parked" and record.pr_url
     assert not record.experiment_job_id and not record.deadline
     assert not record.stage.get("afterany")
     assert len(github.posted) == int(with_report)
@@ -2014,14 +1162,128 @@ def test_review_end_parks_without_jobs_and_next_comment_wakes(review_run, with_r
     assert _git(bare, "show-ref") == before
     github.comments.append(member(102, "One more question."))
     author = ResumingHarness(text="Here is the answer.")
-    outcome = respond_once(
+    outcome = wake_review(
         root,
         "tsp-r1",
         author,
-        QueueEvaluator(),
         cast(GitHubClient, github),
         bot_login=BOT,
         now=NOW + 1,
     )
     assert outcome.action == "replied"
     assert "One more question." in author.calls[0][0]
+
+
+def test_review_outage_refunds_attempt_and_preserves_delivery(review_run):
+    from outerloop.runstate import outage_active
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    save_record(root, replace(record, wake_attempts=2), NOW)
+
+    class Offline(ResumingHarness):
+        def run(self, *args, **kwargs):
+            return SessionResult(
+                stop_reason="error",
+                is_error=True,
+                error_detail="authentication_error: invalid API key",
+                cost_usd=0,
+                num_turns=0,
+                final_text="",
+                transcript_path="",
+                session_id="sess-original",
+            )
+
+    outcome = respond(root, FakeGitHub(comments=[member(101, "question")]), Offline())
+    assert outcome.action == "session-outage"
+    latest = load_record(root, record.run_id)
+    assert latest.state == PARKED and latest.inbox_seq == 0
+    assert latest.wake_attempts == 1
+    assert outage_active(root, NOW)
+
+
+@pytest.mark.parametrize("ending", ["merged", "rejected"])
+@pytest.mark.parametrize("during", ["session", "post"])
+def test_reply_return_preserves_concurrent_ending(review_run, ending, during):
+    from outerloop.attempt import finish_run
+    from outerloop.runstate import ENDED
+
+    root, _ = review_run
+
+    def end():
+        finish_run(root, load_record(root, "tsp-r1"), ending, "PR ended", NOW + 1)
+
+    class GitHub(FakeGitHub):
+        def comment(self, repo, number, body):
+            super().comment(repo, number, body)
+            if during == "post":
+                end()
+
+    class Author(ResumingHarness):
+        def run(self, *args, **kwargs):
+            result = super().run(*args, **kwargs)
+            if during == "session":
+                end()
+            return result
+
+    result = respond(root, GitHub(), Author())
+    latest = load_record(root, "tsp-r1")
+    assert (latest.state, latest.ending, latest.ending_note) == (ENDED, ending, "PR ended")
+    assert result.action == ending
+
+
+def test_failed_reply_flush_still_suppresses_final(review_run):
+    from outerloop.attempt import post_replies
+    from outerloop.syscall_cli import main
+
+    root, _ = review_run
+
+    class GitHub(FakeGitHub):
+        def comment(self, repo, number, body):
+            if "the staged reply" in body:
+                raise RuntimeError("GitHub unavailable")
+            super().comment(repo, number, body)
+
+    class Author(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert main(["reply", "the staged reply"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    github = GitHub()
+    assert respond(root, github, Author(text="duplicate final")).action == "replied"
+    assert github.posted == []
+    directory = run_dir(root, "tsp-r1")
+    assert list((directory / "outbox").glob("*.json"))
+    recovered = FakeGitHub()
+    assert (
+        post_replies(load_record(root, "tsp-r1"), cast(GitHubClient, recovered), (), (), directory)
+        == 1
+    )
+    assert "the staged reply" in recovered.posted[0]
+
+
+@pytest.mark.parametrize("failure", ["contract", "benchmark", "seal"])
+def test_terminal_releases_snapshot_when_notebook_fails(review_run, monkeypatch, caplog, failure):
+    import outerloop.attempt as attempt
+    from outerloop.runstate import ENDED
+
+    root, _ = review_run
+    record = load_record(root, "tsp-r1")
+    record = replace(record, stage={**record.stage, "candidate_ref": "refs/test/snapshot"})
+    released = []
+    monkeypatch.setattr(attempt, "drop_snapshot", lambda ws, snap: released.append(snap.ref))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("notebook unavailable")
+
+    monkeypatch.setattr(
+        attempt,
+        {"contract": "load_contract", "benchmark": "_benchmark", "seal": "_push_line_snapshot"}[
+            failure
+        ],
+        fail,
+    )
+    attempt.finish_run(root, record, "merged", "PR merged", NOW)
+    assert released == ["refs/test/snapshot"]
+    assert load_record(root, "tsp-r1").state == ENDED
+    assert "notebook unavailable" in caplog.text

@@ -160,18 +160,18 @@ def test_siblings_command_reads_the_fleet_snapshot(tmp_path: Path) -> None:
         [
             {
                 "agent": "agent-02",
-                "state": "waiting",
+                "state": "parked",
                 "phase": "candidate",
                 "direction": "compose embedding decay with earlier warmdown",
             },
-            {"agent": "agent-03", "state": "implementing", "phase": "", "direction": ""},
+            {"agent": "agent-03", "state": "running", "phase": "", "direction": ""},
         ],
     )
     from outerloop.syscall_cli import cmd_siblings
 
     out = cmd_siblings(tmp_path, None)
-    assert "agent-02 (waiting/candidate): compose embedding decay" in out
-    assert "agent-03 (implementing)" in out
+    assert "agent-02 (parked/candidate): compose embedding decay" in out
+    assert "agent-03 (running)" in out
     assert "prefer a direction no sibling" in out
     (tmp_path / ".outerloop" / "siblings.json").write_text("not json")
     assert cmd_siblings(tmp_path, None) == "no sibling activity known."

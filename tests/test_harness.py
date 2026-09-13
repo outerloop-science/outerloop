@@ -878,6 +878,6 @@ def test_no_lane_hardcodes_the_harness_path() -> None:
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src" / "outerloop"
-    for module in ("attempt.py", "followup.py", "steward.py"):
+    for module in ("attempt.py", "steward.py"):
         text = (src / module).read_text()
         assert "~/.local/bin/claude" not in text and "~/.local/bin/codex" not in text, module

@@ -1,11 +1,13 @@
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from outerloop.brief import MAX_COMMENT_CHARS, code_fence
+from outerloop.github import GitHubClient
 from outerloop.inbox import Message, append, budgets_line, delivered_seq, pending, render_inbox
-from outerloop.runstate import IN_REVIEW, RunRecord, load_record, run_dir, save_record
+from outerloop.runstate import PARKED, RunRecord, load_record, run_dir, save_record
 
 
 def message(kind="note", key="note:1", **payload):
@@ -20,13 +22,11 @@ def test_append_numbers_and_deduplicates_atomically(tmp_path, monkeypatch):
     renames = []
     original = inbox.os.replace
 
-    def rename(source, target):
-        assert Path(source).parent == directory / "inbox"
-        assert Path(source).suffix == ".tmp"
-        assert Path(source).read_text()
-        assert not Path(target).exists()
-        renames.append(target)
-        original(source, target)
+    def rename(source, target, **kwargs):
+        assert kwargs["src_dir_fd"] == kwargs["dst_dir_fd"]
+        assert not (directory / "inbox" / target).exists()
+        renames.append(Path(target))
+        original(source, target, **kwargs)
 
     monkeypatch.setattr(inbox.os, "replace", rename)
     first = append(directory, message(text="first"))
@@ -61,7 +61,7 @@ def test_a_damaged_entry_stops_delivery_and_keeps_its_sequence(tmp_path, caplog)
 def test_failed_rename_leaves_no_partial_message(tmp_path, monkeypatch):
     import outerloop.inbox as inbox
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(inbox.os, "replace", fail)
@@ -198,7 +198,7 @@ def test_gate_and_base_facts():
     assert "Merge it" not in text
 
 
-def test_a_legacy_record_loads_without_writing(tmp_path):
+def test_a_legacy_record_migrates_findings_to_inbox(tmp_path):
     """An older kernel's pending findings ride the record until a wake
     converts them; a load never writes anything, inbox included."""
     import json
@@ -207,7 +207,7 @@ def test_a_legacy_record_loads_without_writing(tmp_path):
         "run",
         "org/repo",
         "task",
-        IN_REVIEW,
+        PARKED,
         pr_url="https://github.com/org/repo/pull/9",
     )
     save_record(tmp_path, record, 10)
@@ -217,9 +217,17 @@ def test_a_legacy_record_loads_without_writing(tmp_path):
     raw["panel_wake_text"] = "unjustified constant"
     path.write_text(json.dumps(raw))
     loaded = load_record(tmp_path, "run")
-    assert loaded.panel_wake_text == "unjustified constant" and delivered_seq(loaded) == 0
+    assert delivered_seq(loaded) == 0
     assert not (path.parent / "inbox").exists()
-    assert json.loads(path.read_text())["panel_wake_text"] == "unjustified constant"
+    from outerloop.runstate import acquire_lease, migrate_inbox
+
+    assert acquire_lease(tmp_path, "run", "test", "", 11)
+    migrate_inbox(tmp_path, "run", 11)
+    messages = pending(path.parent, 0)
+    assert len(messages) == 1
+    assert messages[0].payload["findings"][0]["detail"] == "unjustified constant"
+    load_record(tmp_path, "run")
+    assert len(pending(path.parent, 0)) == 1
 
 
 def test_delivered_files_are_never_read_again_and_dedupe_sees_past_damage(tmp_path):
@@ -250,7 +258,7 @@ def test_concurrent_append_preserves_sequences_and_dedupe(tmp_path):
 def test_thread_prefers_the_open_pr_then_the_claimed_issue():
     from outerloop.inbox import thread_for
 
-    record = RunRecord("run", "org/repo", "task", IN_REVIEW)
+    record = RunRecord("run", "org/repo", "task", PARKED)
     assert thread_for(record) == ""
     assert thread_for(replace(record, issue_number=3)) == "issue:3"
     with_pr = replace(record, issue_number=3, pr_url="https://github.com/org/repo/pull/9")
@@ -296,3 +304,96 @@ def test_a_reply_the_thread_already_carries_is_not_posted_again(tmp_path):
     assert [r for r, _ in posted] == ["second"]
     assert posted[0][1] == reply_id(tmp_path, entries[1])
     assert not list((tmp_path / "outbox").glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "destination", ["inbox", "positions.json", ".positions-lock", ".lock", "000001.json"]
+)
+def test_inbox_writers_refuse_symlinks(tmp_path, destination):
+    from outerloop.inbox import advance_github_positions
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "victim"
+    victim.write_text("untouched")
+    directory = tmp_path / "run"
+    directory.mkdir()
+    if destination == "inbox":
+        (directory / "inbox").symlink_to(outside, target_is_directory=True)
+    else:
+        (directory / "inbox").mkdir()
+        (directory / "inbox" / destination).symlink_to(victim)
+    writer = (
+        (lambda: advance_github_positions(directory, {"comment": 3}))
+        if destination in ("positions.json", ".positions-lock")
+        else lambda: append(directory, message())
+    )
+    with pytest.raises(OSError):
+        writer()
+    if destination == "inbox":
+        with pytest.raises(OSError):
+            advance_github_positions(directory, {"comment": 3})
+    assert victim.read_text() == "untouched"
+    assert sorted(p.name for p in outside.iterdir()) == ["victim"]
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_github_positions_follow_durable_messages_per_collection(tmp_path, monkeypatch, crash):
+    import outerloop.inbox as inbox
+
+    record = RunRecord(
+        "run", "org/repo", "task", PARKED, pr_url="https://github.com/org/repo/pull/9"
+    )
+
+    def comment(cid):
+        return {
+            "id": cid,
+            "body": "question",
+            "user": {"login": "human"},
+            "author_association": "MEMBER",
+        }
+
+    class GitHub:
+        def list_comments(self, *args):
+            return [comment(30), comment(10), comment(20)]
+
+        def list_pr_reviews(self, *args):
+            return [comment(2)]
+
+        def list_pr_review_comments(self, *args):
+            return [comment(7)]
+
+    original_append = inbox.append
+    original_advance = inbox.advance_github_positions
+    if crash:
+
+        def fail(*args):
+            raise RuntimeError("crash after append")
+
+        monkeypatch.setattr(inbox, "advance_github_positions", fail)
+        with pytest.raises(RuntimeError, match="crash after append"):
+            inbox.gather_github_messages(
+                tmp_path, record, cast(GitHubClient, GitHub()), "bot", 1, {}
+            )
+        assert inbox.github_positions(tmp_path) == {}
+        assert len(pending(tmp_path, 0)) == 3
+    else:
+
+        def refuse(directory, msg):
+            if msg.key == "comment:20":
+                raise ValueError("append refused")
+            return original_append(directory, msg)
+
+        monkeypatch.setattr(inbox, "append", refuse)
+        inbox.gather_github_messages(tmp_path, record, cast(GitHubClient, GitHub()), "bot", 1, {})
+        assert inbox.github_positions(tmp_path) == {"comment": 10, "review": 2, "review_comment": 7}
+        assert {m.key for m in pending(tmp_path, 0)} == {
+            "comment:10",
+            "review:2",
+            "review_comment:7",
+        }
+    monkeypatch.setattr(inbox, "append", original_append)
+    monkeypatch.setattr(inbox, "advance_github_positions", original_advance)
+    inbox.gather_github_messages(tmp_path, record, cast(GitHubClient, GitHub()), "bot", 2, {})
+    assert inbox.github_positions(tmp_path) == {"comment": 30, "review": 2, "review_comment": 7}
+    assert len(pending(tmp_path, 0)) == 5

@@ -110,7 +110,7 @@ class EvalError(RuntimeError):
 class RunParked(Exception):
     """A dispatched climb submitted its measures and must hibernate until they
     finish. `attempt_once` raises it (a park is an exceptional exit); the caller,
-    which owns the run record and git, persists the fields below as the WAITING
+    which owns the run record and git, persists the fields below as the PARKED
     stage — `afterany` among them, the dependency set the wake waits on — and
     ends the run's turn, keeping the candidate snapshot alive so the wake can
     read it. `phase` is WHICH park: `candidate` (after the session — the wake
@@ -488,6 +488,7 @@ class AttemptResult:
     # the author's report at submit (SyscallRequest.report): the PR's research
     # report and what the panel read; empty when the run never submitted one
     replies_posted: int = 0
+    replies_staged: bool = False
     submit_report: str = ""
     # the seed both measurements ran under (0 = benchmark has no seed_env):
     # recorded in the ledger row so the number is re-derivable

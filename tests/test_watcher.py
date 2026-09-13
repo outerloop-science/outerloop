@@ -54,9 +54,7 @@ def _fleet(tmp_path: Path) -> tuple[Path, Path]:
     for rid, agent in (("r1", "agent-01"), ("r2", "agent-02")):
         save_record(
             root,
-            RunRecord(
-                run_id=rid, target="o/r", task_title="t", state="implementing", agent_id=agent
-            ),
+            RunRecord(run_id=rid, target="o/r", task_title="t", state="running", agent_id=agent),
             now=1.0,
         )
     append_submitted(

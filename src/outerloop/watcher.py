@@ -63,7 +63,7 @@ class WatcherContext:
 
 def _kind(name: str) -> str:
     """A short label for a kernel job that is not a launch."""
-    for key in ("wake", "followup", "eval", "resident", "tick"):
+    for key in ("wake", "eval", "resident", "tick"):
         if key in name:
             return key
     return name

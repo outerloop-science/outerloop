@@ -182,7 +182,7 @@ def collect_rows(
         records = list_runs(root)
     out: dict[str, list[ClimbRow]] = {}
     for record in records:
-        # only ENDED runs: an in-review run's outcome is not known yet (its
+        # only ENDED runs: an parked run's outcome is not known yet (its
         # PR may be rejected), and a published row is never rewritten
         if record.target != target or record.state != ENDED:
             continue
@@ -203,7 +203,7 @@ def collect_rows(
             lines = marker.splitlines()
             if lines and lines[0].startswith(("archived", "pointer-pending", "done")):
                 if len(lines) > 1 and lines[1].startswith("reports/") and lines[1].endswith(".md"):
-                    # the ledger's own path: an in-review archive keeps its
+                    # the ledger's own path: an parked archive keeps its
                     # date even after the ENDED transition re-stamps updated
                     report = lines[1]
                 else:  # legacy marker without a path line
@@ -692,15 +692,10 @@ def render_html(
         "    .then(r => r.ok ? r.json() : null)\n"
         "    .then(s => { if (s && Array.isArray(s.runs)) { strip = s; render(); } })\n"
         "    .catch(() => {});\n"
-        "const stateHue = r => r.state === 'in-review' ? '150 55% 38%'\n"
-        "  : r.state === 'implementing' ? '262 45% 52%'\n"
+        "const stateHue = r => r.state === 'parked' ? '150 55% 38%'\n"
+        "  : r.state === 'running' ? '262 45% 52%'\n"
         "  : r.phase === 'author-sleep' ? '212 55% 46%' : '38 65% 42%';\n"
-        "// kernel phase names, translated for the page: 'in gate' = the\n"
-        "// kernel is measuring a submitted candidate; 'experiments' = the\n"
-        "// author launched its own jobs and sleeps until they finish\n"
-        "const stateName = r => r.state !== 'waiting' ? r.state.replace('-', ' ')\n"
-        "  : r.phase === 'author-sleep' ? 'experiments'\n"
-        "  : r.phase === 'candidate' ? 'in gate' : 'waiting';\n"
+        "const stateName = r => r.state;\n"
         "const render = () => {\n"
         "  if (!strip) return;\n"
         "  now.textContent = '';\n"
@@ -858,7 +853,7 @@ def render_html(
 STATUS_PATH = "climb/status.json"
 # The queue view shows the kernel's own jobs only. Fixed-name jobs (the tick
 # chain, issue sessions, climb sessions) are matched by shape; per-run jobs
-# (wake, followup, launch) are matched against the names the kernel itself
+# (wake, launch) are matched against the names the kernel itself
 # derives from this target's run ids, with the same 60-character cut Slurm
 # forces on them; an eval's name is a liveness hash and is claimed only
 # through its run's marker. Anything else on the account is the operator's
@@ -883,7 +878,7 @@ def run_job_names(
     root: Path, target: str, records: list[RunRecord] | None = None
 ) -> dict[str, tuple[str, str, bool]]:
     """Expected per-run job names for `target`: name -> (run_id, agent,
-    is_prefix). Exact for wake and followup; a prefix for launches, whose
+    is_prefix). Exact for wakes; a prefix for launches, whose
     names end in the experiment's own label. Every run of the target counts,
     ended ones too: a finishing job can outlive its record's state.
 
@@ -897,7 +892,6 @@ def run_job_names(
         rid, agent = record.run_id, record.agent_id
         for name, prefix in (
             (f"wake-{rid}", False),
-            (f"followup-{rid}", False),
             (f"{rid}-launch-", True),
         ):
             key = name[:JOB_NAME_LIMIT]
@@ -956,7 +950,7 @@ def queue_rows(
         run_id = agent = ""
         if job_id in owners:  # an eval of one of this target's live runs
             run_id, agent = owners[job_id]
-        elif name in expected and not expected[name][2]:  # wake / followup, exact
+        elif name in expected and not expected[name][2]:  # wake, exact
             run_id, agent = expected[name][:2]
         elif any(name.startswith(k) for k, v in expected.items() if v[2]):  # a launch
             run_id, agent = next(v[:2] for k, v in expected.items() if v[2] and name.startswith(k))
@@ -983,7 +977,7 @@ def queue_rows(
     return rows
 
 
-_LIVE_STATES = ("implementing", "waiting", "in-review", "concluding")
+_LIVE_STATES = ("running", "parked")
 
 
 def _phrase(text: str, cap: int = 64) -> str:

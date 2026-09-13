@@ -144,7 +144,7 @@ echo "=== tick $(date -Is) on $(hostname -s) job=${SLURM_JOB_ID:-none}"
 #        further down in the harness) ---
 cd "$OUTERLOOP_HOME"
 # The tick keeps OUTERLOOP_PAT_FILE: it reads GitHub (PR states, review
-# comments) and submits follow-up jobs. Agent sessions remain scrubbed by the
+# comments) and delivers the shared wake jobs. Agent sessions remain scrubbed by the
 # harness env allowlist regardless.
 # --no-sync: the deploy step above already synced (or logged its failure);
 # a bare `uv run` would sync AGAIN and, when that fails — a full quota,

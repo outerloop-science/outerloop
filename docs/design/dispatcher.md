@@ -35,7 +35,7 @@ Dispatch is a **syscall on the existing compute seam** — `submit(JobSpec)` +
 an `afterany` wake job, the same two primitives the tick chain already uses,
 zero new kernel concepts. When the orchestrator (or, in phase 2, an author
 session through a tool) needs an experiment run, it submits the job, writes
-the run record into `waiting` with `experiment_job_id` and a deadline, and
+the run record into `parked` with `experiment_job_id` and a deadline, and
 **ends the session**. Results arrive by wake: the afterany job is the
 primary delivery, the tick's waiting-sweep is the backup (both exist; the
 sweep runs dry today). Nothing polls, and no clock runs while a job queues.
@@ -160,7 +160,7 @@ AFTER the session:
 3. The MEASURE-AND-DECIDE phase — a pure function of `(base_sha,
    candidate_sha, contract, seed, suite_seed)` — dispatches its measures
    through the `Measurer`, and on `MeasurementPending` the run parks as
-   `waiting`. It measures LAZILY, in the same order `climb_once` did: first
+   `parked`. It measures LAZILY, in the same order `climb_once` did: first
    baseline@base_sha + candidate@candidate_sha (one wake); only if that pair
    clears the improvement threshold AND the diff touched shared code does it
    dispatch the sibling pairs (a second wake). A non-improving candidate never
@@ -198,7 +198,7 @@ Sub-parts, each its own PR through the panel:
   logic behind a re-enterable function over committed shas; pure, tested
   with a fake measurer.
 - **B.2b:** wire `live_climb` — session -> snapshot -> measure_and_decide;
-  on park write the `waiting` record (base_sha/candidate_sha/`candidate_ref`/
+  on park write the `parked` record (base_sha/candidate_sha/`candidate_ref`/
   seed/stage + `experiment_job_id` = the afterany set) and end. A terminal
   wake `drop_snapshot`s `candidate_ref` (the snapshot outlives every park/wake
   cycle, so the drop is deferred to run end, never mid-cycle). When a revision
@@ -356,8 +356,8 @@ single writer via lease):
 | field | role |
 |---|---|
 | `run_id` `target` `benchmark` `agent_id` `task_title` `issue_number` `pr_url` | identity/topology |
-| `climb_job_id` | the transaction's own job — lets the sweep tell KILLED from crashed; must be re-stamped by any path re-entering `implementing` from a new job |
-| `experiment_job_id` `wake_job_id` `followup_job_id` | Slurm handles for the dispatched work, its afterany wake, and review servicing |
+| `climb_job_id` | the transaction's own job — lets the sweep tell KILLED from crashed; must be re-stamped by any path re-entering `running` from a new job |
+| `experiment_job_id` `wake_job_id` | Slurm handles for the dispatched work and its afterany wake |
 | `resume_session_id` | the harness session a wake reconstructs — the entire "pause" state for a session's mind |
 | `state` `deadline` `terminal_seen` `wake_attempts` | wake bookkeeping; a waiting record REQUIRES a deadline |
 | `stage` (phase 1) | a small object, not a label: the parked measure point PLUS the process-local state re-entry needs — `base_sha`, `candidate_sha` and the candidate snapshot's `candidate_ref` (random, so it MUST be stored — a terminal wake hands it to `drop_snapshot` or the snapshot leaks), the drawn `seed` and `suite_seed` (both random, both stored so the wake re-measures PAIRED), the pre-eval tree fingerprints the drift check compares (today locals; a resumed process without them would fail the drift check closed on every dispatch), and the expected result-file names. The scope/suite `measured_paths` are NOT in here — they are re-derived from the `base_sha..candidate_sha` diff (step 4), not stored |

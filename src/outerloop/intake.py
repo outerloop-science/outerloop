@@ -15,8 +15,8 @@ from dataclasses import dataclass
 
 from outerloop.brief import MAX_TASK_CHARS, cap, code_fence
 from outerloop.contract import Contract
-from outerloop.followup import QUALIFYING_ASSOCIATIONS
 from outerloop.github import is_own_login
+from outerloop.inbox import QUALIFYING_ASSOCIATIONS
 from outerloop.markers import has_label, has_marker, marker
 
 log = logging.getLogger(__name__)

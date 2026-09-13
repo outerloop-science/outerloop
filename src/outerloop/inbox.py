@@ -7,13 +7,18 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import Callable, Sequence
+import uuid
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outerloop.brief import MAX_COMMENT_CHARS, cap, code_fence
+from outerloop.github import GitHubClient, is_own_login
+from outerloop.markers import has_marker
+from outerloop.verifier import VERIFY_MARKER
 
 if TYPE_CHECKING:
     from outerloop.panel import PanelVerdict
@@ -93,29 +98,77 @@ def _keys(run_dir: Path) -> dict[str, Message]:
     return out
 
 
+@contextmanager
+def _inbox_handle(directory: Path) -> Iterator[int]:
+    folder = directory / "inbox"
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _read_at(fd: int, name: str) -> dict:
+    handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    with os.fdopen(handle) as stream:
+        return json.load(stream)
+
+
+def _write_at(fd: int, name: str, payload: dict) -> None:
+    # Refuse a planted destination as well as a planted directory.
+    try:
+        handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    except FileNotFoundError:
+        pass
+    else:
+        os.close(handle)
+    tmp = f".inbox-{uuid.uuid4().hex}"
+    handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    try:
+        with os.fdopen(handle, "w") as stream:
+            json.dump(payload, stream, sort_keys=True, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=fd)
+
+
+def _lock_at(fd: int, name: str) -> int:
+    try:
+        return os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    except FileExistsError:
+        return os.open(name, os.O_WRONLY | os.O_NOFOLLOW, dir_fd=fd)
+
+
 def append(run_dir: Path, message: Message) -> Message:
     """Append atomically; repeated keys keep their first value."""
-    directory = run_dir / "inbox"
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        existing = _keys(run_dir).get(message.key)
-        if existing is not None:
-            return existing
-        seq = max((int(p.stem) for p in _files(run_dir)), default=0) + 1
-        stored = replace(message, seq=seq)
-        data = json.dumps(asdict(stored), sort_keys=True, indent=2)
-        fd, name = tempfile.mkstemp(prefix=".message-", suffix=".tmp", dir=directory)
-        tmp = Path(name)
-        try:
-            with os.fdopen(fd, "w") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(tmp, directory / f"{seq:06d}.json")
-        finally:
-            tmp.unlink(missing_ok=True)
-        return stored
+    with _inbox_handle(run_dir) as fd:
+        handle = _lock_at(fd, ".lock")
+        with os.fdopen(handle, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            entries = sorted(
+                (n for n in os.listdir(fd) if n.endswith(".json") and n[:-5].isdecimal()),
+                key=lambda n: int(n[:-5]),
+            )
+            existing = None
+            for name in entries:
+                try:
+                    stored = Message(**_read_at(fd, name))
+                    if stored.seq != int(name[:-5]):
+                        raise ValueError("invalid inbox sequence")
+                    if stored.key == message.key:
+                        existing = stored
+                except (ValueError, TypeError):
+                    continue
+            if existing is not None:
+                return existing
+            seq = max((int(n[:-5]) for n in entries), default=0) + 1
+            stored = replace(message, seq=seq)
+            _write_at(fd, f"{seq:06d}.json", asdict(stored))
+            return stored
 
 
 def delivered_seq(record: RunRecord) -> int:
@@ -288,3 +341,158 @@ def flush_replies(
                 break
             count += 1
     return count
+
+
+QUALIFYING_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+MAX_CONTEXT_COMMENTS = 3
+MAX_CONTEXT_COMMENT_CHARS = 4_000
+ACTIONS_BOT_LOGIN = "github-actions[bot]"
+
+
+def context_comments(comments: list[dict], since_id: int) -> list[tuple[str, str]]:
+    """(author, body) for NEW machine review rounds — the verifier's,
+    identified by POSTING IDENTITY plus marker. They never trigger a wake
+    and never steer; they ride along as data-fenced CONTEXT so a woken
+    agent can see what a maintainer's one-line 'address the findings'
+    refers to, without a human relaying the text by hand.
+
+    Deliberately NOTHING else qualifies: on a public repo, arbitrary
+    commenters would otherwise get their text injected into a session with
+    push access, guarded only by advisory fencing. A drive-by comment
+    worth the agent's attention is a
+    maintainer's to quote — quoting is the human act that grants standing.
+    """
+    picked: list[tuple[str, str]] = []
+    for comment in comments:
+        cid = comment.get("id")
+        if not isinstance(cid, int) or cid <= since_id:
+            continue
+        author = str((comment.get("user") or {}).get("login", ""))
+        if author.casefold() != ACTIONS_BOT_LOGIN.casefold():
+            continue
+        body = str(comment.get("body") or "")
+        if not any(body.lstrip().startswith(m) for m in (VERIFY_MARKER,)):
+            continue
+        if len(body) > MAX_CONTEXT_COMMENT_CHARS:
+            body = body[:MAX_CONTEXT_COMMENT_CHARS] + "\n…[truncated]"
+        picked.append((author, body))
+    return picked[-MAX_CONTEXT_COMMENTS:]
+
+
+def qualifying_comments(
+    comments: list[dict], bot_login: str, since_id: int
+) -> list[tuple[int, str, str]]:
+    """(id, author, body) for comments that may steer the run."""
+    picked = []
+    for comment in comments:
+        cid = comment.get("id")
+        if not isinstance(cid, int) or cid <= since_id:
+            continue
+        author = str((comment.get("user") or {}).get("login", ""))
+        if is_own_login(author, bot_login):
+            continue
+        body = str(comment.get("body") or "")
+        if not body.strip():
+            continue  # e.g. a review submission with no text
+        if has_marker(body, "followup") or has_marker(body, "advisory-review"):
+            continue
+        if str(comment.get("author_association", "")) not in QUALIFYING_ASSOCIATIONS:
+            continue
+        picked.append((cid, author, body))
+    return picked
+
+
+def github_positions(directory: Path) -> dict[str, int]:
+    try:
+        fd = os.open(directory / "inbox", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {}
+    try:
+        try:
+            return _read_at(fd, "positions.json")
+        except FileNotFoundError:
+            return {}
+    finally:
+        os.close(fd)
+
+
+def advance_github_positions(directory: Path, positions: dict[str, int]) -> None:
+    with _inbox_handle(directory) as fd:
+        handle = _lock_at(fd, ".positions-lock")
+        with os.fdopen(handle, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                current = _read_at(fd, "positions.json")
+            except FileNotFoundError:
+                current = {}
+            for source, value in positions.items():
+                current[source] = max(current.get(source, 0), value)
+            _write_at(fd, "positions.json", current)
+
+
+def gather_github_messages(
+    directory: Path,
+    record: RunRecord,
+    github: GitHubClient,
+    bot_login: str,
+    now: float,
+    pr: dict,
+) -> None:
+    """Persist messages before advancing independent GitHub collections."""
+    number = int(record.pr_url.rstrip("/").split("/")[-1])
+    positions = github_positions(directory)
+    collections = {
+        "comment": github.list_comments(record.target, number),
+        "review": github.list_pr_reviews(record.target, number),
+        "review_comment": github.list_pr_review_comments(record.target, number),
+    }
+    for source, comments in collections.items():
+        since = positions.get(source, 0)
+        messages: dict[int, dict] = {
+            cid: {"author": author, "body": body}
+            for cid, author, body in qualifying_comments(comments, bot_login, since)
+        }
+        if source == "comment":
+            for comment in comments:
+                for author, body in context_comments([comment], since):
+                    messages[comment["id"]] = {"author": author, "body": body, "context_only": True}
+        for cid, payload in sorted(messages.items()):
+            try:
+                stored = append(
+                    directory,
+                    Message(
+                        0,
+                        "comment",
+                        "human",
+                        thread_for(record),
+                        now,
+                        f"{source}:{cid}",
+                        payload,
+                    ),
+                )
+                if stored is None:
+                    break
+            except (OSError, ValueError, TypeError) as exc:
+                log.warning("GitHub inbox append refused for %s:%s: %s", source, cid, exc)
+                break
+            positions[source] = cid
+        advance_github_positions(directory, {source: positions.get(source, since)})
+    base = str((pr.get("base") or {}).get("sha") or "")
+    if base and base != record.stage.get("base_sha"):
+        append(
+            directory,
+            Message(
+                0,
+                "base-moved",
+                "git",
+                thread_for(record),
+                now,
+                f"base:{base}",
+                {"text": f"The PR base moved to {base}.", "base_sha": base},
+            ),
+        )
+    advance_github_positions(directory, positions)
+
+
+def wake_pending(directory: Path, record: RunRecord) -> bool:
+    return any(not m.payload.get("context_only") for m in pending(directory, record.inbox_seq))

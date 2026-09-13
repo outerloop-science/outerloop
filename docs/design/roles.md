@@ -68,7 +68,7 @@ flowchart TD
     PR --> H{human code-owner review}
     V -.->|findings inform| H
     H -->|approve| M["auto-merge executes<br/>ledger + BENCHMARKS.md updated"]
-    H -->|comment| W["follow-up job wakes the<br/>AUTHOR session (resume)"]
+    H -->|comment| W["wake job wakes the<br/>AUTHOR session (resume)"]
     W -->|reply / fixes re-measured| PR
     H -->|close| R1["run ends: rejected + report"]
 ```
@@ -107,7 +107,7 @@ naturally to batches ACROSS rounds instead (successive-halving: broad
 short batch → wake → prune → deep batch), with each pruning decision an
 auditable artifact. One batch in flight per run; concurrent research
 lines = parallel runs, the planner's call. Bounded by cumulative
-gpu_hours_per_run (exhaustion forces a concluding wake), the run
+gpu_hours_per_run (exhaustion is reported at the next wake), the run
 deadline, and the wake-attempt cap.
 
 Division of labor: the **author** designs the experiment; the
@@ -134,7 +134,7 @@ sbatch — budget enforcement is unavoidable), a session blocked on a
 48-hour job would burn money doing nothing, and every request ever made
 is an auditable artifact in the run dir.
 
-Status: the mechanisms are live-verified (waiting state, afterany wake on
+Status: the mechanisms are live-verified (parked state, afterany wake on
 any termination, deadlines, resume across nodes, wake prompts) but the
 launch glue — the request-artifact format and validation, GPU-hour
 accounting, the real wake dispatcher — is pending; it gates the first GPU

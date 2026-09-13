@@ -11,7 +11,7 @@ from outerloop.housekeeping import (
     shed_ended_workspaces,
     shed_workspace,
 )
-from outerloop.runstate import ENDED, WAITING, RunRecord, load_record, run_dir, save_record
+from outerloop.runstate import ENDED, PARKED, RunRecord, load_record, run_dir, save_record
 
 NOW = 2_000_000.0
 
@@ -40,7 +40,7 @@ def test_only_ended_runs_past_the_grace_shed_and_only_the_two_directories(tmp_pa
     root = tmp_path / "state"
     _run(root, "old-ended", ENDED, NOW - DEFAULT_SHED_GRACE_S - 1)
     _run(root, "fresh-ended", ENDED, NOW - 60)
-    _run(root, "live", WAITING, NOW - DEFAULT_SHED_GRACE_S - 1)
+    _run(root, "live", PARKED, NOW - DEFAULT_SHED_GRACE_S - 1)
     shed = shed_ended_workspaces(root, NOW)
     assert shed == ["old-ended"]
     d = run_dir(root, "old-ended")
@@ -64,7 +64,7 @@ def test_a_failing_disk_waives_the_grace_oldest_first_until_the_probe_passes(
     _run(root, "b", ENDED, NOW - 120)
     _run(root, "a", ENDED, NOW - 300)
     _run(root, "c", ENDED, NOW - 30)
-    _run(root, "live", WAITING, NOW - 9000)
+    _run(root, "live", PARKED, NOW - 9000)
     calls = {"n": 0}
 
     def until_ok() -> bool:
