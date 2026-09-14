@@ -215,6 +215,87 @@ each kernel acting as client in one direction and agent in the other. The
 market design (a separate private note) is the first place this would be
 needed; git stays the substrate for everything that is about one repository.
 
+## Decision: an A2A-shaped message model, and coordination inside one kernel
+
+The owner's decision (2026-09-14): the message model becomes more A2A-shaped,
+and this is the same effort as multi-agent author coordination inside one
+kernel, which `lifecycle.md` had parked under "Later" and `scaling.md`
+describes as the planner. This section is the design for both; the
+sequencing at the end is what would be built.
+
+**The envelope.** Today a message is (seq, kind, source, origin, thread,
+arrived, key, payload). The A2A-shaped envelope keeps every one of those
+facts under A2A's names and adds what routing needs:
+
+- `message_id`: today's key, unique per message, reused as A2A's messageId
+  when a message crosses an adapter.
+- `context_id`: what a message is about. Today always the run; with a
+  planner, a benchmark's search line; with sub-agents, the parent run.
+- `task_id`: the task the message belongs to. Today the run; a sub-agent's
+  task is its own id with the parent's as `parent_task_id`.
+- `role`: `user` for the kernel, a human and any client side (the planner
+  when it assigns); `agent` for an author or sub-agent answering.
+- `from` and `to`: the sender and the recipient as kernel identities
+  (a run id, an agent id, `kernel`, a GitHub login). Today's `source` and
+  `origin` become `from`'s category and identity; `to` is new and is what
+  coordination needs. Replies already store their destination when staged;
+  this makes every message do so.
+- `parts`: today's payload as one structured-data part carrying `kind`;
+  text and file parts for what is text and files. `kind` stays the word the
+  renderer switches on, so the renderer does not change.
+- `thread`, `arrived`, `seq`: unchanged (`thread` is the qualified GitHub
+  reference; `seq` is the inbox's own order).
+
+Old inbox files are read as before: missing fields take their defaults
+(`to` = the inbox's own run, `role` from the old `source`), the same way old
+record states are migrated on read. No file is rewritten.
+
+**Routing: the kernel is the hub.** Agents never talk to each other
+directly; a message from one run to another is staged by its author
+(`reply --to <agent>` beside today's `reply`), validated by the kernel like
+every syscall, and appended by the kernel to the recipient's inbox with
+`from` set by the kernel, never by the sender. The sibling view stays a
+derived read of the ledger; a message is for when an author has something
+to say to one sibling. Delivery follows the existing rule: it waits behind
+the recipient's jobs and arrives at its next wake.
+
+**Agent tasks.** A run can ask for an agent the way it asks for a job:
+`launch --agent <role> --brief <file>` stages a task; the kernel runs it as a
+session under the parent's RoleSpec ceiling (`agent-substrate.md` already
+defines the ceiling for subagents), meters it against the parent's budget,
+and delivers its outcome as a `task-result` message with the sub-task's
+report as a file part. Jobs and agent tasks are then the same thing to the
+sleeping author: work the kernel does and reports back. This is also how a
+planner assigns: an assignment is a message from the planner's task into an
+author's inbox, and the author's claim (its hypothesis) is a message back.
+
+**The planner** is a role with its own context per benchmark search line
+(`scaling.md`), woken like any run, whose outputs are assignments to authors
+and whose inputs are their claims, results and the ledger. It holds no
+authority: the gate measures, the panel reads, a human merges, exactly as
+now. Its value is the non-overlap that `#360` asked for and the search
+program `scaling.md` describes.
+
+**Sequencing.**
+
+1. **Envelope.** The new fields with migration on read, the renderer
+   unchanged, every producer setting `from`, `to`, `role`, `context_id`,
+   `task_id`. No behaviour change; the fleet test is that nothing moves.
+2. **Routing.** `reply --to`, kernel-side validation (a recipient must be a
+   live run on the same target), delivery into the recipient's inbox, and
+   the board showing a message's sender. Proves one author can tell a
+   sibling something.
+3. **Agent tasks.** `launch --agent`, the RoleSpec ceiling, metering against
+   the parent, `task-result` messages. Proves a run can delegate a bounded
+   piece of work to a sub-agent and get a report back.
+4. **The planner.** One role using 2 and 3 on one benchmark. Proves
+   non-overlapping directions across the width.
+
+Each stage lands as one PR, reviewed and run on one fleet from its commit,
+as the lifecycle stages were. Stage 1 is mechanical and could start now;
+stages 2 to 4 are the semantic choices, and each should be read by the
+owner before it is built.
+
 ## Criteria instead of approvals
 
 Nothing in code now. The note itself is the deliverable. What would justify
@@ -227,12 +308,9 @@ each later step:
   integration defines the application contract inside A2A's envelope; the
   adapter feeds the inbox; the kernel stays a client and needs no Agent Card
   of its own. Pin the A2A version.
-- **Vocabulary.** When the message envelope next changes for a reason of its
-  own, prefer A2A's names (message id, context id, task id, role, parts) to
-  invented ones. Not a reason to change it now.
-- **Team addressing.** A2A's ids are correlation, not identity or routing.
-  Sub-agent teams still need their own design of who may send to whom, with
-  provenance; that item stays open in `lifecycle.md`.
+- **Vocabulary and addressing.** Decided above: the envelope takes A2A's
+  names, and routing is the kernel's (`from`, `to`), since A2A's ids are
+  correlation, not identity.
 - **The retriever surface.** Decide CLI verb or MCP server on its own merits
   before either is built.
 
