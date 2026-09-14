@@ -3874,6 +3874,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
             assert lease is not None and lease.holder.startswith("tick:")
             self.merged.append((repo, number, method, expected_head))
 
+    caplog.set_level("INFO")
     github = GitHub()
     sweep(
         tmp_path,
@@ -3893,6 +3894,23 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         assert not pending(run_dir(tmp_path, record.run_id), 0)
     if blocked == "methods":
         assert "no allowed merge methods" in caplog.text
+    # a blessed PR that is not merged says why in the tick log
+    waits = {
+        "message": "a message waits for the author",
+        "job": "the run sleeps on jobs",
+        "draft": "the PR is a draft",
+        # a moved head or base is first a MESSAGE to the author (head-moved,
+        # base-moved), so that is the reason the sweep names; only a base that
+        # moves between the sweep's read and the lease is caught as such
+        "head": "a message waits for the author",
+        "unclean": "GitHub says blocked",
+        "base": "a message waits for the author",
+        "base-race": "the base moved",
+        "manual": "the base contract is not auto",
+        "steward": "a steward's PR",
+    }
+    if blocked in waits:
+        assert waits[blocked] in caplog.text
     if blocked in ("", "checks403", "methods"):
         assert read_lease(tmp_path, record.run_id) is None
 

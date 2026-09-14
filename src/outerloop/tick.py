@@ -608,23 +608,33 @@ def _merge_blessed_pr(
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def eligible(record: RunRecord, pr: dict) -> bool:
-        return not (
-            record.state != PARKED
-            or record.agent_id.startswith("steward")
-            or not record.auto_blessed_head
-            or _poll_targets(record)
-            or wake_pending(run_dir(root, record.run_id), record)
-            or pr.get("state") != "open"
-            or pr.get("merged")
-            or pr.get("draft")
-            or pr.get("mergeable_state") != "clean"
-            or str((pr.get("head") or {}).get("sha", "")) != record.auto_blessed_head
-            or (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha")
-            or _base_dial(github, record.target, pr, None) != "auto"
+    def why_not(record: RunRecord, pr: dict) -> str:
+        """Return the first reason this PR cannot be merged now, or "" when it can."""
+        head = str((pr.get("head") or {}).get("sha", ""))
+        checks = (
+            (record.state != PARKED, "the run is not parked"),
+            (record.agent_id.startswith("steward"), "a steward's PR is a human's to merge"),
+            (not record.auto_blessed_head, "no head was blessed at publish"),
+            (bool(_poll_targets(record)), "the run sleeps on jobs"),
+            (wake_pending(run_dir(root, record.run_id), record), "a message waits for the author"),
+            (pr.get("state") != "open" or bool(pr.get("merged")), "the PR is not open"),
+            (bool(pr.get("draft")), "the PR is a draft"),
+            (pr.get("mergeable_state") != "clean", f"GitHub says {pr.get('mergeable_state')}"),
+            (head != record.auto_blessed_head, f"the head {head[:8]} is not the blessed one"),
+            (
+                (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha"),
+                "the base moved",
+            ),
+            (
+                _base_dial(github, record.target, pr, None) != "auto",
+                "the base contract is not auto",
+            ),
         )
+        return next((reason for failed, reason in checks if failed), "")
 
-    if not eligible(record, pr):
+    reason = why_not(record, pr)
+    if reason:
+        log.info("merge of %s#%s waits: %s", record.target, number, reason)
         return
     if not acquire_lease(root, record.run_id, holder, "", now):
         return
@@ -634,7 +644,9 @@ def _merge_blessed_pr(
         # guards only the head)
         record = load_record(root, record.run_id)
         pr = github.get_pull_request(record.target, number)
-        if not eligible(record, pr):
+        reason = why_not(record, pr)
+        if reason:
+            log.info("merge of %s#%s waits: %s", record.target, number, reason)
             return
         methods = github.allowed_merge_methods(record.target)
         if not methods:
