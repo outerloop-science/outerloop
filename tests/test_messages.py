@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from outerloop.attempt import deliver_messages
+from outerloop.attempt import deliver_messages, reply_reference_marker
 from outerloop.github import GitHubClient
 from outerloop.inbox import (
     AUTHOR_PROTOCOL,
@@ -189,17 +189,19 @@ def test_fifth_unread_message_refused_then_delivery_resumes(tmp_path):
     assert len(pending(other, 0)) == 5
 
 
+@pytest.mark.parametrize("destination", ["agent-02", "thread"])
 @pytest.mark.parametrize("damage", [False, True])
-def test_missing_or_damaged_reference_refuses_message(tmp_path, damage):
+def test_missing_or_damaged_reference_refuses_message(tmp_path, damage, destination):
     sender, recipient = runs(tmp_path)
     own = tmp_path / "runs" / sender.run_id
     if damage:
         (own / "inbox").mkdir()
         (own / "inbox" / "000001.json").write_text("{}")
-    send(tmp_path, sender, outgoing("agent-02", reply_to=1))
+    send(tmp_path, sender, outgoing(destination, reply_to=1))
     notes = pending(own, 1 if damage else 0)
     assert "missing or damaged" in notes[0].payload["text"]
     assert pending(tmp_path / "runs" / recipient.run_id, 0) == []
+    assert not list((own / "outbox").glob("*.json"))
 
 
 def test_snapshot_chain_and_bounds(tmp_path, capsys):
@@ -353,9 +355,46 @@ def test_public_failure_keeps_whole_batch(tmp_path):
     )
     staged = [json.loads(p.read_text()) for p in sorted((own / "outbox").glob("*.json"))]
     assert staged == [
-        {"text": "one", "thread": "org/repo#17"},
-        {"text": "two", "thread": "org/repo#17"},
+        {"text": "one", "thread": "org/repo#17", "in_reply_to": ""},
+        {"text": "two", "thread": "org/repo#17", "in_reply_to": ""},
     ]
+
+
+def test_public_reply_carries_the_referenced_message_id(tmp_path):
+    class GitHub:
+        def __init__(self):
+            self.posted = []
+
+        def list_comments(self, *args):
+            return []
+
+        def comment(self, target, number, body):
+            self.posted.append(body)
+
+    sender, _ = runs(tmp_path)
+    sender = replace(sender, issue_number=17)
+    own = tmp_path / "runs" / sender.run_id
+    question = append(
+        own,
+        Message(
+            0, "comment", "human", "org/repo#17", 1, "comment:555", {"body": "why?"}, origin="a"
+        ),
+    )
+    hostile = append(own, Message(0, "note", "kernel", "", 2, "k:a --> <b> sk-x", {"text": "n"}))
+    github = GitHub()
+    send_to = cast(GitHubClient, github)
+    messages = (outgoing(text="because", reply_to=1), outgoing(text="also"), outgoing(reply_to=2))
+    assert deliver_messages(sender, send_to, messages, ("sk-x",), own) == 3
+    staged = [json.loads(p.read_text()) for p in sorted((own / "outbox").glob("*.posted"))]
+    assert [s["in_reply_to"] for s in staged] == [question.message_id, "", hostile.message_id]
+    first, second, third = (body.splitlines() for body in github.posted)
+    assert first[2] == reply_reference_marker(question.message_id) and first[-1] == "because"
+    assert first[2] == f"<!-- outerloop:in-reply-to {question.message_id} -->"
+    assert not any("in-reply-to" in line for line in second) and second[-1] == "also"
+    # the id is redacted and encoded, so it neither leaks nor ends the comment early
+    encoded = "run-agent-01/k:a%20--%3E%20%3Cb%3E%20%5Bredacted%5D"
+    assert third[2] == f"<!-- outerloop:in-reply-to {encoded} -->"
+    assert "sk-x" not in "\n".join(third) and third[2].count("-->") == 1
 
 
 def test_valid_message_boundaries(tmp_path):
@@ -558,8 +597,8 @@ def test_public_staging_crash_replays_whole_journal(tmp_path, monkeypatch):
     own = tmp_path / "runs" / sender.run_id
     original = inbox.stage_replies
 
-    def crash(directory, replies, thread, *, ids=None):
-        original(directory, replies[:1], thread, ids=ids[:1])
+    def crash(directory, replies, thread, *, ids=None, references=None):
+        original(directory, replies[:1], thread, ids=ids[:1], references=references[:1])
         raise OSError("interrupted staging")
 
     monkeypatch.setattr(inbox, "stage_replies", crash)

@@ -283,15 +283,15 @@ def test_outbox_retries_in_order(tmp_path, caplog):
             raise RuntimeError("GitHub unavailable")
         posted.append(reply)
 
-    assert flush_replies(tmp_path, lambda r, _id, thread: flaky_post(r)) == 1
+    assert flush_replies(tmp_path, lambda r, _id, thread, _ref: flaky_post(r)) == 1
     assert "GitHub unavailable" in caplog.text
     assert (tmp_path / "outbox/000001.posted").exists()
     assert (tmp_path / "outbox/000002.json").exists()
     assert (tmp_path / "outbox/000003.json").exists()
-    assert flush_replies(tmp_path, lambda r, _id, thread: posted.append(r)) == 2
-    assert flush_replies(tmp_path, lambda r, _id, thread: posted.append(r)) == 0
+    assert flush_replies(tmp_path, lambda r, _id, thread, _ref: posted.append(r)) == 2
+    assert flush_replies(tmp_path, lambda r, _id, thread, _ref: posted.append(r)) == 0
     stage_replies(tmp_path, ("fourth",), "org/repo#3")
-    assert flush_replies(tmp_path, lambda r, _id, thread: posted.append(r)) == 1
+    assert flush_replies(tmp_path, lambda r, _id, thread, _ref: posted.append(r)) == 1
     assert posted == ["first", "second", "third", "fourth"]
 
 
@@ -308,7 +308,7 @@ def test_a_reply_the_thread_already_carries_is_not_posted_again(tmp_path):
     assert (
         flush_replies(
             tmp_path,
-            lambda r, rid, thread: posted.append((r, rid)),
+            lambda r, rid, thread, _ref: posted.append((r, rid)),
             lambda rid, thread: rid in already,
         )
         == 2
@@ -437,6 +437,7 @@ def test_reply_destination_survives_thread_change_and_legacy_entry(tmp_path):
     assert json.loads((tmp_path / "outbox/000001.json").read_text()) == {
         "text": "saved",
         "thread": "other/repo#7",
+        "in_reply_to": "",
     }
     (tmp_path / "outbox/000002.json").write_text(json.dumps("legacy"))
     record = replace(record, pr_url="https://github.com/org/repo/pull/9")

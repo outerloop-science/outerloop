@@ -27,6 +27,7 @@ from dataclasses import replace as dc_replace
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 
 from outerloop.appauth import add_credential_args, resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
@@ -816,6 +817,12 @@ def reply_id_marker(rid: str) -> str:
     return f"<!-- outerloop:reply-id {rid} -->"
 
 
+def reply_reference_marker(message_id: str) -> str:
+    """The hidden line naming the message a public reply answers; the id is
+    percent-encoded so no id can end the comment early."""
+    return f"<!-- outerloop:in-reply-to {quote(message_id, safe='/:@+')} -->"
+
+
 def acknowledge_messages(run_root: Path, run_id: str, seq: int) -> RunRecord:
     """Advance the cursor under the same lock as sibling backlog checks."""
     from outerloop.inbox import _inbox_handle, _lock_at
@@ -842,10 +849,13 @@ def deliver_messages(
     from outerloop.inbox import flush_replies, stage_replies
     from outerloop.review import APPROVAL_PATTERN, REDACTED
 
-    def post(reply: str, rid: str, thread: str) -> None:
+    def post(reply: str, rid: str, thread: str, in_reply_to: str) -> None:
         target, number = thread.rsplit("#", 1)
         body = APPROVAL_PATTERN.sub(REDACTED, redact(reply, secrets))[:MAX_REPLY_CHARS]
-        github.comment(target, int(number), f"{REPLY_MARKER}\n{reply_id_marker(rid)}\n{body}")
+        lines = [REPLY_MARKER, reply_id_marker(rid)]
+        if in_reply_to:
+            lines.append(reply_reference_marker(redact(in_reply_to, secrets)))
+        github.comment(target, int(number), "\n".join([*lines, body]))
 
     def seen(rid: str, thread: str) -> bool:
         target, number = thread.rsplit("#", 1)
@@ -933,6 +943,7 @@ def deliver_messages(
                     refuse(index, f"inbox message #{n} is missing or damaged")
                     continue
             if destination == "thread":
+                entry["in_reply_to"] = reference
                 continue
             recipient: RunRecord | None
             if destination == "self" or destination == record.agent_id:
@@ -977,6 +988,7 @@ def deliver_messages(
             [e["item"]["text"] for e in public],
             thread_for(record),
             ids=[f"message-{e['counter']:020d}" for e in public],
+            references=[str(e.get("in_reply_to", "")) for e in public],
         )
         for index, entry in enumerate(journal, 1):
             if entry.get("delivered"):

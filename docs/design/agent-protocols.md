@@ -291,7 +291,8 @@ referenced message id. The limits are eight messages per leg and four
 undelivered messages from one sender to one recipient. Refusals produce a
 kernel note naming the refused message. Runs in review receive mail behind
 their jobs under the existing wake rule. Public delivery retains redaction,
-durable staging and reply-id marker deduplication.
+durable staging and reply-id marker deduplication; a public reply also
+carries the referenced message id in a marker.
 
 **Sub-agents: not a tier, for now.** A kernel-level agent task (`launch
 --agent`: one session under the parent's ceiling, on a sealed snapshot,

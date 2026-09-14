@@ -441,9 +441,15 @@ def panel_payload(verdict: PanelVerdict, head: str) -> dict:
 
 
 def stage_replies(
-    run_dir: Path, replies: Sequence[str], thread: str, *, ids: Sequence[str] | None = None
+    run_dir: Path,
+    replies: Sequence[str],
+    thread: str,
+    *,
+    ids: Sequence[str] | None = None,
+    references: Sequence[str] | None = None,
 ) -> None:
-    """Keep replies durably before attempting any network writes."""
+    """Keep replies durably, each with the message id it answers, before
+    attempting any network writes."""
     directory = run_dir / "outbox"
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / ".lock").open("a") as lock:
@@ -459,7 +465,8 @@ def stage_replies(
             tmp = Path(name)
             try:
                 with os.fdopen(fd, "w") as stream:
-                    json.dump({"text": reply, "thread": thread}, stream)
+                    reference = references[index] if references is not None else ""
+                    json.dump({"text": reply, "thread": thread, "in_reply_to": reference}, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(tmp, destination)
@@ -474,7 +481,7 @@ def reply_id(run_dir: Path, path: Path) -> str:
 
 def flush_replies(
     run_dir: Path,
-    post: Callable[[str, str, str], None],
+    post: Callable[[str, str, str, str], None],
     seen: Callable[[str, str], bool] = lambda _id, _thread: False,
     thread: str = "",
     through: str = "",
@@ -482,7 +489,9 @@ def flush_replies(
     """Post in order, retaining the failed reply and everything after it. A
     reply the thread already carries (a crash between the post and the
     rename) is marked posted without posting again: `seen` answers from the
-    thread, `post` writes the id into what it posts."""
+    thread, `post` writes the id into what it posts. `post` receives the text,
+    the reply id, the thread and the referenced message id (empty when the
+    reply answers nothing)."""
     directory = run_dir / "outbox"
     if not directory.exists():
         return 0
@@ -496,8 +505,10 @@ def flush_replies(
             try:
                 reply = json.loads(path.read_text())
                 reply = {"text": reply, "thread": thread} if isinstance(reply, str) else reply
+                if isinstance(reply, dict):
+                    reply.setdefault("in_reply_to", "")  # staged before references existed
                 if not isinstance(reply, dict) or not all(
-                    isinstance(reply.get(k), str) for k in ("text", "thread")
+                    isinstance(reply.get(k), str) for k in ("text", "thread", "in_reply_to")
                 ):
                     raise ValueError("invalid reply")
                 reply["thread"] = reply["thread"] or thread
@@ -505,7 +516,7 @@ def flush_replies(
                     log.info("outbox reply %s held until the run has a thread", path)
                     return count
                 if not seen(rid, reply["thread"]):
-                    post(reply["text"], rid, reply["thread"])
+                    post(reply["text"], rid, reply["thread"], reply["in_reply_to"])
                 path.rename(path.with_suffix(".posted"))
             except Exception as exc:
                 log.warning("cannot post outbox reply %s; delivery stops there: %s", path, exc)
