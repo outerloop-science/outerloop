@@ -527,12 +527,57 @@ def test_zero_gpus_preserves_environment(gpu_root, monkeypatch, requested):
     assert LocalCompute().queue_snapshot() == []
 
 
+@pytest.mark.parametrize("array", ["", "0-1%1"])
 @pytest.mark.parametrize("command, state", [("exit 3", "FAILED"), ("sleep 10", "TIMEOUT")])
-def test_gpu_release_on_terminal_state(gpu_root, command, state):
+def test_gpu_release_on_terminal_state(gpu_root, command, state, array):
     lc = LocalCompute(minute_s=1)
-    job = lc.submit(replace(_spec(command=command), gpus=2))
+    job = lc.submit(replace(_spec(command=command), gpus=2, array=array))
     assert lc.status(job) == state
     assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
+
+
+@pytest.mark.parametrize("disappears", [True, False])
+def test_gpu_terminal_release_waits_for_group(gpu_root, monkeypatch, disappears):
+    lc = LocalCompute()
+    with lc._pool() as pool:
+        for index in ("0", "1"):
+            pool["holders"][index] = {
+                "id": "999",
+                "pgid": 123,
+                "name": "escaped",
+                "start_time": "",
+            }
+    lc._record(_spec(command="true"), "999", "TIMEOUT", "")
+    elapsed = 0.0
+    probes = 0
+
+    def probe(pgid, sig):
+        nonlocal probes
+        assert (pgid, sig) == (123, 0)
+        probes += 1
+        if disappears and elapsed >= 0.1:
+            raise ProcessLookupError
+
+    def advance(seconds):
+        nonlocal elapsed
+        assert 0 < seconds <= 0.05
+        # Another owner can access the pool while this one waits.
+        with LocalCompute()._pool() as pool:
+            assert len(pool["holders"]) == 2
+        elapsed += seconds
+
+    monkeypatch.setattr(os, "killpg", probe)
+    monkeypatch.setattr("outerloop.compute.time.monotonic", lambda: elapsed)
+    monkeypatch.setattr("outerloop.compute.time.sleep", advance)
+    lc._release("999")
+    assert lc.status("999") == "TIMEOUT"
+    assert probes >= 3
+    assert elapsed == pytest.approx(0.1 if disappears else 2)
+    assert len(_read_pool(gpu_root)["holders"]) == (0 if disappears else 2)
+    if not disappears:
+        disappears = True
+        lc._release("999")
+        assert _read_pool(gpu_root) == {"holders": {}, "queue": []}
 
 
 def test_gpu_release_on_start_failure(gpu_root, monkeypatch):

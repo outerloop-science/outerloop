@@ -26,6 +26,8 @@ tasks to finish.
 
 ### Fixed
 
+- A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
+
 - The tick log says why a blessed PR is not merged yet (a message waits for the author, the run sleeps on jobs, the base moved, and so on), one line per sweep.
 - Runs retain their hypothesis through review. The status strip and sibling view carry it with the PR link, and the brief asks authors to check the view, refreshed at every wake, before choosing a direction and before submitting.
 
