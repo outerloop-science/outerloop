@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from outerloop.contract import CONTRACT_NAMES, find_contract
+from outerloop.contract import CONTRACT_NAME, find_contract
 from outerloop.markers import legacy_marker, marker
 
 
@@ -1537,10 +1537,9 @@ class Workspace:
 
 
 def contract_at(ws: Any, sha: str) -> str:
-    """The target's contract text at `sha` — `.outerloop.yaml`, else the legacy
-    `.autoresearch.yaml`. `ws` is a Workspace (anything with `.git(*args)`); a
-    missing path is a git failure, which is the fallback signal. Raises GitError
-    when the commit has neither, naming both candidates."""
+    """The target's `.outerloop.yaml` at `sha` via Workspace.git.
+
+    Raises GitError naming the contract when it is absent."""
 
     def read(name: str) -> str | None:
         try:
@@ -1550,5 +1549,5 @@ def contract_at(ws: Any, sha: str) -> str:
 
     found = find_contract(read)
     if found is None:
-        raise GitError(f"no contract at {sha} ({' or '.join(CONTRACT_NAMES)})")
+        raise GitError(f"no contract at {sha} ({CONTRACT_NAME})")
     return found[1]

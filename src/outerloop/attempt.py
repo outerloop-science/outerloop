@@ -131,10 +131,8 @@ log = logging.getLogger(__name__)
 # tick preflights the panel key (and compares it against the author key —
 # role separation) before claiming/submitting.
 PANEL_KEY_DEFAULT = str(CONFIG_DIR / "verifier_key")
-# One rule for author keys: ~/.config/outerloop/<backend>_key. `harness_key` is
-# the pre-rename name of the claude key; it is still read, never written.
+# Author keys live at ~/.config/outerloop/<backend>_key.
 CLAUDE_KEY_DEFAULT = str(CONFIG_DIR / "claude_key")
-HARNESS_KEY_DEFAULT = str(CONFIG_DIR / "harness_key")  # legacy claude key
 CODEX_KEY_DEFAULT = str(CONFIG_DIR / "codex_key")
 
 
@@ -143,28 +141,14 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     codex's both on disk), selected by backend — so the author backend is a
     config choice, not a key swap, and an in-flight run of either backend can
     still be woken/serviced after a fleet flip. An explicit path always wins;
-    otherwise the per-backend env var, then the default path. For claude the
-    legacy spellings (`AUTORESEARCH_HARNESS_KEY_FILE`, read through its bridged
-    `OUTERLOOP_` twin, and `harness_key`) are still
-    honored, so a machine set up before the rename keeps working; the new name
-    wins when both exist. The result is always ~-expanded, so every caller gets
-    a real path (an env value like "~/.config/..." must not reach the token
-    provider verbatim)."""
+    otherwise the per-backend env var, then the default path. The result is
+    always ~-expanded, so every caller gets a real path (an env value like
+    "~/.config/..." must not reach the token provider verbatim)."""
     if not explicit:
         if backend == "codex":
             explicit = os.environ.get("OUTERLOOP_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
         else:
-            explicit = (
-                os.environ.get("OUTERLOOP_CLAUDE_KEY_FILE")
-                or os.environ.get("OUTERLOOP_HARNESS_KEY_FILE")
-                or ""
-            )
-            if not explicit:
-                explicit = CLAUDE_KEY_DEFAULT
-                if not os.path.exists(os.path.expanduser(explicit)) and os.path.exists(
-                    os.path.expanduser(HARNESS_KEY_DEFAULT)
-                ):
-                    explicit = HARNESS_KEY_DEFAULT
+            explicit = os.environ.get("OUTERLOOP_CLAUDE_KEY_FILE") or CLAUDE_KEY_DEFAULT
     return os.path.expanduser(explicit)
 
 
@@ -4076,7 +4060,7 @@ def live_attempt(
 
         # `author_syscalls` already folds every enablement condition — dispatch
         # coords, a resumable backend, the benchmark's opt-out, and the
-        # channel-ownership guard above (a target-shipped `.autoresearch` —
+        # channel-ownership guard above (a target-shipped `.outerloop` —
         # symlink, tracked request, or any other pre-existing form — has
         # disabled the feature for this run).
         launcher = None

@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from outerloop.style import PLAIN_STYLE
 
 # The syscall channel dir named in the author brief. Must equal
-# syscall.CHANNEL_DIR_NAMES[0]; a fresh run (the only kind render() serves) always
+# syscall.SYSCALL_DIR; a fresh run (the only kind render() serves) always
 # installs the new default channel. Asserted in test_channel_dir.
 _CHANNEL = ".outerloop"
 

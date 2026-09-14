@@ -1210,7 +1210,7 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
         job("777", "eval-speedrun-2-cand-ab12", "RUNNING", "0:10", "gpu"),
         job("778", "speedrun-20260905-063328-agent-01-launch-sweep", "PENDING", "0:00", "gpu"),
         job("779", "my-own-notebook", "RUNNING", "5:00", "cpu"),
-        job("780", "autoresearch-resident", "RUNNING", "4:00:00", "cpu"),
+        job("780", "outerloop-resident", "RUNNING", "4:00:00", "cpu"),
         job("781", "eval-my-model-please-ignore", "RUNNING", "0:01", "gpu"),  # the operator's
         job("782", "rocket-launch-sim", "RUNNING", "0:01", "cpu"),  # -launch- alone is nobody's
         job("783", f"wake-{long_id}"[:60], "PENDING", "0:00", "cpu"),  # cut as the kernel cuts

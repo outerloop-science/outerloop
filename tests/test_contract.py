@@ -9,7 +9,7 @@ from outerloop.contract import (
     load_contract,
 )
 
-# Mirror of autoresearch-pilot/.autoresearch.yaml (abridged) — the first real contract.
+# An abridged benchmark contract.
 PILOT_CONTRACT = """
 benchmarks:
   - name: tsp
@@ -73,14 +73,13 @@ def test_forbidden_paths_include_roadmap() -> None:
     assert set(forbidden_paths(contract)) == {
         ".github",
         ".outerloop.yaml",
-        ".autoresearch.yaml",
         "README.md",
     }
 
 
 @pytest.mark.parametrize(
     "allowed",
-    [".github/workflows/", ".autoresearch.yaml", "README.md", ".", "./"],
+    [".github/workflows/", ".outerloop.yaml", "README.md", ".", "./"],
 )
 def test_scope_overlap_refused(allowed: str) -> None:
     text = PILOT_CONTRACT.replace("allowed: [src/pilot/solvers/]", f"allowed: ['{allowed}']")

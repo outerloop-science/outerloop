@@ -144,7 +144,7 @@ def review_run(tmp_path: Path, monkeypatch):
     seed = tmp_path / "seed"
     (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
     (seed / "docs").mkdir()
-    (seed / ".autoresearch.yaml").write_text(CONTRACT)
+    (seed / ".outerloop.yaml").write_text(CONTRACT)
     (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
     (seed / "src" / "pilot" / "solvers" / "tsp.py").write_text("v1\n")
     _git(seed, "init", "-q", "-b", "main")
@@ -499,7 +499,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
         CONTRACT.replace("    direction: min\n", "    direction: min\n    min_delta: 0.5\n")
         + "merge: auto\n"
     )
-    (ws / ".autoresearch.yaml").write_text(contract_text)
+    (ws / ".outerloop.yaml").write_text(contract_text)
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract")
     base = _git(ws, "rev-parse", "HEAD").strip()
@@ -684,7 +684,7 @@ def test_publish_refusal_is_a_message(review_run, monkeypatch, reason):
         _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
     if reason == "contract":
         _git(ws, "checkout", "-f", "-B", "main", base)
-        (ws / ".autoresearch.yaml").write_text(CONTRACT.replace("mean_tour_length", "new_metric"))
+        (ws / ".outerloop.yaml").write_text(CONTRACT.replace("mean_tour_length", "new_metric"))
         _git(ws, "add", "-A")
         _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new ruler")
         _git(ws, "push", "origin", "main")
@@ -804,7 +804,7 @@ def test_review_submit_parks_and_delivers_verdict(
         "    direction: min\n",
         f"    direction: min\n    gpus: {gpus}\n    eval_minutes: 30\n    seed_env: PRIVATE_SEED\n",
     )
-    (ws / ".autoresearch.yaml").write_text(text)
+    (ws / ".outerloop.yaml").write_text(text)
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "meter")
     _git(ws, "push", "origin", "HEAD:main")
@@ -973,7 +973,7 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
     head = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
     _git(ws, "checkout", "-B", "advance", old_base)
-    (ws / ".autoresearch.yaml").write_text(CONTRACT.replace("mean_tour_length", "fresh_metric"))
+    (ws / ".outerloop.yaml").write_text(CONTRACT.replace("mean_tour_length", "fresh_metric"))
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fresh base")
     base = _git(ws, "rev-parse", "HEAD").strip()
@@ -1071,7 +1071,7 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
 
     root, bare = review_run
     ws = run_dir(root, "tsp-r1") / "ws"
-    (ws / ".autoresearch.yaml").write_text(CONTRACT + "merge: auto\n")
+    (ws / ".outerloop.yaml").write_text(CONTRACT + "merge: auto\n")
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "auto")
     _git(ws, "push", "origin", "HEAD:main")

@@ -263,13 +263,6 @@ def load_record(root: Path, run_id: str) -> RunRecord:
         "in-review": PARKED,
         "concluding": PARKED,
     }.get(old_state, old_state)
-    # Back-compat: a record written by pre-rename code carries `climb_job_id`
-    # for what is now `run_job_id`. Map it on load so an in-flight run started
-    # before the rename still wakes/ends correctly (the deploy is atomic, but
-    # its already-parked records are not). Only when the new key is absent, so
-    # a genuine new record always wins.
-    if "climb_job_id" in raw and "run_job_id" not in raw:
-        raw["run_job_id"] = raw["climb_job_id"]
     # Unknown fields must not blind an older kernel to a live run.
     known = {k: v for k, v in raw.items() if k in RunRecord.__dataclass_fields__}
     record = RunRecord(**known)

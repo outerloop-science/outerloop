@@ -69,7 +69,7 @@ def _env(home: Path, root: Path, bindir: Path, **extra: str) -> dict[str, str]:
         "OUTERLOOP_ROOT": str(root),
         "OUTERLOOP_ACCOUNT": "acct",
         "OUTERLOOP_PARTITION": "cpu_short",
-        "HOME": str(home),  # no ~/.config/autoresearch/.env
+        "HOME": str(home),
     }
     env.pop("OUTERLOOP_PAT_FILE", None)
     env.pop("OUTERLOOP_RESIDENT", None)
@@ -139,10 +139,9 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
 
 def test_per_cadence_chain_drains_when_a_resident_exists(tmp_path: Path) -> None:
     home, root, bindir, shimlog = _install(tmp_path)
-    # squeue reports a resident job of ours (a pre-rename one: the drain check
-    # asks for both names)
+    # squeue reports a resident job of ours.
     (bindir / "squeue").write_text(
-        '#!/bin/sh\ncase "$*" in *autoresearch-resident*) echo "777";; esac\nexit 0\n'
+        '#!/bin/sh\ncase "$*" in *outerloop-resident*) echo "777";; esac\nexit 0\n'
     )
     proc = _run_chain(home, _env(home, root, bindir))
     assert proc.returncode == 0, proc.stderr
@@ -556,7 +555,6 @@ exit 0
     }
     for k in (
         "OUTERLOOP_AUTO_UPDATE",
-        "AUTORESEARCH_AUTO_UPDATE",
         "OUTERLOOP_PAT_FILE",
         "UV_PROJECT_ENVIRONMENT",
     ):
@@ -634,7 +632,7 @@ def test_main_policy_follows_main_and_authenticates_with_the_pat(tmp_path: Path)
 
 
 def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
-    """The .env line is read before the fetch, in either spelling; an explicit
+    """The .env line is read before the fetch, and an explicit
     `off` there switches off an inherited `main`."""
     proc, gitlog = _deploy(
         tmp_path, env_file="OUTERLOOP_AUTO_UPDATE=off\n", OUTERLOOP_AUTO_UPDATE="main"
@@ -642,10 +640,19 @@ def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "fetch" not in gitlog
     proc, gitlog = _deploy(
-        tmp_path / "b", tags="v0.1.0", env_file="AUTORESEARCH_AUTO_UPDATE=release\n"
+        tmp_path / "b", tags="v0.1.0", env_file="OUTERLOOP_AUTO_UPDATE=release\n"
     )
     assert "ls-remote --tags --refs" in gitlog
     assert "reset --hard --quiet refs/tags/v0.1.0" in gitlog
+    # the pre-rename spelling is read neither from the file nor the environment
+    proc, gitlog = _deploy(
+        tmp_path / "c",
+        tags="v0.1.0",
+        env_file="AUTORESEARCH_AUTO_UPDATE=release\n",
+        AUTORESEARCH_AUTO_UPDATE="main",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog and "ls-remote" not in gitlog
 
 
 def test_an_unknown_policy_is_off_and_says_so(tmp_path: Path) -> None:

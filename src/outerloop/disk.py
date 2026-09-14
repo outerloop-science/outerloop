@@ -79,7 +79,7 @@ def probe_writable(path: Path) -> tuple[bool, str]:
         path.mkdir(parents=True, exist_ok=True)
         fd, probe = tempfile.mkstemp(dir=path, prefix=f"{PROBE_NAME}.")
         try:
-            payload = b"autoresearch disk probe\n" * 32
+            payload = b"outerloop disk probe\n" * 32
             written = 0
             while written < len(payload):
                 count = os.write(fd, payload[written:])

@@ -49,7 +49,8 @@ def env_file(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
 def test_env_file_values_reads_only_start_keys_last_wins_and_unquotes(tmp_path: Path) -> None:
     path = env_file(
         tmp_path,
-        "# comment\nAUTORESEARCH_ROOT=/old\nOUTERLOOP_ROOT='/scratch/me/ar'\r\n"
+        "# comment\nAUTORESEARCH_PARTITION=old\nOUTERLOOP_ROOT=/first\n"
+        "OUTERLOOP_ROOT='/scratch/me/ar'\r\n"
         'OUTERLOOP_ACCOUNT="acct"\nOUTERLOOP_PANEL=\nOTHER=x\n'
         "OUTERLOOP_CADENCE_MIN = 20\n",
     )
@@ -111,24 +112,20 @@ def plan(tmp_path: Path, **kw: Any) -> StartPlan:
     return plan_start(**args)
 
 
-def test_default_local_root_honors_a_pre_rename_state_dir(tmp_path: Path) -> None:
-    """~/.outerloop is the default; an existing ~/.autoresearch is used only while
-    no ~/.outerloop exists (state is never moved); no HOME means the plain
-    default."""
+def test_default_local_root(tmp_path: Path) -> None:
+    """The root uses HOME when supplied and the plain default otherwise."""
     from outerloop.cli import default_local_root
 
     env = {"HOME": str(tmp_path)}
+    (tmp_path / ".autoresearch").mkdir()  # an old root is not looked for
     assert default_local_root(env) == tmp_path / ".outerloop"
-    (tmp_path / ".autoresearch").mkdir()
-    assert default_local_root(env) == tmp_path / ".autoresearch"
     (tmp_path / ".outerloop").mkdir()
     assert default_local_root(env) == tmp_path / ".outerloop"
     assert default_local_root({}) == DEFAULT_LOCAL_ROOT
 
 
-def test_resident_lookup_asks_for_both_names(monkeypatch: Any) -> None:
-    """A resident submitted before the rename must still block `start`: the
-    singleton serializes by name, so two names would mean two residents."""
+def test_resident_lookup_asks_for_resident_name(monkeypatch: Any) -> None:
+    """A queued resident blocks another submission."""
     import subprocess
 
     from outerloop import cli as cli_mod
@@ -141,29 +138,17 @@ def test_resident_lookup_asks_for_both_names(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
     assert cli_mod._resident_jobs() == ["777", "900"]
-    assert "--name=outerloop-resident,autoresearch-resident" in seen[0]
+    assert "--name=outerloop-resident" in seen[0]
 
 
-def test_default_image_falls_back_only_to_a_usable_legacy_file(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    """The pre-rename image is used while the new path is not a FILE (absent, or
-    a stray directory); a real new image always wins."""
+def test_default_image_path(monkeypatch: Any, tmp_path: Path) -> None:
     from outerloop.tick import _default_image
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    new = tmp_path / "outerloop-images" / "agent-py312.sif"
     old = tmp_path / "autoresearch-images" / "agent-py312.sif"
-    assert _default_image() == str(new)  # neither exists: the new default
     old.parent.mkdir()
-    old.write_text("")
-    assert _default_image() == str(old)
-    new.parent.mkdir()
-    new.mkdir()  # a directory at the new path is not an image
-    assert _default_image() == str(old)
-    new.rmdir()
-    new.write_text("")
-    assert _default_image() == str(new)
+    old.write_text("")  # an old image dir is not looked for
+    assert _default_image() == str(tmp_path / "outerloop-images" / "agent-py312.sif")
 
 
 def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
