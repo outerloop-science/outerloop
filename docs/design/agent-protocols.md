@@ -11,8 +11,10 @@ author already do, closely enough to sketch a mapping but not closely enough
 to call our design a profile of it. Its transport (JSON-RPC over HTTP) does
 not fit Slurm, where nothing serves HTTP and messages are files. The
 position this note proposes: the durable per-run inbox stays the one message
-store; an A2A adapter that feeds it is a candidate for the first agent that
-lives as a service, and it earns its place by that integration, not before.
+store; an A2A adapter that feeds it is a candidate for the first
+service-shaped agent (one that runs as a service, with an endpoint of its
+own, rather than as a batch job the kernel starts), and it earns its place
+by that integration, not before.
 MCP is settled for the agent-to-tool layer; where it fits here depends on a
 retriever decision two existing notes disagree on. Nothing needs building
 today.
@@ -133,8 +135,11 @@ is not a store; it is an execution interface. So the honest shape is:
   and append what comes back as inbox messages; answer the agent's
   input-required by running the kernel's own steps and sending the next
   message. Streaming and webhooks are optional in A2A and unnecessary for
-  wake-based delivery. A2A does not require send deduplication; the adapter
-  gets it from the inbox's key rule.
+  wake-based delivery. Inbound deduplication comes from the inbox's key
+  rule. Outbound sends need their own care: a crash between a send and the
+  record of its task id would resend and start duplicate remote work, so the
+  adapter writes a send record (our message id, reused as A2A's message id)
+  before it sends, and a retry re-reads it.
 - **Slurm and local compute keep the file channel** with no adapter at all.
   Nothing serves HTTP there and nothing needs to.
 
