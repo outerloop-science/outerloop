@@ -354,8 +354,8 @@ permissions are accepted.
 
 A Slurm deployment coming from 0.1 whose resident or chain still runs under a
 pre-rename job name cancels it first (`scancel --name autoresearch-resident`,
-or `autoresearch-tick` for the per-cadence chain) and then runs `outerloop
-start`. `start` and the chain refuse a second loop on one root only under the
+or `scancel --name autoresearch-tick` for the per-cadence chain) and then runs
+`outerloop start`. `start` and the chain refuse a second loop on one root only under the
 current name, `outerloop-resident`.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
