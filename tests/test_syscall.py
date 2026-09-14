@@ -439,7 +439,7 @@ def test_read_verdict_size_caps_a_giant_verdict(tmp_path: Path) -> None:
 
 
 def test_install_tool_refuses_a_symlinked_channel(tmp_path: Path) -> None:
-    # a judge's checkout is author-authored: a .autoresearch symlink to a host
+    # a judge's checkout is author-authored: a .outerloop symlink to a host
     # dir must not let install write through it.
     escape = tmp_path / "ESCAPE"
     escape.mkdir()
@@ -506,7 +506,7 @@ def test_gather_results_reads_output_and_delivers_artifacts(tmp_path) -> None:
 
 
 def test_gather_results_refuses_symlinked_destination_channel(tmp_path) -> None:
-    # the author controls .autoresearch in its sandbox: a symlinked results dir
+    # the author controls .outerloop in its sandbox: a symlinked results dir
     # (or a planted output symlink) must not make delivery write through it to a
     # host path (terra #135 r2).
     from outerloop.syscall import Launch, gather_results
@@ -1171,10 +1171,10 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     t.join(timeout=5)
     assert not t.is_alive(), "refresh_tool blocked on a FIFO"
     assert seen == [True] and tool.is_file() and "def main(" in tool.read_text()
-    # the notice names this workspace's channel, legacy name included
+    # The notice names this workspace's channel.
     from outerloop.syscall import tool_update_note
 
-    assert "python .autoresearch/syscall <verb> --help" in tool_update_note(".autoresearch")
+    assert "python .outerloop/syscall <verb> --help" in tool_update_note(".outerloop")
     assert "`--report <file>`" in tool_update_note(".outerloop")
 
 

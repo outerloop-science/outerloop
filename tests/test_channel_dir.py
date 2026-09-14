@@ -1,24 +1,21 @@
-"""The syscall channel is `.outerloop/`; a workspace parked at `.autoresearch/` keeps it."""
+"""The syscall channel is `.outerloop/`."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from outerloop import brief, syscall
-from outerloop.syscall import CHANNEL_DIR_NAMES, channel_dir, install_tool, tool_command
+from outerloop.syscall import SYSCALL_DIR, channel_dir, install_tool, tool_command
 
 
-def test_names_new_first_and_brief_matches() -> None:
-    assert CHANNEL_DIR_NAMES == (".outerloop", ".autoresearch")
-    assert CHANNEL_DIR_NAMES[0] == brief._CHANNEL  # the author brief names the new default
+def test_brief_names_the_channel() -> None:
+    assert SYSCALL_DIR == ".outerloop" == brief._CHANNEL
 
 
 def test_resolver(tmp_path: Path) -> None:
     assert channel_dir(tmp_path) == ".outerloop"  # fresh clone -> new default
-    (tmp_path / ".autoresearch").mkdir()
-    assert channel_dir(tmp_path) == ".autoresearch"  # a run parked before the rename
     (tmp_path / ".outerloop").mkdir()
-    assert channel_dir(tmp_path) == ".outerloop"  # both present -> new wins
+    assert channel_dir(tmp_path) == ".outerloop"
 
 
 def test_install_and_tool_command_follow_the_resolved_dir(tmp_path: Path) -> None:
@@ -27,9 +24,8 @@ def test_install_and_tool_command_follow_the_resolved_dir(tmp_path: Path) -> Non
     assert tool_command(tmp_path).endswith("/.outerloop/syscall")
 
 
-def test_reads_follow_a_legacy_workspace(tmp_path: Path) -> None:
-    # a persisted pre-rename workspace: the kernel still finds its channel
-    (tmp_path / ".autoresearch").mkdir()
+def test_budget_uses_channel(tmp_path: Path) -> None:
+    (tmp_path / ".outerloop").mkdir()
     syscall.write_budget(tmp_path, launches_remaining=1, sleeps_remaining=1)
-    assert (tmp_path / ".autoresearch" / "budget.json").exists()
-    assert tool_command(tmp_path).endswith("/.autoresearch/syscall")
+    assert (tmp_path / ".outerloop" / "budget.json").exists()
+    assert tool_command(tmp_path).endswith("/.outerloop/syscall")

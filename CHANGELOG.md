@@ -20,6 +20,10 @@ launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GP
 overrides GPU detection; `0` disables allocation. Submissions still wait for all
 tasks to finish.
 
+### Removed
+
+- The pre-rename names are gone: the `AUTORESEARCH_*` environment names, `~/.config/autoresearch/`, `.autoresearch.yaml`, the `.autoresearch` channel directory, the `~/.autoresearch` local root default, `~/autoresearch-images`, the `autoresearch-resident` and `autoresearch-tick` job names, the `harness_key` file with its `*_HARNESS_KEY_FILE` setting, and the `climb_job_id` record field. A deployment still on any of them renames it before upgrading (the `.env` keys, the config directory, the image directory). The comment marker still recognizes old `autoresearch:` comments.
+
 ### Fixed
 
 - The tick log says why a blessed PR is not merged yet (a message waits for the author, the run sleeps on jobs, the base moved, and so on), one line per sweep.

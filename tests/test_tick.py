@@ -1818,15 +1818,15 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     assert "relative" in _panel_preflight_error(make(panel_key_file="good"))
     # role separation: the panel key must not BE the (resolved) author key. The
     # author key is now config-driven — resolved per the fleet backend from env —
-    # so the collision is set via OUTERLOOP_HARNESS_KEY_FILE, not spec.key_file.
-    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", str(good))
+    # so the collision is set via OUTERLOOP_CLAUDE_KEY_FILE, not spec.key_file.
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(good))
     assert "author key" in _panel_preflight_error(make(panel_key_file=str(good)))
     # ... and a RELATIVE author key path fails too (the climb resolves from a
     # flight dir): a relative env value survives ~-expansion as non-absolute
-    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "keys/author")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "keys/author")
     rel_err = _panel_preflight_error(make(panel_key_file=str(good)))
     assert "author key path" in rel_err and "relative" in rel_err
-    monkeypatch.delenv("OUTERLOOP_HARNESS_KEY_FILE")
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_KEY_FILE")
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))

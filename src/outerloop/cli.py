@@ -30,15 +30,9 @@ if TYPE_CHECKING:
     from outerloop.init import AppPermissionGaps
 
 RESIDENT_JOB_NAME = "outerloop-resident"
-# A resident submitted before the rename. Slurm's singleton serializes jobs by
-# NAME, so `start` must refuse while one of these is queued or running (two
-# residents on one root is what the singleton prevents). Dropped in the
-# release after 0.1.
-LEGACY_RESIDENT_JOB_NAME = "autoresearch-resident"
 DEFAULT_RESIDENT_MINUTES = 360  # cpu_short's ceiling on Torch; the loop hands over to itself
 DEFAULT_LOCAL_ROOT = Path.home() / ".outerloop"
-LEGACY_LOCAL_ROOT_NAME = ".autoresearch"  # pre-rename; honored until the release after 0.1
-ENV_FILE = paths.ENV_FILE  # ~/.config/outerloop/.env, or the pre-rename dir (see paths.py)
+ENV_FILE = paths.ENV_FILE
 
 # What start itself decides from: mode, placement, root, cadence, walltime.
 START_KEYS = (
@@ -60,7 +54,6 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
     "OUTERLOOP_CLAUDE_KEY_FILE",
-    "OUTERLOOP_HARNESS_KEY_FILE",
     "OUTERLOOP_VERTEX_PROJECT",
     "OUTERLOOP_VERTEX_REGION",
     "OUTERLOOP_VERTEX_ADC",
@@ -103,26 +96,18 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
     except OSError as e:
         raise StartError(f"cannot read {path}: {e}") from None
     out: dict[str, str] = {}
-    canonical: set[str] = set()  # keys set by their OUTERLOOP_ spelling
     for raw in text.splitlines():
         line = raw.rstrip("\r").strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        legacy = key.startswith("AUTORESEARCH_")  # the pre-rename name, one more release
-        if legacy:
-            key = "OUTERLOOP_" + key[len("AUTORESEARCH_") :]
         if key not in keys:
             continue
-        if legacy and key in canonical:
-            continue  # the OUTERLOOP_ spelling wins whatever the file order
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
         out[key] = value
-        if not legacy:
-            canonical.add(key)
     return out
 
 
@@ -195,7 +180,7 @@ def _home(environ: dict[str, str], cwd: Path, *, local: bool, root: Path) -> Pat
     The local loop has no deploy step and runs the installed package, so it
     uses a checkout when one is at hand and otherwise a `home` directory
     under the state root, where flights and logs land."""
-    named = environ.get("OUTERLOOP_HOME") or environ.get("AUTORESEARCH_HOME")
+    named = environ.get("OUTERLOOP_HOME")
     home = Path(named).expanduser() if named else cwd
     if (home / "scripts" / "tick_chain.sbatch").is_file():
         return home
@@ -292,20 +277,13 @@ def plan_start(
 
 
 def default_local_root(environ: Mapping[str, str]) -> Path:
-    """The local-mode state root when none is given: ~/.outerloop, or the
-    pre-rename ~/.autoresearch when only that one exists (state is never moved
-    behind the operator's back). The home comes from `environ` so a caller
-    with no HOME gets the plain default."""
-    home_s = environ.get("HOME", "")
-    if not home_s:
-        return DEFAULT_LOCAL_ROOT
-    home = Path(home_s)
-    new, old = home / DEFAULT_LOCAL_ROOT.name, home / LEGACY_LOCAL_ROOT_NAME
-    return old if (not new.exists() and old.is_dir()) else new
+    """The local-mode state root defaults to ~/.outerloop."""
+    home = environ.get("HOME", "")
+    return Path(home) / DEFAULT_LOCAL_ROOT.name if home else DEFAULT_LOCAL_ROOT
 
 
 def _resident_jobs() -> list[str] | None:
-    """Ids of queued or running resident ticks under either name, lowest first;
+    """Ids of queued or running resident ticks by name, lowest first;
     None when the scheduler could not be asked (a failed lookup must never
     read as 'none')."""
     try:
@@ -314,7 +292,7 @@ def _resident_jobs() -> list[str] | None:
                 "squeue",
                 "-u",
                 os.environ.get("USER", ""),
-                f"--name={RESIDENT_JOB_NAME},{LEGACY_RESIDENT_JOB_NAME}",
+                f"--name={RESIDENT_JOB_NAME}",
                 "-h",
                 "-o",
                 "%i",
@@ -521,7 +499,7 @@ def start(args: argparse.Namespace) -> int:
         print(
             "outerloop start: could not ask the scheduler whether a resident tick "
             "exists (squeue failed); nothing submitted. Retry, or check "
-            f"`squeue --name {RESIDENT_JOB_NAME},{LEGACY_RESIDENT_JOB_NAME}`.",
+            f"`squeue --name {RESIDENT_JOB_NAME}`.",
             file=sys.stderr,
         )
         return 1

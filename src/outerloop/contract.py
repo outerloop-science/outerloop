@@ -2,7 +2,7 @@
 
 The contract is the opt-in declaration: benchmarks, budgets, scope. The loader
 enforces invariants no YAML can override (see the threat model in
-docs/design/architecture.md): autoresearch is never a target of itself, and the
+docs/design/architecture.md): outerloop is never a target of itself, and the
 contract file, the target's roadmap, and `.github/` are always forbidden write
 paths, regardless of what `scope.allowed` says.
 
@@ -22,27 +22,17 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SELF_REPO = "outerloop-science/outerloop"
-# The contract's filename in the target repo. New adopters write `.outerloop.yaml`;
-# `.autoresearch.yaml` (targets written before the rename) is still honored. Every
-# read goes through `find_contract`, which tries the new name first. Neither is
-# ever a writable path for the agent.
-# The pre-rename name is dropped in the release after 0.1.
-CONTRACT_NAMES: tuple[str, ...] = (".outerloop.yaml", ".autoresearch.yaml")
-CONTRACT_NAME = CONTRACT_NAMES[0]  # what the docs and new contracts use
-ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", *CONTRACT_NAMES)
+# The contract file in the target repo; never a writable path for the agent.
+CONTRACT_NAME = ".outerloop.yaml"
+ALWAYS_FORBIDDEN: tuple[str, ...] = (".github", CONTRACT_NAME)
 MAX_CONTRACT_BYTES = 64 * 1024
 _GLOB_CHARS = set("*?[]!")
 
 
 def find_contract(read: Callable[[str], str | None]) -> tuple[str, str] | None:
-    """(name, text) of the first contract file `read` yields, new name first; None
-    when the target has neither. `read(name)` returns the file's text, or None when
-    that name is absent — wrap a reader that raises instead."""
-    for name in CONTRACT_NAMES:
-        text = read(name)
-        if text is not None:
-            return name, text
-    return None
+    """The contract name and text, or None when absent."""
+    text = read(CONTRACT_NAME)
+    return (CONTRACT_NAME, text) if text is not None else None
 
 
 def contract_in_tree(tree: Path) -> tuple[str, str] | None:
@@ -51,11 +41,11 @@ def contract_in_tree(tree: Path) -> tuple[str, str] | None:
 
 
 def contract_text_in_tree(tree: Path) -> str:
-    """The contract's text in a checked-out tree; raises FileNotFoundError (as a
-    direct read did) naming both candidates when the tree has neither."""
+    """The contract's text in a checked-out tree; raises FileNotFoundError
+    naming `.outerloop.yaml` when absent."""
     found = contract_in_tree(tree)
     if found is None:
-        raise FileNotFoundError(f"no contract in {tree} ({' or '.join(CONTRACT_NAMES)})")
+        raise FileNotFoundError(f"no contract in {tree} ({CONTRACT_NAME})")
     return found[1]
 
 
@@ -64,7 +54,7 @@ class ContractError(ValueError):
 
 
 class SelfTargetError(ContractError):
-    """Raised when a contract names autoresearch itself as the target."""
+    """Raised when a contract names outerloop itself as the target."""
 
 
 class ScopeError(ContractError):
@@ -457,7 +447,7 @@ def _overlaps(allowed: PurePosixPath, forbidden: PurePosixPath) -> bool:
 def load_contract(text: str, target_repo: str) -> Contract:
     """Parse and validate a contract for `target_repo`."""
     if normalize_repo(target_repo) == SELF_REPO:
-        raise SelfTargetError("autoresearch is never a valid target of itself")
+        raise SelfTargetError("outerloop is never a valid target of itself")
     if len(text.encode()) > MAX_CONTRACT_BYTES:
         raise ContractError(f"contract exceeds {MAX_CONTRACT_BYTES} bytes")
     try:

@@ -23,7 +23,6 @@ from typing import Any
 IMAGE_NAME = "agent-py312.sif"
 IMAGE_URL = f"https://huggingface.co/outerloop-science/agent-image/resolve/main/{IMAGE_NAME}"
 IMAGE_DIR_NAME = "outerloop-images"
-LEGACY_IMAGE_DIR_NAME = "autoresearch-images"  # pre-rename; honored until the release after 0.1
 _CHUNK = 1 << 20
 _PROBE_TIMEOUT_S = 60
 APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
@@ -46,13 +45,9 @@ def image_dir(home: Path | None = None) -> Path:
 
 
 def find_image(home: Path | None = None) -> str:
-    """An existing image on this machine, new location first, or ""."""
-    home = home or Path.home()
-    for d in (IMAGE_DIR_NAME, LEGACY_IMAGE_DIR_NAME):
-        p = home / d / IMAGE_NAME
-        if p.is_file():
-            return str(p)
-    return ""
+    """The installed image, or an empty string when absent."""
+    path = image_dir(home) / IMAGE_NAME
+    return str(path) if path.is_file() else ""
 
 
 def _linux_flavor() -> tuple[str, str]:

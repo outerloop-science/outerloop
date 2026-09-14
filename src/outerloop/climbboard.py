@@ -880,7 +880,7 @@ JOB_NAME_LIMIT = 60
 FIXED_JOB_PATTERNS = tuple(
     re.compile(p)
     for p in (
-        r"^(autoresearch|outerloop)-(resident|tick)$",
+        r"^outerloop-(resident|tick)$",
         r"^climb-[\w.-]+-agent-\d+$",
         r"^(steward|climb)-issue-\d+$",
     )

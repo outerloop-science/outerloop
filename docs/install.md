@@ -143,8 +143,7 @@ improves. This needs a bot identity and somewhere to run experiments.
 ### 2a. Write a contract
 
 `.outerloop.yaml` at your repo root declares what "better" means and where
-the agent may write (a repo set up before the rename can keep `.autoresearch.yaml` —
-the kernel reads either, new name first):
+the agent may write:
 
 ```yaml
 benchmarks:
@@ -357,8 +356,7 @@ Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.
 
-The deployment is configured by environment (`OUTERLOOP_*`; the pre-rename
-`AUTORESEARCH_*` names are still accepted for one release). Placement and paths are set
+The deployment is configured by environment (`OUTERLOOP_*`). Placement and paths are set
 when the chain is started: `OUTERLOOP_ACCOUNT`/`OUTERLOOP_PARTITION`
 place the CPU jobs (ticks, author sessions; both are optional, unset lets
 Slurm bill the default association and pick the default partition),
@@ -378,8 +376,8 @@ first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`, its key file
 `OUTERLOOP_<BACKEND>_KEY_FILE` (`OUTERLOOP_CLAUDE_KEY_FILE`,
 `OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to
-`~/.config/outerloop/<backend>_key`, 0600, and a pre-rename `harness_key` is
-still read). A Codex author always runs contained, so it also needs the image
+`~/.config/outerloop/<backend>_key`, 0600). A Codex author always runs contained,
+so it also needs the image
 (`OUTERLOOP_IMAGE`) and a Codex model in `OUTERLOOP_AUTHOR_MODEL`. On a
 cluster, evals run inside the Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/outerloop-images/agent-py312.sif`) in a jail that binds only the

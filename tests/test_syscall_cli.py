@@ -186,7 +186,7 @@ def test_status_shows_the_kernel_written_budget(tmp_path: Path, capsys) -> None:
 
 
 def test_installed_tool_is_standalone(tmp_path: Path) -> None:
-    """The kernel copies the tool into a sandbox WITHOUT autoresearch
+    """The kernel copies the tool into a sandbox WITHOUT outerloop
     installed — prove the copy runs under a bare interpreter (isolated mode:
     no site-packages, no cwd on sys.path)."""
     from outerloop.syscall import install_tool

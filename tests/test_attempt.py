@@ -645,7 +645,7 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     seed = tmp_path / "seed"
     (seed / "src" / "pilot" / "solvers").mkdir(parents=True)
     (seed / "docs").mkdir()
-    (seed / ".autoresearch.yaml").write_text(contract)
+    (seed / ".outerloop.yaml").write_text(contract)
     (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
     (seed / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(seed, "init", "-q", "-b", "main")
@@ -925,7 +925,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
 
     from outerloop.attempt import resume_author
 
-    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "/h")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "/h")
     monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/c")
 
     legacy = SimpleNamespace(author_backend="", author_model="", author_key_file="")
@@ -969,32 +969,24 @@ def test_codex_author_config_error() -> None:
 
 def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:
     """Per-backend author keys COEXIST and are selected by backend; an explicit
-    path wins, else the per-backend env var, else the default file. The claude
-    key's legacy spellings (HARNESS env var, harness_key file) are still read,
-    and the new name wins whenever both exist."""
+    path wins, else the per-backend env var, else the default file."""
     import os
 
     from outerloop import attempt
     from outerloop.attempt import CODEX_KEY_DEFAULT, resolve_author_key_file
 
-    for var in ("OUTERLOOP_CLAUDE_KEY_FILE", "OUTERLOOP_HARNESS_KEY_FILE"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_KEY_FILE", raising=False)
     monkeypatch.delenv("OUTERLOOP_CODEX_KEY_FILE", raising=False)
-    new, legacy = tmp_path / "claude_key", tmp_path / "harness_key"
+    new = tmp_path / "claude_key"
     monkeypatch.setattr(attempt, "CLAUDE_KEY_DEFAULT", str(new))
-    monkeypatch.setattr(attempt, "HARNESS_KEY_DEFAULT", str(legacy))
 
     assert resolve_author_key_file("codex", "/x/key") == "/x/key"  # explicit wins
     assert resolve_author_key_file("codex") == os.path.expanduser(CODEX_KEY_DEFAULT)
     assert resolve_author_key_file("claude") == str(new)  # neither file: the new name
-    legacy.write_text("k")
-    assert resolve_author_key_file("claude") == str(legacy)  # pre-rename machine
     new.write_text("k")
-    assert resolve_author_key_file("claude") == str(new)  # both: new wins
-    monkeypatch.setenv("OUTERLOOP_HARNESS_KEY_FILE", "/h-key")
-    assert resolve_author_key_file("claude") == "/h-key"  # legacy env still honored
+    assert resolve_author_key_file("claude") == str(new)  # existing file
     monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "/c-key")
-    assert resolve_author_key_file("claude") == "/c-key"  # new env wins over legacy
+    assert resolve_author_key_file("claude") == "/c-key"  # environment overrides default
     monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/x-key")
     assert resolve_author_key_file("codex") == "/x-key"
 
@@ -1157,7 +1149,7 @@ def test_branch_is_kept_and_recorded_after_pr_failure(tmp_path, target_repo) -> 
 def _push_contract(tmp_path, target_repo, contract_text: str, name: str) -> None:
     seed = tmp_path / f"contract-{name}"
     _git(tmp_path, "clone", "-q", str(target_repo), str(seed))
-    (seed / ".autoresearch.yaml").write_text(contract_text)
+    (seed / ".outerloop.yaml").write_text(contract_text)
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name)
     _git(seed, "push", "-q", "origin", "main")
@@ -2070,7 +2062,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
 def test_symlinked_channel_disables_syscalls_and_never_writes_through_it(
     tmp_path, monkeypatch
 ) -> None:
-    # a target that commits `.autoresearch` as a SYMLINK to a host path must not
+    # a target that commits `.outerloop` as a SYMLINK to a host path must not
     # get the tool/exclude/budget written THROUGH it (terra #133 r1): a
     # pre-existing channel in any form disables the feature for the run.
     target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
@@ -2325,7 +2317,7 @@ def _write_parked_candidate(
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
     (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (wsroot / ".autoresearch.yaml").write_text(contract or CONTRACT_DISPATCH)
+    (wsroot / ".outerloop.yaml").write_text(contract or CONTRACT_DISPATCH)
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(wsroot, "init", "-q", "-b", "main")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -2624,14 +2616,14 @@ def test_resume_blind_repark_keeps_wake_attempts_but_progress_resets(tmp_path, m
 
 
 def test_resume_reads_contract_from_base_not_the_dirty_tree(tmp_path, monkeypatch) -> None:
-    # a session could rewrite .autoresearch.yaml in the working tree to widen
+    # a session could rewrite .outerloop.yaml in the working tree to widen
     # its own scope; the wake must gate on the BASE commit's contract, not the
     # dirty tree. Corrupt the working-tree contract: if the wake read it, it
     # would crash; reading base, it still succeeds.
     state, run_id = _write_parked_candidate(
         tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 12.0}
     )
-    (state / "runs" / run_id / "ws" / ".autoresearch.yaml").write_text("}{ not valid yaml :\n")
+    (state / "runs" / run_id / "ws" / ".outerloop.yaml").write_text("}{ not valid yaml :\n")
     github = FakeGitHub()
     outcome = resume_run(
         state,
@@ -3379,7 +3371,7 @@ def _write_parked_author_sleep(
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
     (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_SYSCALLS)
+    (wsroot / ".outerloop.yaml").write_text(CONTRACT_SYSCALLS)
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(wsroot, "init", "-q", "-b", "main")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -4885,7 +4877,7 @@ def _write_parked_line_candidate(tmp_path, monkeypatch, *, values, run_id="tsp-l
     wsroot = state / "runs" / run_id / "ws"
     (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
     (wsroot / "agent_memory").mkdir()
-    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_LINES_DISPATCH)
+    (wsroot / ".outerloop.yaml").write_text(CONTRACT_LINES_DISPATCH)
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     (wsroot / "AGENT_MEMORY.md").write_text("# memory\n- [warmdown](agent_memory/warmdown.md)\n")
     (wsroot / "agent_memory" / "warmdown.md").write_text("longer warmdown helped\n")
@@ -5475,7 +5467,7 @@ def test_panel_claim_diff_excludes_the_lines_memory(tmp_path, monkeypatch) -> No
 
     wsroot = tmp_path / "ws"
     (wsroot / "agent_memory").mkdir(parents=True)
-    (wsroot / ".autoresearch.yaml").write_text(CONTRACT_LINES_DISPATCH)
+    (wsroot / ".outerloop.yaml").write_text(CONTRACT_LINES_DISPATCH)
     (wsroot / "train.py").write_text("v1\n")
     (wsroot / "AGENT_MEMORY.md").write_text("# memory\n")
     (wsroot / "agent_memory" / "a.md").write_text("note\n")
@@ -5638,9 +5630,7 @@ def test_new_pr_contract_refusal_parks_for_author_message(tmp_path, monkeypatch)
     # Change the ruler on base after the candidate was sealed.
     _git(ws, "checkout", "-f", "main")
     _git(ws, "clean", "-fd")
-    (ws / ".autoresearch.yaml").write_text(
-        CONTRACT_DISPATCH.replace("mean_tour_length", "new_metric")
-    )
+    (ws / ".outerloop.yaml").write_text(CONTRACT_DISPATCH.replace("mean_tour_length", "new_metric"))
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "new ruler")
     _git(ws, "push", "origin", "main")

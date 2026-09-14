@@ -26,7 +26,7 @@ verbs (`sleep`, `conclude`) write the typed ABI to `.outerloop/syscall.json`
 committing it are separate acts.
 
 This file is STANDALONE by contract: the kernel copies its source into the
-sandbox at `.outerloop/syscall` (the target repo does not have autoresearch
+sandbox at `.outerloop/syscall` (the target repo does not have outerloop
 installed), so it imports only the stdlib. The validation here is for FAST,
 IN-SESSION feedback only; the kernel re-validates every field authoritatively
 when it reads the ABI (`syscall.py`) — this tool is a convenience layer, never a
@@ -896,7 +896,7 @@ def main(argv: list[str], root: Path | None = None) -> int:
     # argparse REMAINDER keeps a leading "--"; drop it for a clean command
     if getattr(args, "command", None) and args.command and args.command[0] == "--":
         args.command = args.command[1:]
-    # Root at the tool's own install location (<workspace>/.autoresearch/
+    # Root at the tool's own install location (<workspace>/.outerloop/
     # syscall -> the workspace), NEVER the caller's cwd: an agent may invoke
     # the tool from a subdirectory or from another working directory entirely
     # (hermes starts in its per-run home), and a cwd-rooted channel would

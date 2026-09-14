@@ -1,10 +1,6 @@
-"""Where the operator's config lives.
+"""Operator config lives in `~/.config/outerloop/`.
 
-`~/.config/outerloop/` holds the `.env`, the bot's token or App file, and the
-role keys. `~/.config/autoresearch/` — the pre-rename name — is still honored:
-a machine set up before the rename keeps working untouched, and `outerloop init`
-on a fresh machine creates the new one. Resolution, once per process: the new
-dir if it exists, else the legacy dir if it exists, else the new dir.
+It holds the `.env`, bot token or App file, and role keys.
 """
 
 from __future__ import annotations
@@ -12,17 +8,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# New name first; the pre-rename name is dropped in the release after 0.1.
-CONFIG_DIR_NAMES: tuple[str, ...] = ("outerloop", "autoresearch")
+CONFIG_DIR_NAME = "outerloop"
 
 
 def config_dir(home: Path | None = None) -> Path:
-    """The config dir for this machine (see the module docstring)."""
-    base = (home or Path.home()) / ".config"
-    for name in CONFIG_DIR_NAMES:
-        if (base / name).is_dir():
-            return base / name
-    return base / CONFIG_DIR_NAMES[0]
+    """The config dir for this machine."""
+    return (home or Path.home()) / ".config" / CONFIG_DIR_NAME
 
 
 CONFIG_DIR = config_dir()

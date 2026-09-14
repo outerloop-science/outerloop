@@ -46,7 +46,7 @@ def test_get_file_decodes_base64(provider: FileTokenProvider) -> None:
     content = base64.b64encode(b"benchmarks: []\n").decode()
     transport = FakeTransport([{"type": "file", "encoding": "base64", "content": content}])
     client = GitHubClient(auth=provider, transport=transport)
-    assert client.get_file("org/repo", ".autoresearch.yaml", "main") == "benchmarks: []\n"
+    assert client.get_file("org/repo", ".outerloop.yaml", "main") == "benchmarks: []\n"
     assert "ref=main" in transport.requests[0].full_url
 
 

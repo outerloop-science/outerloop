@@ -47,7 +47,7 @@ def test_steward_scope_is_the_solvers_inverse() -> None:
     # solver territory: forbidden even though it IS in someone's scope
     assert steward_out_of_scope(["src/pilot/solvers/tsp.py"], c) == ["src/pilot/solvers/tsp.py"]
     # the always-forbidden set binds the steward too
-    assert steward_out_of_scope([".autoresearch.yaml"], c)
+    assert steward_out_of_scope([".outerloop.yaml"], c)
     assert steward_out_of_scope([".github/workflows/ci.yml"], c)
     # record files are the orchestrator's, not the steward's
     assert steward_out_of_scope(["results/leader.json", "BENCHMARKS.md"], c)
@@ -205,7 +205,7 @@ def steward_repo(tmp_path, monkeypatch):
     (seed / "docs").mkdir()
     (seed / "tests").mkdir()
     (seed / "results").mkdir()
-    (seed / ".autoresearch.yaml").write_text(CONTRACT)
+    (seed / ".outerloop.yaml").write_text(CONTRACT)
     (seed / "docs" / "roadmap.md").write_text("# roadmap\n")
     (seed / "src" / "pilot" / "instances.py").write_text("POOL_SEED = 1\n")
     (seed / "src" / "pilot" / "eval.py").write_text("def eval(): ...\n")
@@ -582,7 +582,7 @@ budgets:""",
 
     work = tmp_path / "rewrite"
     sp.run(["git", "clone", "-q", str(steward_repo), str(work)], check=True)
-    (work / ".autoresearch.yaml").write_text(two_bench)
+    (work / ".outerloop.yaml").write_text(two_bench)
     sp.run(
         [
             "git",

@@ -39,18 +39,9 @@
 # NO set -u before the top-up: a config mistake must fail loudly AFTER the
 # chain has secured its successors, not break the chain silently. Required
 # vars are checked by hand instead.
-# Accept the pre-rename AUTORESEARCH_* names at the boundary for one release:
-# copy each into its OUTERLOOP_* twin when the twin is UNSET (an explicitly
-# empty twin is an off-switch and stays empty) so the chain reads one name.
-# The Python side does the same on import. Removed in the release after 0.1.
-for _ov in $(env | sed -n 's/^AUTORESEARCH_\([A-Z_][A-Z0-9_]*\)=.*/\1/p'); do
-    eval "[ -n \"\${OUTERLOOP_${_ov}+set}\" ] || export OUTERLOOP_${_ov}=\"\${AUTORESEARCH_${_ov}}\""
-done
 CADENCE_MIN="${OUTERLOOP_CADENCE_MIN:-30}"
 JOB_NAME="outerloop-tick"
 RESIDENT_JOB_NAME="outerloop-resident"
-# a resident submitted before the rename; dropped in the release after 0.1
-LEGACY_RESIDENT_JOB_NAME="autoresearch-resident"
 missing=""
 for var in OUTERLOOP_HOME OUTERLOOP_ROOT; do
     eval "val=\${$var:-}"
@@ -80,7 +71,7 @@ fi
 # --- 1. keep two successors queued (singleton serializes same-name jobs) ---
 # A resident tick (design/resident-tick.md) supersedes this chain: while one
 # is queued or running, stop topping up so the per-cadence chain drains.
-if squeue -u "$USER" --name="$RESIDENT_JOB_NAME,$LEGACY_RESIDENT_JOB_NAME" -h 2>/dev/null | grep -q '[0-9]'; then
+if squeue -u "$USER" --name="$RESIDENT_JOB_NAME" -h 2>/dev/null | grep -q '[0-9]'; then
     echo "chain: a resident tick exists; not queuing successors (draining)"
     need=0
     pending=0

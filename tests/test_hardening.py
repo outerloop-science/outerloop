@@ -55,7 +55,7 @@ def test_sibling_name_not_shadowed_by_roadmap() -> None:
 def test_forbidden_matches_are_component_wise() -> None:
     contract = load_contract(PILOT_CONTRACT, "x/y")
     assert path_is_forbidden(".github/workflows/ci.yml", contract)
-    assert path_is_forbidden(".autoresearch.yaml", contract)
+    assert path_is_forbidden(".outerloop.yaml", contract)
     assert path_is_forbidden("src/../.github/x.yml", contract)  # unnormalizable → forbidden
     assert not path_is_forbidden("src/pilot/solvers/tsp.py", contract)
 
@@ -359,7 +359,7 @@ def test_self_target_url_spellings_refused(spelling: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "candidate", [".GITHUB/workflows/evil.yml", ".GitHub/x", ".Autoresearch.YAML"]
+    "candidate", [".GITHUB/workflows/evil.yml", ".GitHub/x", ".Outerloop.YAML"]
 )
 def test_forbidden_paths_are_case_insensitive(candidate: str) -> None:
     contract = load_contract(PILOT_CONTRACT, "x/y")

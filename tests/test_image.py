@@ -12,14 +12,13 @@ import pytest
 from outerloop import image as img
 
 
-def test_find_image_prefers_the_new_location(tmp_path: Path) -> None:
+def test_find_image(tmp_path: Path) -> None:
     assert img.find_image(tmp_path) == ""
-    old = tmp_path / "autoresearch-images" / "agent-py312.sif"
-    old.parent.mkdir()
-    old.write_text("")
-    assert img.find_image(tmp_path) == str(old)
     new = tmp_path / "outerloop-images" / "agent-py312.sif"
     new.parent.mkdir()
+    new.mkdir()
+    assert img.find_image(tmp_path) == ""
+    new.rmdir()
     new.write_text("")
     assert img.find_image(tmp_path) == str(new)
 

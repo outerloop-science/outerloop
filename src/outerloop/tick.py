@@ -493,8 +493,7 @@ def _client_secrets(github: Any) -> tuple[str, ...]:
 
 
 def _contract_text(github: Any, target: str, ref: str) -> str | None:
-    """The target's contract at `ref` — `.outerloop.yaml`, else the legacy
-    `.autoresearch.yaml` — or None when it has neither."""
+    """The target's contract at `ref` — `.outerloop.yaml`, or None when absent."""
     from outerloop.contract import find_contract
 
     found = find_contract(lambda name: github.get_file_content(target, name, ref))
@@ -1275,7 +1274,7 @@ def _publish_ledger_entry(
                     target,
                     "Research log",
                     f"{RESEARCH_LOG_MARKER}\nOne two-line comment per finished "
-                    f"autoresearch run — full reports live on the [`{RESEARCH_LOG_BRANCH}`]"
+                    f"outerloop run — full reports live on the [`{RESEARCH_LOG_BRANCH}`]"
                     f"(https://github.com/{target}/tree/{RESEARCH_LOG_BRANCH}/reports) "
                     "branch. Results relevant to an open order issue are posted "
                     "there instead.",
@@ -3042,12 +3041,8 @@ def _min_tick_s_from_env() -> float:
 
 
 def _default_image() -> str:
-    """~/outerloop-images/agent-py312.sif, or the pre-rename ~/autoresearch-images
-    path when only that one exists. The fallback is dropped in the release after
-    0.1."""
-    new = os.path.expanduser("~/outerloop-images/agent-py312.sif")
-    old = os.path.expanduser("~/autoresearch-images/agent-py312.sif")
-    return old if (not os.path.isfile(new) and os.path.isfile(old)) else new
+    """The default agent image path."""
+    return os.path.expanduser("~/outerloop-images/agent-py312.sif")
 
 
 def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:

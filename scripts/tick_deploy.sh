@@ -8,14 +8,13 @@
 #
 # Expects: OUTERLOOP_HOME, OUTERLOOP_ROOT; optional OUTERLOOP_PAT_FILE.
 
-# --- the operator's .env: ~/.config/outerloop (new) or ~/.config/autoresearch
-# (pre-rename). We do NOT source it: sourcing would execute it and let it set
+# --- the operator's .env: ~/.config/outerloop/.env
+# We do NOT source it: sourcing would execute it and let it set
 # ANY variable (the chain's own HOME/ROOT/PATH/cadence, arbitrary code).
 # Instead single allowlisted keys are read from it, and only when the file is
 # ours and not group/world-writable (a writable one could still inject a
 # malicious VALUE, e.g. a bad codex binary path).
 ENV_FILE="$HOME/.config/outerloop/.env"
-[ -r "$ENV_FILE" ] || ENV_FILE="$HOME/.config/autoresearch/.env"
 ENV_TRUSTED=""
 if [ -r "$ENV_FILE" ]; then
     # GNU stat first, BSD stat second (a developer's Mac runs this too)
@@ -29,14 +28,11 @@ if [ -r "$ENV_FILE" ]; then
     fi
 fi
 # env_line: the last assignment of key $_k in the trusted .env, into $_line.
-# Either spelling, the canonical key first: a pre-rename AUTORESEARCH_ twin
-# counts only when the OUTERLOOP_ key is absent, whatever the order. Empty
-# when the key is absent or the file is not trusted.
+# Empty when the key is absent or the file is not trusted.
 env_line() {
     _line=""
     [ -n "$ENV_TRUSTED" ] || return 0
     _line=$(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null | tail -1)
-    [ -n "$_line" ] || _line=$(grep -E "^AUTORESEARCH_${_k#OUTERLOOP_}=" "$ENV_FILE" 2>/dev/null | tail -1)
 }
 # env_value: the value of $_line into $_v — the CR of a CRLF-edited file and
 # one pair of surrounding quotes stripped
@@ -55,7 +51,7 @@ _k=OUTERLOOP_AUTO_UPDATE; env_line
 if [ -n "$_line" ]; then
     env_value; POLICY="${_v:-off}"
 else
-    POLICY="${OUTERLOOP_AUTO_UPDATE:-${AUTORESEARCH_AUTO_UPDATE:-off}}"
+    POLICY="${OUTERLOOP_AUTO_UPDATE:-off}"
 fi
 case "$POLICY" in
     off|release|main) ;;
@@ -193,7 +189,7 @@ export OUTERLOOP_DEPLOY_BROKEN
 if [ -n "$ENV_TRUSTED" ]; then
     for _k in OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL \
                   OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
-                  OUTERLOOP_CLAUDE_KEY_FILE OUTERLOOP_HARNESS_KEY_FILE \
+                  OUTERLOOP_CLAUDE_KEY_FILE \
                   OUTERLOOP_VERTEX_PROJECT OUTERLOOP_VERTEX_REGION \
                   OUTERLOOP_VERTEX_ADC \
                   OUTERLOOP_TARGET \

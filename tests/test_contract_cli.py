@@ -19,7 +19,7 @@ roadmap: docs/roadmap.md
 
 
 def test_contract_cli_accepts_valid(tmp_path: Path, capsys) -> None:
-    path = tmp_path / ".autoresearch.yaml"
+    path = tmp_path / ".outerloop.yaml"
     path.write_text(GOOD)
     assert contract_main([str(path), "org/repo"]) == 0
     out = capsys.readouterr().out
@@ -29,7 +29,7 @@ def test_contract_cli_accepts_valid(tmp_path: Path, capsys) -> None:
 
 
 def test_contract_cli_reports_the_error(tmp_path: Path, capsys) -> None:
-    path = tmp_path / ".autoresearch.yaml"
+    path = tmp_path / ".outerloop.yaml"
     path.write_text(GOOD.replace("allowed: [src/]", "allowed: ['.github/workflows']"))
     assert contract_main([str(path), "org/repo"]) == 1
     assert "overlaps forbidden" in capsys.readouterr().out

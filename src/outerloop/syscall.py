@@ -50,47 +50,35 @@ from outerloop.contract import Benchmark, Budgets
 
 log = logging.getLogger(__name__)
 
-# The syscall channel dir in the workspace. New runs install `.outerloop/`;
-# `.outerloop/` (a run parked before the rename) is kept — its persisted
-# workspace and the session's own memory of the path both predate the rename.
-# `channel_dir(ws)` resolves per workspace: existing dir (new name first), else
-# the new default. Every site keys off it, so a resumed run finds its own path.
-# The pre-rename name is dropped in the release after 0.1.
-CHANNEL_DIR_NAMES: tuple[str, ...] = (".outerloop", ".autoresearch")
-SYSCALL_DIR = CHANNEL_DIR_NAMES[0]  # the new default (a fresh clone installs this)
+SYSCALL_DIR = ".outerloop"  # the syscall channel dir in the workspace
 SYSCALL_FILE = "syscall.json"
 RESULTS_SUBDIR = "results"
 
 
 def shipped_channel(workspace: Path) -> str:
-    """The channel name the TARGET ships, or "". A symlink at either channel
+    """The channel name the TARGET ships, or "". A symlink at the channel
     name, or a path git tracks there, was committed by the target: writing
     through it or honouring a request found in it is the booby trap. The
     kernel's own channel is untracked and excluded, so a workspace it prepared
     earlier reads as not shipped."""
-    for name in CHANNEL_DIR_NAMES:
-        path = workspace / name
-        if path.is_symlink():
+    name = SYSCALL_DIR
+    path = workspace / name
+    if path.is_symlink():
+        return name
+    if path.exists():
+        tracked = subprocess.run(
+            ["git", "-C", str(workspace), "ls-files", "--error-unmatch", "--", name],
+            capture_output=True,
+            check=False,
+        )
+        if tracked.returncode == 0:
             return name
-        if path.exists():
-            tracked = subprocess.run(
-                ["git", "-C", str(workspace), "ls-files", "--error-unmatch", "--", name],
-                capture_output=True,
-                check=False,
-            )
-            if tracked.returncode == 0:
-                return name
     return ""
 
 
 def channel_dir(workspace: Path) -> str:
-    """The channel dir name for this workspace: an existing one (new name first),
-    else the new default. A fresh clone gets `.outerloop`; a workspace parked
-    before the rename keeps its `.autoresearch`."""
-    for name in CHANNEL_DIR_NAMES:
-        if (workspace / name).exists():
-            return name
-    return CHANNEL_DIR_NAMES[0]
+    """The syscall channel directory name."""
+    return SYSCALL_DIR
 
 
 def tool_command(workspace: Path) -> str:
@@ -626,15 +614,15 @@ def ensure_excluded(workspace: Path) -> None:
 def install_tool(workspace: Path) -> None:
     """Drop the agent-facing syscall tool into the workspace at
     `.outerloop/syscall`. A verbatim copy of `syscall_cli.py` (standalone by
-    contract: stdlib-only, since the target repo does not have autoresearch
+    contract: stdlib-only, since the target repo does not have outerloop
     installed), living inside the excluded channel dir so it never enters diffs,
     scope, or fingerprints.
 
     The `.outerloop/` channel must be KERNEL-OWNED. A judge's workspace is an
-    untrusted (author-authored) checkout, which could ship `.autoresearch` as a
+    untrusted (author-authored) checkout, which could ship `.outerloop` as a
     symlink to a host path so `write_text` writes through it, or a pre-planted
     `syscall.json` a non-concluding judge's `read_verdict` would then read as a
-    forged verdict. Remove any pre-existing `.autoresearch` (symlink → unlink,
+    forged verdict. Remove any pre-existing `.outerloop` (symlink → unlink,
     dir → rmtree, file → unlink) and recreate it as a dir we own, so nothing is
     followed and no stale ABI survives. (The author path pre-checks the channel
     and disables syscalls if it pre-exists, so this only ever fires for a judge.)
@@ -661,7 +649,7 @@ def install_tool(workspace: Path) -> None:
 def tool_update_note(channel: str) -> str:
     """What a session that started under an older kernel is told at a wake
     whose tool refresh replaced its tool; `channel` is this workspace's channel
-    dir name (a resumed legacy session still has `.autoresearch`)."""
+    dir name."""
     return (
         "Your syscall tool was updated. `message <text>` or `message --file <path>` stages "
         "a public message on your PR or issue; use --to self for a reminder, --to agent-NN "
@@ -1068,7 +1056,7 @@ SYNC_DONE = "sync-done"
 
 def _channel_fd(workspace: Path) -> int:
     """A dir fd for the syscall channel, opened O_NOFOLLOW so a session that
-    replaced .autoresearch with a symlink cannot escape the workspace — all
+    replaced .outerloop with a symlink cannot escape the workspace — all
     marker IO is then relative to this fd, never a re-resolved path."""
     return os.open(workspace / channel_dir(workspace), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
