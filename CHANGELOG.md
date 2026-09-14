@@ -6,6 +6,9 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+Messages carry a global id, a context, a recipient and an optional reply reference;
+old inbox files read as before; the wake's headers name the sender.
+
 Local mode now shares workstation GPUs across jobs first come first served and runs
 launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
 overrides GPU detection; `0` disables allocation. Submissions still wait for all
