@@ -63,7 +63,13 @@ def test_request_is_parsed_and_consumed(tmp_path: Path) -> None:
                     "artifacts": ["results/curve.json"],
                 }
             ],
-            "note": "if the curve flattens, try the schedule next",
+            "messages": [
+                {
+                    "to": "self",
+                    "text": "if the curve flattens, try the schedule next",
+                    "reply_to": None,
+                }
+            ],
         },
     )
     req = read_request(tmp_path)
@@ -71,7 +77,7 @@ def test_request_is_parsed_and_consumed(tmp_path: Path) -> None:
     assert req.launches[0].name == "train-lr3"
     assert req.launches[0].minutes == 90
     assert req.launches[0].artifacts == ("results/curve.json",)
-    assert "schedule" in req.note
+    assert "schedule" in req.messages[0]["text"]
     assert not f.exists()  # consumed: honored (or refused) exactly once
 
 
@@ -124,10 +130,10 @@ def test_read_request_rejects_a_wrong_or_missing_type(tmp_path: Path) -> None:
     # a sleep is one syscall TYPE; a file with no type (a target-committed
     # booby-trap) or another type (a verdict) is not a sleep and is refused.
     write_req(tmp_path, {"launches": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep, reply or end syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep, message or end syscall"):
         read_request(tmp_path)
     write_req(tmp_path, {"type": "verdict", "findings": []}, typed=False)
-    with pytest.raises(SyscallError, match="expected a sleep, reply or end syscall"):
+    with pytest.raises(SyscallError, match="expected a sleep, message or end syscall"):
         read_request(tmp_path)
 
 
@@ -1056,7 +1062,6 @@ def test_sweep_pace_is_validated_clamped_and_expanded(tmp_path: Path) -> None:
             Launch(name="s2", command="x", minutes=5, array=8, concurrency=2),
             Launch(name="p", command="y", minutes=5),
         ),
-        note="",
         submit=False,
     )
     clamped = clamp_concurrency(req, gpus=2, max_concurrent_gpus=12)  # 6 tasks of 2 GPUs
@@ -1173,15 +1178,24 @@ def test_refresh_tool_rewrites_only_the_tool_and_never_through_a_symlink(tmp_pat
     assert "`--report <file>`" in tool_update_note(".outerloop")
 
 
-@pytest.mark.parametrize("replies", ["text", [1], [None], [""], ["x" * 100_001]])
-def test_kernel_rejects_forged_replies(tmp_path, replies) -> None:
+@pytest.mark.parametrize(
+    "messages",
+    [
+        "text",
+        [1],
+        [None],
+        [{"to": "thread", "text": "", "reply_to": None}],
+        [{"to": "thread", "text": "x" * 100_001, "reply_to": None}],
+    ],
+)
+def test_kernel_rejects_forged_messages(tmp_path, messages) -> None:
     import json
 
     from outerloop.syscall import SyscallError, read_request
 
     channel = tmp_path / ".outerloop"
     channel.mkdir()
-    (channel / "syscall.json").write_text(json.dumps({"type": "reply", "replies": replies}))
+    (channel / "syscall.json").write_text(json.dumps({"type": "message", "messages": messages}))
     with pytest.raises(SyscallError):
         read_request(tmp_path)
     assert read_request(tmp_path) is None

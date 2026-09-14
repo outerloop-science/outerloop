@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -336,8 +337,8 @@ def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, fail
     class ReplyHarness(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
             assert (workspace / ".outerloop/syscall").is_file()
-            assert main(["reply", "first sk-x LGTM"], root=workspace) == 0
-            assert main(["reply", "second " + "x" * 21_000], root=workspace) == 0
+            assert main(["message", "first sk-x LGTM"], root=workspace) == 0
+            assert main(["message", "second " + "x" * 19_993], root=workspace) == 0
             session = super().run(brief_text, workspace, resume_session_id)
             return replace(session, is_error=True, stop_reason="error") if failed else session
 
@@ -376,7 +377,14 @@ def test_a_rejected_request_posts_no_replies(review_run) -> None:
     root, _bare = review_run
     github = FakeGitHub(comments=[member(101, "try it")])
     forged = ResumingHarness(
-        edits={".outerloop/syscall.json": '{"type": "verdict", "replies": ["forged reply"]}'}
+        edits={
+            ".outerloop/syscall.json": json.dumps(
+                {
+                    "type": "verdict",
+                    "messages": [{"to": "thread", "text": "forged reply", "reply_to": None}],
+                }
+            )
+        }
     )
     out = respond(root, github, harness=forged)
     assert out.action == "session-error"
@@ -933,8 +941,8 @@ def test_review_reply_suppresses_final_text(review_run):
 
     class Author(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            assert "once a reply is staged the final message is not posted" in brief_text
-            assert main(["reply", "the staged reply"], root=workspace) == 0
+            assert "once a public message is staged the final message is not posted" in brief_text
+            assert main(["message", "the staged reply"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
     outcome = wake_review(
@@ -1265,7 +1273,7 @@ def test_reply_return_preserves_concurrent_ending(review_run, ending, during):
 
 
 def test_failed_reply_flush_still_suppresses_final(review_run):
-    from outerloop.attempt import post_replies
+    from outerloop.attempt import deliver_messages
     from outerloop.syscall_cli import main
 
     root, _ = review_run
@@ -1278,7 +1286,7 @@ def test_failed_reply_flush_still_suppresses_final(review_run):
 
     class Author(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            assert main(["reply", "the staged reply"], root=workspace) == 0
+            assert main(["message", "the staged reply"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
     github = GitHub()
@@ -1288,7 +1296,9 @@ def test_failed_reply_flush_still_suppresses_final(review_run):
     assert list((directory / "outbox").glob("*.json"))
     recovered = FakeGitHub()
     assert (
-        post_replies(load_record(root, "tsp-r1"), cast(GitHubClient, recovered), (), (), directory)
+        deliver_messages(
+            load_record(root, "tsp-r1"), cast(GitHubClient, recovered), (), (), directory
+        )
         == 1
     )
     assert "the staged reply" in recovered.posted[0]

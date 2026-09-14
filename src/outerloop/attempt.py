@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -87,6 +88,7 @@ from outerloop.runstate import (
     ENDED,
     NEGATIVE_RESULT,
     PARKED,
+    RUNNING,
     STUCK,
     RunRecord,
     list_runs,
@@ -99,6 +101,7 @@ from outerloop.runstate import (
 )
 from outerloop.syscall import (
     MAX_ARTIFACT_BYTES,
+    MAX_REPLY_CHARS,
     SyscallRequest,
     channel_dir,
     launch_task_ids,
@@ -112,7 +115,6 @@ from outerloop.syscall import write_siblings as syscall_write_siblings
 from outerloop.verifier import MAX_CLAIM_CHARS
 
 REPLY_MARKER = marker("followup")
-MAX_REPLY_CHARS = 20_000
 
 
 def _pr_number(pr_url: str) -> int:
@@ -362,13 +364,27 @@ STAGE_RETAINED_KEYS = (
     "publish",
     "review_topup",
     "hypothesis",
+    "message_counter",
+    "message_delivery",
 )
 
 
-def _clear_stage(record: RunRecord) -> RunRecord:
+def _message_stage(run_root: Path, record: RunRecord) -> dict[str, object]:
+    """Delivery owns these keys; captured leg records are never authoritative."""
+    current = load_record(run_root, record.run_id)
+    stage = dict(record.stage)
+    for key in ("message_counter", "message_delivery"):
+        stage.pop(key, None)
+        if key in current.stage:
+            stage[key] = current.stage[key]
+    return stage
+
+
+def _clear_stage(record: RunRecord, run_root: Path) -> RunRecord:
     """Clear completed park bookkeeping while retaining the run's meter."""
     # the run's spend survives the wipe: terminal reporting (the climb
     # board) reads it after the transition
+    record = dc_replace(record, stage=_message_stage(run_root, record))
     kept: dict[str, object] = {
         k: record.stage[k]
         for k in STAGE_RETAINED_KEYS
@@ -464,7 +480,7 @@ def _park_run(
         return
     job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
-        **{k: record.stage[k] for k in STAGE_RETAINED_KEYS if k in record.stage},
+        **{k: latest.stage[k] for k in STAGE_RETAINED_KEYS if k in latest.stage},
         "phase": parked.phase,
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
@@ -507,7 +523,7 @@ def _park_run(
         # Phase A) or a submitted candidate carrying sibling launches: the wake
         # gathers each launch's results by NAME from the run dir, delivers the
         # declared artifacts, and resumes the SAME session — so the stage must
-        # carry the launch names/artifacts, the author's note, and the budget
+        # carry the launch names/artifacts and the budget
         # counts as of this park.
         stage["syscall_launches"] = [
             # minutes ride along so a RE-PARK's deadline floor still covers the
@@ -524,7 +540,6 @@ def _park_run(
             }
             for launch in parked.syscall.launches
         ]
-        stage["syscall_note"] = redact(parked.syscall.note, secrets)
         if parked.syscall.launches:
             # the run's launch ledger (`history`, and the queue view's labels):
             # ids align with launch_jobs order, as stage_launch_job_ids reads them
@@ -801,14 +816,14 @@ def reply_id_marker(rid: str) -> str:
     return f"<!-- outerloop:reply-id {rid} -->"
 
 
-def post_replies(
+def deliver_messages(
     record: RunRecord,
     github: GitHubClient,
-    replies: tuple[str, ...],
+    messages: tuple[dict, ...],
     secrets: tuple[str, ...],
     run_dir: Path,
 ) -> int:
-    """Publish consumed author replies on their stored threads."""
+    """Route author messages through the kernel and flush public posts."""
     from outerloop.inbox import flush_replies, stage_replies
     from outerloop.review import APPROVAL_PATTERN, REDACTED
 
@@ -830,12 +845,179 @@ def post_replies(
             log.warning("reply lookup failed for %s: %s", record.run_id, exc)
             return False  # posting twice beats never posting
 
+    root = run_dir.parent.parent
+
+    state = dict(load_record(root, record.run_id).stage)
+
+    def persist() -> None:
+        current = load_record(root, record.run_id)
+        stage = dict(current.stage)
+        for name in ("message_counter", "message_delivery"):
+            stage.pop(name, None)
+            if name in state:
+                stage[name] = state[name]
+        save_record(root, dc_replace(current, stage=stage), time.time())
+
+    posted = 0
     try:
-        stage_replies(run_dir, replies, thread_for(record))
-        return flush_replies(run_dir, post, seen, thread_for(record))
+        from outerloop.inbox import _inbox_handle, _keys, _lock_at, decode
+        from outerloop.syscall import MAX_MESSAGES_PER_LEG
+
+        journal = state.get("message_delivery", [])
+        if isinstance(journal, dict):
+            journal = [{**journal, "delivered": False}]
+        assert isinstance(journal, list)
+        for item in messages:
+            counter = int(str(state.get("message_counter", 0))) + 1
+            state["message_counter"] = counter
+            journal.append({"item": item, "counter": counter, "delivered": False})
+        state["message_delivery"] = journal
+        persist()
+
+        def refuse(index: int, reason: str) -> None:
+            entry["recipient"] = record.run_id
+            entry["message"] = asdict(
+                Message(
+                    0,
+                    "note",
+                    "kernel",
+                    "",
+                    time.time(),
+                    f"message-refused:{record.run_id}:{entry['counter']}",
+                    {
+                        "text": (
+                            f"Message #{index} to {item.get('to')!r} was not delivered: {reason}."
+                        ),
+                        "context_only": True,
+                    },
+                )
+            )
+            persist()
+
+        # Resolve and stage every entry before any inbox or network delivery.
+        for index, entry in enumerate(journal, 1):
+            if entry.get("delivered") or "message" in entry:
+                continue
+            item = entry["item"]
+            destination, text = item.get("to"), item.get("text")
+            if index > MAX_MESSAGES_PER_LEG:
+                refuse(index, "at most 8 messages per leg")
+                continue
+            if not isinstance(text, str) or not text.strip() or len(text) > MAX_REPLY_CHARS:
+                refuse(index, "invalid message text")
+                continue
+            reference = ""
+            n = item.get("reply_to")
+            if n is not None:
+                try:
+                    if type(n) is not int or n < 1:
+                        raise ValueError("invalid number")
+                    prior = decode(
+                        json.loads((run_dir / "inbox" / f"{n:06d}.json").read_text()), record.run_id
+                    )
+                    if prior.seq != n:
+                        raise ValueError("damaged sequence")
+                    reference = prior.message_id
+                except (OSError, ValueError, TypeError):
+                    refuse(index, f"inbox message #{n} is missing or damaged")
+                    continue
+            if destination == "thread":
+                continue
+            recipient: RunRecord | None
+            if destination == "self":
+                recipient = record
+            else:
+                matches = [
+                    r
+                    for r in list_runs(root)
+                    if r.target == record.target
+                    and r.agent_id == destination
+                    and r.state in (RUNNING, PARKED)
+                ]
+                if len(matches) > 1:
+                    refuse(index, "ambiguous recipient")
+                    continue
+                recipient = matches[0] if matches else None
+            if recipient is None:
+                refuse(index, "no live run on this target (absent or ended)")
+                continue
+            key = f"agent-msg:{record.run_id}:{entry['counter']}"
+            entry["recipient"] = recipient.run_id
+            entry["message"] = asdict(
+                Message(
+                    0,
+                    "agent-message",
+                    "agent",
+                    "",
+                    time.time(),
+                    key,
+                    {"text": redact(text, secrets)},
+                    origin=record.run_id,
+                    to=recipient.run_id,
+                    in_reply_to=reference,
+                )
+            )
+            persist()
+
+        public = [e for e in journal if not e.get("delivered") and "message" not in e]
+        stage_replies(
+            run_dir,
+            [e["item"]["text"] for e in public],
+            thread_for(record),
+            ids=[f"message-{e['counter']:020d}" for e in public],
+        )
+        for index, entry in enumerate(journal, 1):
+            if entry.get("delivered"):
+                continue
+            if "message" not in entry:
+                stem = f"message-{entry['counter']:020d}"
+                posted += flush_replies(run_dir, post, seen, thread_for(record), through=stem)
+                if not (run_dir / "outbox" / f"{stem}.posted").exists():
+                    return posted
+                entry["delivered"] = True
+                persist()
+                continue
+            message = Message(**entry["message"])
+            recipient_dir = root / "runs" / str(entry["recipient"])
+            with _inbox_handle(recipient_dir) as inbox_fd:
+                handle = _lock_at(inbox_fd, ".message-lock")
+                with os.fdopen(handle, "w") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    recipient = load_record(root, str(entry["recipient"]))
+                    known = _keys(recipient_dir)
+                    if (
+                        recipient.run_id != record.run_id
+                        and message.key not in known
+                        and sum(
+                            m.kind == "agent-message"
+                            and m.origin == record.run_id
+                            and not m.payload.get("context_only")
+                            for m in known.values()
+                            if m.seq > recipient.inbox_seq
+                        )
+                        >= 4
+                    ):
+                        item = entry["item"]
+                        refuse(index, "recipient already has 4 undelivered messages from you")
+                        message = Message(**entry["message"])
+                        append(run_dir, message)
+                    else:
+                        append(recipient_dir, message)
+                        if recipient.run_id != record.run_id:
+                            append(
+                                run_dir,
+                                dc_replace(
+                                    message, payload={**message.payload, "context_only": True}
+                                ),
+                            )
+                    entry["delivered"] = True
+                    persist()
+        state.pop("message_delivery", None)
+        persist()
+        return posted + flush_replies(run_dir, post, seen, thread_for(record))
     except Exception as exc:
-        log.warning("reply delivery failed for %s: %s", record.run_id, exc)
-        return 0
+        log.warning("message delivery failed for %s: %s", record.run_id, exc)
+        return posted
 
 
 def save_meter(run_root: Path, run_id: str, launches: int, sleeps: int, hours: float) -> None:
@@ -880,16 +1062,18 @@ def run_author_leg(
 ) -> AttemptResult:
     """Prepare the author channel and run a resumed leg through the orchestrator."""
     directory = run_root / "runs" / record.run_id
-    replies_posted = post_replies(record, github, (), secrets, directory)
+    replies_posted = deliver_messages(record, github, (), secrets, directory)
 
     def outbox_ids() -> set[str]:
-        return {p.stem for p in (directory / "outbox").glob("*") if p.stem.isdecimal()}
+        return {
+            p.stem for p in (directory / "outbox").glob("*") if p.suffix in (".json", ".posted")
+        }
 
     initial_replies = outbox_ids()
 
-    def post_leg_replies(replies: tuple[str, ...]) -> None:
+    def post_leg_replies(messages: tuple[dict, ...]) -> None:
         nonlocal replies_posted
-        replies_posted += post_replies(record, github, replies, secrets, directory)
+        replies_posted += deliver_messages(record, github, messages, secrets, directory)
 
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
@@ -1006,11 +1190,12 @@ def _wake_author_sleep(
     checkouts of the sealed sha), so the resumed session continues its own tree
     — cumulative depth. `sleep_ref` is whichever snapshot ref this park holds
     (the sleep seal, or the submitted candidate)."""
-    from outerloop.syscall import Launch as SyscallLaunch
     from outerloop.syscall import (
+        MAX_REPLY_CHARS,
         annotate_launch_states,
         gather_results,
     )
+    from outerloop.syscall import Launch as SyscallLaunch
 
     def _end(result: AttemptResult, drop_refs: list[str]) -> AttemptOutcome:
         if record.pr_url and result.outcome != "improved":
@@ -1156,21 +1341,6 @@ def _wake_author_sleep(
                     "elapsed": elapsed[index] if elapsed and index < len(elapsed) else None,
                 },
                 origin=launch_result.name,
-            ),
-        )
-    note = str(record.stage.get("syscall_note", ""))
-    if note:
-        append(
-            run_dir,
-            Message(
-                0,
-                "note",
-                "author",
-                thread,
-                now,
-                f"note:{sleep_ref}:{sleeps_used}",
-                {"text": note},
-                origin=record.run_id,
             ),
         )
     pacing = [
@@ -1342,7 +1512,7 @@ def _wake_author_sleep(
     if record.pr_url and result.outcome == "review" and result.session is not None:
         from outerloop.review import APPROVAL_PATTERN, REDACTED
 
-        post_replies(record, github, (), secrets, run_dir)
+        deliver_messages(record, github, (), secrets, run_dir)
         reply = APPROVAL_PATTERN.sub(REDACTED, redact(result.session.final_text, secrets))[
             :MAX_REPLY_CHARS
         ]
@@ -1354,7 +1524,7 @@ def _wake_author_sleep(
         save_record(
             run_root,
             dc_replace(
-                _clear_stage(latest),
+                _clear_stage(latest, run_root),
                 state=PARKED,
                 resume_session_id=result.session.session_id or latest.resume_session_id,
             ),
@@ -2317,7 +2487,6 @@ def resume_run(
                         )
                         for item in _stage_launches(record)
                     ),
-                    note=str(stage.get("syscall_note", "")),
                     submit=True,
                     # the author's report rides every re-park: a suite fan-out
                     # must not drop what the panel and the PR read
@@ -2927,7 +3096,7 @@ def _finish_attempt(
         for k, v in latest.stage.items()
         if k in ("launches_used", "sleeps_used", "gpu_hours_used")
     }
-    record = dc_replace(record, stage={**record.stage, **meter})
+    record = dc_replace(record, stage={**_message_stage(run_root, record), **meter})
     if result.outcome == "improved":
         return publish(
             result=result,
@@ -2952,7 +3121,7 @@ def _finish_attempt(
     report_path.write_text(result.report(config, redact_secrets=secrets))
     _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
     if record.pr_url:
-        final = dc_replace(_clear_stage(record), state=PARKED)
+        final = dc_replace(_clear_stage(record, run_root), state=PARKED)
         _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
     else:
         _best_effort(
@@ -3096,7 +3265,7 @@ def publish(
         for k, v in latest.stage.items()
         if k in ("launches_used", "sleeps_used", "gpu_hours_used")
     }
-    record = dc_replace(record, stage={**record.stage, **meter})
+    record = dc_replace(record, stage={**_message_stage(run_root, record), **meter})
     report = result.report(config, redact_secrets=secrets)
     record = dc_replace(
         record,
@@ -3139,7 +3308,7 @@ def publish(
         )
         final = dc_replace(record, auto_blessed_head="")
         if record.pr_url:
-            final = dc_replace(_clear_stage(final), state=PARKED)
+            final = dc_replace(_clear_stage(final, run_root), state=PARKED)
         elif result.session is not None and result.session.session_id:
             ref = f"refs/dispatch/publish-{run_id}-{result.candidate_sha}"
             ws.git("update-ref", ref, result.candidate_sha)
@@ -3343,7 +3512,7 @@ def publish(
         save_record(
             run_root,
             dc_replace(
-                _clear_stage(record),
+                _clear_stage(record, run_root),
                 state=PARKED,
                 auto_blessed_head=(
                     _blessed_head(ws, result, contract, base_branch, base_sha)
@@ -3511,7 +3680,7 @@ def publish(
             }
         )
     # a resumed run's park bookkeeping never rides into review or an ending
-    final = _clear_stage(final)
+    final = _clear_stage(final, run_root)
     if not _best_effort(
         "final record",
         lambda: (
@@ -3894,7 +4063,7 @@ def live_attempt(
 
         def acknowledge(seq: int) -> None:
             nonlocal record
-            record = dc_replace(record, inbox_seq=seq)
+            record = dc_replace(load_record(run_root, run_id), inbox_seq=seq)
             save_record(run_root, record, time.time())
 
         parked: RunParked | None = None
@@ -3928,7 +4097,9 @@ def live_attempt(
                 on_meter=lambda launches, sleeps, hours: save_meter(
                     run_root, record.run_id, launches, sleeps, hours
                 ),
-                on_replies=(lambda replies: post_replies(record, github, replies, secrets, run_dir))
+                on_replies=(
+                    lambda replies: deliver_messages(record, github, replies, secrets, run_dir)
+                )
                 if author_syscalls
                 else None,
                 inbox_thread=thread_for(record),
@@ -4608,7 +4779,7 @@ def finish_run(
     report = directory / "report.md"
     if not report.exists():
         report.write_text(f"# {record.task_title}\n\n{ending}: {note}\n")
-    final = _clear_stage(dc_replace(record, state=ENDED, ending=ending, ending_note=note))
+    final = _clear_stage(dc_replace(record, state=ENDED, ending=ending, ending_note=note), run_root)
     jobs = set(stage_launch_job_ids(record)) | set(
         afterany_ids(str(record.stage.get("afterany") or ""))
     )

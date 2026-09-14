@@ -1080,7 +1080,7 @@ def collect_status(
         if record.target != target or record.state not in _LIVE_STATES:
             continue
         stage = record.stage or {}
-        note = str(stage.get("syscall_note") or stage.get("report") or "")
+        note = str(stage.get("report") or "")
         hyp = report_hypothesis(note) or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))

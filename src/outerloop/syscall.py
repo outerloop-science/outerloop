@@ -105,14 +105,15 @@ def tool_command(workspace: Path) -> str:
 
 # Per-request bounds (the budget is separate: depth_k / sleep_k).
 # The whole file is read size-capped FIRST (agent-controlled input); the cap is
-# roomy for the field bounds below (8 launches x 2000-char commands + note).
+# roomy for the field bounds below (8 launches x 2000-char commands + messages).
 MAX_REQUEST_BYTES = 65_536
 MAX_LAUNCHES_PER_SLEEP = 8
 # jobs one launch may fan out to (`--array N`, a sweep)
 MAX_LAUNCH_ARRAY = 16
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS_PER_LAUNCH = 8
-MAX_NOTE_CHARS = 2_000
+MAX_REPLY_CHARS = 20_000
+MAX_MESSAGES_PER_LEG = 8
 # a launch's one-line reason, shown to every agent in the queue view
 MAX_WHY_CHARS = 200
 # the author's write-up at submit: hypothesis, what ran, what was measured, why merge
@@ -166,14 +167,13 @@ class Launch:
 
 @dataclass(frozen=True)
 class SyscallRequest:
-    """The author's staged replies and optional sleep or end request."""
+    """The author's staged messages and optional sleep or end request."""
 
     launches: tuple[Launch, ...]
-    replies: tuple[str, ...] = ()
+    messages: tuple[dict, ...] = ()
     sleep: bool = True
     end: bool = False
     problem: str = ""  # why the request cannot be honoured as staged (told, then the leg goes on)
-    note: str = ""  # the author's reminder-to-self, echoed back on wake
     # research-loop-buildout.md Phase B: a submit is a launch whose job is the
     # GATE (paired baseline/candidate on the sealed tree) plus the panel; the
     # wake returns verdict + gate result to the author (published directly when
@@ -302,37 +302,44 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     if not isinstance(data, dict):
         raise SyscallError("syscall.json must be a JSON object")
     # Author requests cannot carry a judge verdict.
-    if data.get("type") not in ("sleep", "reply", "end"):
-        raise SyscallError(f"expected a sleep, reply or end syscall, got type {data.get('type')!r}")
+    if data.get("type") not in ("sleep", "message", "end"):
+        raise SyscallError(
+            f"expected a sleep, message or end syscall, got type {data.get('type')!r}"
+        )
     unknown = set(data) - {
         "type",
         "launches",
-        "note",
         "submit",
         "eval_minutes",
         "report",
-        "replies",
+        "messages",
     }
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
-    replies = data.get("replies", [])
-    if not isinstance(replies, list) or any(
-        not isinstance(reply, str) or not reply.strip() or len(reply) > MAX_REQUEST_BYTES
-        for reply in replies
-    ):
-        raise SyscallError("replies must be a list of non-empty bounded strings")
-    if data["type"] == "reply" and set(data) - {"type", "replies"}:
-        raise SyscallError("reply syscall only accepts replies")
+    messages = data.get("messages", [])
+    if not isinstance(messages, list) or len(messages) > MAX_MESSAGES_PER_LEG:
+        raise SyscallError("messages must be a list of at most 8 messages")
+    for item in messages:
+        if not isinstance(item, dict) or set(item) != {"to", "text", "reply_to"}:
+            raise SyscallError("message must contain only to, text and reply_to")
+        destination, text, reference = item["to"], item["text"], item["reply_to"]
+        if not isinstance(destination, str) or (
+            destination not in ("thread", "self") and not re.fullmatch(r"agent-\d{2,}", destination)
+        ):
+            raise SyscallError("invalid message destination")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_REPLY_CHARS:
+            raise SyscallError(f"message text must contain 1 to {MAX_REPLY_CHARS} chars")
+        if reference is not None and (type(reference) is not int or reference < 1):
+            raise SyscallError("reply_to must be a positive integer or null")
+    if data["type"] == "message" and set(data) - {"type", "messages"}:
+        raise SyscallError("message syscall only accepts messages")
     problem = ""
     if data["type"] == "end":
         # a conflicting end is refused and told, never a dead run
         if data.get("submit"):
             problem = "submit first, end after the verdict"
-        elif set(data) - {"type", "report", "replies"}:
+        elif set(data) - {"type", "report", "messages"}:
             problem = "end is final for the leg; it cannot accompany launch or sleep"
-    note = data.get("note", "")
-    if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
-        raise SyscallError(f"note must be a string of at most {MAX_NOTE_CHARS} chars")
     submit = data.get("submit", False)
     if not isinstance(submit, bool):
         raise SyscallError("submit must be a boolean")
@@ -415,11 +422,10 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     # sleep count, which is what bounds living forever.
     return SyscallRequest(
         launches=tuple(launches),
-        replies=tuple(replies),
+        messages=tuple(messages),
         sleep=data["type"] == "sleep",
         end=data["type"] == "end",
         problem=problem,
-        note=note,
         submit=submit,
         eval_minutes=eval_minutes,
         report=report.strip(),
@@ -657,8 +663,10 @@ def tool_update_note(channel: str) -> str:
     whose tool refresh replaced its tool; `channel` is this workspace's channel
     dir name (a resumed legacy session still has `.autoresearch`)."""
     return (
-        "Your syscall tool was updated. `reply <text>` or `reply --file <path>` stages "
-        "a reply on your PR or issue; once a reply is staged the final message is not posted, "
+        "Your syscall tool was updated. `message <text>` or `message --file <path>` stages "
+        "a public message on your PR or issue; use --to self for a reminder, --to agent-NN "
+        "for a sibling, or --show <n> for a chain. Once a public message is staged the "
+        "final message is not posted, "
         "and a code change is published only by `submit`. "
         "`end [--report <file>]` ends without a PR, or posts the report and parks "
         "with an open PR, at turn end. "

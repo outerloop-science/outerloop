@@ -187,7 +187,8 @@ def test_terminal_transition_keeps_the_spend_for_the_board(tmp_path: Path) -> No
         wake_attempts=2,
         deadline=9.0,
     )
-    cleared = _clear_stage(record)
+    save_record(tmp_path, record, 1)
+    cleared = _clear_stage(record, tmp_path)
     assert cleared.stage == {"gpu_hours_used": 36.0}
     assert cleared.wake_attempts == 0 and cleared.deadline == 0.0
     save_record(tmp_path, dc_replace(cleared, state="ended", ending="negative-result"), 2.0)
@@ -998,9 +999,7 @@ def test_status_carries_the_working_direction(tmp_path: Path) -> None:
         updated=2.0,
         stage={
             "phase": "author-sleep",
-            "syscall_note": (
-                "Hypothesis: very long warmdowns preserve late LR. Sweeping 6 lengths now."
-            ),
+            "report": ("Hypothesis: very long warmdowns preserve late LR. Sweeping 6 lengths now."),
         },
     )
     save_record(tmp_path, record, 2.0)
@@ -1043,7 +1042,7 @@ def test_bare_submit_still_gets_meters(tmp_path: Path) -> None:
         agent_id="agent-04",
         created=1.0,
         updated=2.0,
-        stage={"phase": "candidate", "syscall_note": "**Bold** claim: details later."},
+        stage={"phase": "candidate", "report": "**Bold** claim: details later."},
     )
     save_record(tmp_path, record, 2.0)
     contract = SimpleNamespace(
@@ -1093,7 +1092,7 @@ def test_status_progress_depth_and_phrases(tmp_path: Path) -> None:
                 {"name": "warmdown-length", "array": 3, "minutes": 180},
                 {"name": "probe", "minutes": 30},
             ],
-            "syscall_note": "Hypothesis: longer warmdown helps: sweeping 3 lengths plus a probe.",
+            "report": "Hypothesis: longer warmdown helps: sweeping 3 lengths plus a probe.",
         },
     )
     save_record(tmp_path, record, 2.0)
@@ -1417,7 +1416,7 @@ def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> 
         updated=2.0,
         pr_url="https://github.com/org/repo/pull/16",
         stage={
-            "syscall_note": "Rerunning the confirm with more seeds.",
+            "report": "Rerunning the confirm with more seeds.",
             "hypothesis": "EMA helps.",
         },
     )

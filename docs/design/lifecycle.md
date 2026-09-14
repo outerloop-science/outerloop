@@ -83,6 +83,15 @@ waiting spends no wake attempt and cannot end as stuck.
 
 ### Messages
 
+`message [--to thread|self|agent-NN] [--reply-to <n>] <text>` (or `--file`)
+sends to the public PR or issue by default, to yourself at the next wake,
+or to a live sibling on this target. The kernel keeps a sent copy of sibling
+messages in your inbox as context; it never wakes you for your own sent copy.
+Headers use local numbers and parties named `you` or `agent-NN`, never run ids.
+Reply references use each reader's local number. `message --show <n>` prints
+the chain oldest first from the newest 200 entries. The protocol marks all
+fenced blocks as data once, without repeating it for each message.
+
 The envelope carries `message_id` (global `<recipient run id>/<key>`),
 `context_id` (the run it concerns), `to` (the recipient run id), and
 `in_reply_to` (an optional message id it answers).
@@ -143,10 +152,10 @@ wake the tick sooner than its cadence; that is a trigger, not a transport.
 | `launch` | stages a contained job for the contract's lane; the author keeps working | metering |
 | `sleep` | seals the tree, submits the staged jobs, records them in the ledger, parks the run on them (possibly none); the results arrive at the wake | containment, placement, the sleep count |
 | `submit` | seals the tree, runs the gate and the panel as jobs, delivers the verdict as a message; a credited verdict publishes | the gate; the publish |
-| `reply` | posts text on the thread the message came from, with secrets redacted and self-approval scrubbed, through the author leg | standing of the poster; redaction |
+| `message` | sends to the public thread, self or a live agent on this target; public posts are redacted and scrubbed of self-approval | kernel identity, routing, bounds and redaction |
 | `end` | without a PR, ends with the report and last failed verdict; with an open PR, posts a supplied report and parks for messages | the report |
 
-`reply` and `end` are new. A session that stops without sleeping or
+`message` and `end` are new. A session that stops without sleeping or
 submitting ends the run with what it has, unmeasured. That is a change: today
 a plain finish is measured by the gate on the tree it left, and can publish.
 Under this note only a submit is measured, on every benchmark, so the author
@@ -314,7 +323,7 @@ between stages.
    pending blocking findings are read from the inbox from this stage on, so
    `panel_wake_text` can go. Advisory findings and a refreshed sibling view
    ride along. No lifecycle change yet.
-2. **Messages reach a parked author.** Status: landed. `reply` exists. A run with an open PR
+2. **Messages reach a parked author.** Status: landed. `message` exists. A run with an open PR
    parks; comments and base moves are inbox messages; the author can launch,
    reply and sleep in review. A session that edits code in review still goes
    through today's re-measure-and-push until the next stage replaces it.

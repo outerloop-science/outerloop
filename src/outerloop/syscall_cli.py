@@ -8,7 +8,7 @@ experiments and hibernate:
 
     python .outerloop/syscall launch --name train --minutes 90 \\
         --artifact results/curve.json -- uv run python train.py --lr 3e-4
-    python .outerloop/syscall note "compare with the lr sweep"
+    python .outerloop/syscall message --to self "compare with the lr sweep"
     python .outerloop/syscall submit      # seal + gate + panel on this tree
     python .outerloop/syscall sleep       # then END YOUR TURN to hibernate
 
@@ -54,7 +54,7 @@ BUDGET = "budget.json"  # kernel-written: remaining counts, for `status`
 MAX_LAUNCHES = 8
 MAX_COMMAND_CHARS = 2_000
 MAX_ARTIFACTS = 8
-MAX_NOTE_CHARS = 2_000
+MAX_REPLY_CHARS = 20_000
 MAX_WHY_CHARS = 200  # one line on what a launch tests; every agent sees it in `queue`
 MAX_REQUEST_BYTES = 65_536
 MAX_REPORT_CHARS = 8_000  # the write-up a submit carries; it becomes the PR's research report
@@ -96,13 +96,12 @@ def _load_staged(root: Path) -> dict:
     try:
         data = json.loads(f.read_text())
     except FileNotFoundError:
-        return {"launches": [], "note": "", "submit": False, "findings": [], "notes": ""}
+        return {"launches": [], "submit": False, "findings": [], "notes": ""}
     except (OSError, json.JSONDecodeError) as exc:
         raise ToolError(f"staged request is unreadable ({exc}); run `cancel` to reset") from exc
     # tolerate a partial file: default any missing family so either role's verbs work
     for key, empty in (
         ("launches", []),
-        ("note", ""),
         ("submit", False),
         ("eval_minutes", None),
         ("report", ""),
@@ -131,7 +130,7 @@ def _budget_line(root: Path) -> str:
         return "budget: (unknown)"
 
 
-# --- author syscalls: launch / note / sleep --------------------------------
+# --- author syscalls: launch / message / sleep --------------------------------
 
 
 def _check_end(root: Path, verb: str) -> None:
@@ -162,7 +161,7 @@ def cmd_end(root: Path, args: argparse.Namespace) -> str:
             raise ToolError(f"report file could not be read: {exc}") from exc
         if not report.strip() or len(report) > MAX_REPORT_CHARS:
             raise ToolError(f"report must contain 1 to {MAX_REPORT_CHARS} chars")
-    encoded = json.dumps({"type": "end", "report": report, "replies": payload.get("replies", [])})
+    encoded = json.dumps({"type": "end", "report": report, "messages": payload.get("messages", [])})
     if len(encoded.encode("utf-8")) > MAX_REQUEST_BYTES:
         raise ToolError(f"staged request exceeds {MAX_REQUEST_BYTES} bytes")
     abi.write_text(encoded)
@@ -231,17 +230,24 @@ def cmd_launch(root: Path, args: argparse.Namespace) -> str:
     )
 
 
-def cmd_note(root: Path, args: argparse.Namespace) -> str:
-    note = args.text
-    if len(note) > MAX_NOTE_CHARS:
-        raise ToolError(f"note exceeds {MAX_NOTE_CHARS} chars")
-    staged = _load_staged(root)
-    staged["note"] = note
-    _save_staged(root, staged)
-    return "note saved (delivered back to you on wake)."
+def _messages(root: Path) -> list[dict]:
+    try:
+        return json.loads((root / DIR / "messages.json").read_text())
+    except (OSError, ValueError):
+        return []
 
 
-def cmd_reply(root: Path, args: argparse.Namespace) -> str:
+def cmd_message(root: Path, args: argparse.Namespace) -> str:
+    if args.show is not None:
+        if args.text is not None or args.file or args.reply_to is not None or args.to != "thread":
+            raise ToolError("--show cannot accompany a message")
+        return _show_chain(root, args.show)
+    if args.to not in ("thread", "self") and not re.fullmatch(r"agent-\d{2,}", args.to):
+        raise ToolError("invalid message destination")
+    if args.reply_to is not None and not any(m["seq"] == args.reply_to for m in _messages(root)):
+        raise ToolError(f"unknown inbox message #{args.reply_to}")
+    if (args.text is None) == (args.file is None):
+        raise ToolError("provide text or --file")
     text = args.text
     if args.file:
         path = Path(args.file)
@@ -249,19 +255,69 @@ def cmd_reply(root: Path, args: argparse.Namespace) -> str:
             path = root / path
         try:
             with path.open(encoding="utf-8", errors="replace") as stream:
-                text = stream.read(MAX_REQUEST_BYTES + 1)
+                text = stream.read(MAX_REPLY_CHARS + 1)
         except OSError as exc:
-            raise ToolError(f"reply file could not be read: {exc}") from exc
-    if not isinstance(text, str) or not text.strip() or len(text) > MAX_REQUEST_BYTES:
-        raise ToolError(f"reply must contain 1 to {MAX_REQUEST_BYTES} chars")
+            raise ToolError(f"message file could not be read: {exc}") from exc
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_REPLY_CHARS:
+        raise ToolError(f"message text exceeds bounds: 1 to {MAX_REPLY_CHARS} chars")
     path = _dir(root) / ABI
-    payload: dict = json.loads(path.read_text()) if path.exists() else {"type": "reply"}
-    payload.setdefault("replies", []).append(text)
+    payload: dict = json.loads(path.read_text()) if path.exists() else {"type": "message"}
+    messages = payload.setdefault("messages", [])
+    if len(messages) >= 8:
+        raise ToolError("at most 8 messages per leg")
+    messages.append({"to": args.to, "text": text, "reply_to": args.reply_to})
     encoded = json.dumps(payload)
     if len(encoded.encode("utf-8")) > MAX_REQUEST_BYTES:
-        raise ToolError(f"staged replies exceed {MAX_REQUEST_BYTES} bytes")
+        raise ToolError(f"staged messages exceed {MAX_REQUEST_BYTES} bytes")
     path.write_text(encoded)
-    return "reply staged (posted when this leg ends)."
+    if args.to == "thread":
+        try:
+            thread = json.loads((root / DIR / "message-destination.json").read_text())["thread"]
+        except (OSError, ValueError, KeyError):
+            thread = "this run's PR or issue thread"
+        return f"message staged to thread; this will be posted publicly on {thread}."
+    destination = "self (you)" if args.to == "self" else args.to
+    return f"message staged to {destination} (delivered at the next wake)."
+
+
+def _show_chain(root: Path, number: int) -> str:
+    entries = {m["seq"]: m for m in _messages(root)}
+    if number not in entries:
+        return f"unknown inbox message #{number}"
+    chain = {number}
+    current = entries[number].get("reply_to_seq")
+    while isinstance(current, int) and current in entries and current not in chain:
+        chain.add(current)
+        current = entries[current].get("reply_to_seq")
+    diagnostic = ""
+    if isinstance(current, int):
+        diagnostic = (
+            f"cycle detected at #{current}"
+            if current in chain
+            else f"missing root: inbox message #{current} is not in the snapshot"
+        )
+    while True:
+        children = {n for n, m in entries.items() if m.get("reply_to_seq") in chain}
+        if children <= chain:
+            break
+        chain |= children
+    lines = [f"chain of #{number}, {len(chain)} messages, oldest first", ""]
+    if diagnostic:
+        lines.extend([diagnostic, ""])
+    for n in sorted(chain):
+        m = entries[n]
+        reference = m.get("reply_to_seq")
+        suffix = f"   (replying to #{reference})" if reference else ""
+        lines.extend(
+            [
+                f"#{n:<3} {m['time']}   {m['sender']} -> {m['recipient']}{suffix}",
+                "     " + m["text"].replace("\n", "\n     "),
+                "",
+            ]
+        )
+    body = "\n".join(lines).rstrip()
+    fence = "`" * max(3, max((len(x) + 1 for x in re.findall(r"`+", body)), default=0))
+    return f"{fence}\n{body}\n{fence}"
 
 
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
@@ -317,7 +373,6 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     payload = {
         "type": "sleep",
         "launches": staged["launches"],
-        "note": staged["note"],
         "submit": bool(staged["submit"]),
     }
     if staged["submit"] and staged.get("eval_minutes"):
@@ -327,7 +382,7 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
         payload["report"] = str(staged.get("report") or "")
     abi = _dir(root) / ABI
     if abi.exists():
-        payload["replies"] = json.loads(abi.read_text()).get("replies", [])
+        payload["messages"] = json.loads(abi.read_text()).get("messages", [])
     abi.write_text(json.dumps(payload))
     (root / DIR / REQUEST).unlink(missing_ok=True)
     n = len(staged["launches"])
@@ -408,8 +463,8 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
         payload = json.loads(abi.read_text())
         if payload.get("type") == "end":
             lines.append("end staged (applies when this turn ends)")
-        for reply in payload.get("replies", []):
-            lines.append(f"reply staged: {reply}")
+        for message in payload.get("messages", []):
+            lines.append(f"message staged to {message['to']}: {message['text']}")
     if staged["launches"] or staged["submit"] or (root / DIR / BUDGET).exists():
         lines.append(f"{len(staged['launches'])} launch(es) staged; {_budget_line(root)}.")
         for la in staged["launches"]:
@@ -424,8 +479,6 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
             lines.append("  submit staged: `sleep` seals this tree for the gate + panel")
             if staged.get("report"):
                 lines.append(f"  report: {len(staged['report'])} chars")
-        if staged.get("note"):
-            lines.append(f"  note: {staged['note']}")
     if staged["findings"]:
         lines.append(f"{len(staged['findings'])} finding(s) staged:")
         for f in staged["findings"]:
@@ -436,6 +489,7 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
 
 def cmd_cancel(root: Path, _args: argparse.Namespace) -> str:
     (root / DIR / REQUEST).unlink(missing_ok=True)
+    (root / DIR / ABI).unlink(missing_ok=True)
     return "staged request discarded."
 
 
@@ -475,11 +529,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repo-relative file to bring back (repeatable)",
     )
     la.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command to run")
-    reply = sub.add_parser("reply", help="post a reply when this leg ends")
-    reply.add_argument("text", nargs="?")
-    reply.add_argument("--file")
-    no = sub.add_parser("note", help="save a note to yourself, echoed back on wake")
-    no.add_argument("text")
+    message = sub.add_parser("message", help="send to thread, self, or agent-NN; show a chain")
+    message.add_argument("text", nargs="?")
+    message.add_argument("--file")
+    message.add_argument("--to", default="thread")
+    message.add_argument("--reply-to", type=int)
+    message.add_argument("--show", type=int)
     su = sub.add_parser(
         "submit",
         help=(
@@ -820,9 +875,8 @@ def cmd_history(root: Path, args) -> str:
 
 _HANDLERS = {
     "end": cmd_end,
-    "reply": cmd_reply,
+    "message": cmd_message,
     "launch": cmd_launch,
-    "note": cmd_note,
     "submit": cmd_submit,
     "sleep": cmd_sleep,
     "finding": cmd_finding,

@@ -6,6 +6,12 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+Authors now use `message` for public posts, reminders to self and messages to
+live agents on the same target. Sibling messages keep a sent copy, and inbox
+headers name both parties with local message numbers. `--reply-to` links a
+response; `message --show` reads its chain. The kernel bounds delivery and
+reports refused messages. The old reply and note verbs are removed.
+
 Messages carry a global id, a context, a recipient and an optional reply reference;
 old inbox files read as before; the wake's headers name the sender.
 
