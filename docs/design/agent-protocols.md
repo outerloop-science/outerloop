@@ -266,68 +266,96 @@ them on read (`to` = the inbox's own run, `message_id` from the run id and
 key); nothing is rewritten; a file the decoder cannot read stops delivery,
 as today, and never silently drops out of deduplication.
 
+**One verb for saying things.** Today `reply` posts publicly to the run's
+PR or issue and `note` comes back to the author at its next wake, stored as
+an inbox message the author itself sent (its origin is already the run; the
+header just hides it). A sibling message would be a third spelling of the
+same act. So: one verb, `message --to thread|self|<agent> <text>` (or
+`--file`), with `--reply-to <message id>` for correlation. The destination
+carries the consequences: `thread` is public and permanent, so the kernel's
+GitHub delivery path redacts, posts once, and keeps the thread's history,
+and the tool's own confirmation says "this will be posted publicly on
+PR #17"; `self` is what `note` was; `<agent>` is the sibling case below.
+`reply` and `note` retire in the same release (the tool is installed per
+session by the kernel, so the change is atomic), with old inbox entries of
+kind `note` still readable. The inbox header names the sender by kernel-set
+identity, never by category alone: `from: agent-04 (run …, you)` for a note
+to self, `from: agent-02 (run …)` for a sibling, `from: alice (GitHub,
+member)` for a human. There is no message to the kernel: the kernel reads
+structured verbs (launch, submit, sleep, end) and delivers mail; free text to
+it would have no reader.
+
 **Routing: the kernel is the hub.** Agents never talk to each other
-directly. An author stages a message to a sibling (`reply --to <run>`
-beside today's `reply`); the kernel validates it like every syscall and
-appends it to the recipient's inbox with `from` set by the kernel. The tool
-is untrusted, so the kernel owns the rules: the recipient must be a live
-run on the same target; the sender's identity is the run's, resolved by the
-kernel; per-run limits on messages, bytes and backlog, so a prompt-injected
-author cannot flood a sibling or start a loop; a message to a run in review
-queues behind its jobs and grants nothing; a message to an ended run is
-refused with one line back; the kernel never acknowledges a message with a
-message of its own. Delivery follows the existing rule: it waits behind the
-recipient's jobs and arrives at its next wake. The sibling view stays a
-derived read of the ledger; a message is for when an author has something
-to say to one sibling.
+directly. An author stages `message --to agent-04 …`; the kernel validates
+it like every syscall and appends it to the recipient's inbox with `from`
+set by the kernel. The tool is untrusted, so the kernel owns the rules: the
+recipient must be a live run on the same target; the sender's identity is
+the run's, resolved by the kernel; per-run limits on messages, bytes and
+backlog, so a prompt-injected author cannot flood a sibling or start a
+loop; a message to a run in review queues behind its jobs and grants
+nothing; a message to an ended run is refused with one line back; the
+kernel never acknowledges a message with a message of its own. Delivery
+follows the existing rule: it waits behind the recipient's jobs and arrives
+at its next wake. The sibling view stays a derived read of the ledger; a
+message is for when an author has something to say to one sibling.
 
-**Agent tasks, the smallest version.** A run can ask for an agent the way
-it asks for a job: `launch --agent <role> --brief <file>` stages a task; the
-kernel runs one session under the parent's RoleSpec ceiling
-(`agent-substrate.md`), on a sealed snapshot, read-only, with no inbox of
-its own, no wakes, no delegation of its own and no publishing; it produces
-one report and one terminal result, delivered to the parent as a
-`task-result` message with the report attached. The kernel enforces the
-ceiling (tools, scope, key, containment), reserves the child's spend
-against the parent before dispatch and reconciles the actual cost, and
-defines timeout, cancellation and what happens when the parent ends first.
-The parent judges; the child supplies evidence. A resumable child with its
-own inbox is a later question, if ever.
+**Sub-agents: not a tier, for now.** A kernel-level agent task (`launch
+--agent`: one session under the parent's ceiling, on a sealed snapshot,
+metered against the parent, returning one report) would buy kernel-owned
+isolation, durable dispatch, explicit spend reservation and uniform
+timeouts across backends. Those are real, but nothing measured asks for
+them yet: the harness backends already run in-session sub-agents under the
+parent's RoleSpec ceiling (`agent-substrate.md`), job arrays already give
+parallelism on compute nodes, and a cheaper model is a harness setting. So
+the tier is out of the committed sequence. Its trigger is evidence: an
+attempt that fails or wastes measurable resources because in-session
+sub-agents and jobs cannot meet a need (work across the parent's sleep, an
+isolation or accounting the harness cannot give). Before that, verify that
+the existing sub-agent ceiling is enforced as declared; that is cheaper and
+overdue.
 
-**The planner** is a role with its own context per benchmark search line
-(`scaling.md`), woken like any run. Its assignments are messages into
-authors' inboxes and are advisory; the durable plan stays the GitHub issue
-with its veto window, provenance-checked approval and budget lanes. It
-holds no authority: it cannot approve its own plan, start author runs
-(the kernel admits runs), override a budget, write a verified result, grade
-its own work, or merge. Its value is the non-overlap `#360` asked for and
-the search program `scaling.md` describes. It does not need agent tasks to
-exist.
+**The planner writes the plan.** Most of a planner's value lands when the
+kernel picks a direction for a new climb, not while runs are live. So the
+first planner is a plan writer: one bounded invocation per search line, on
+a cadence or after a merge, that reads the leader, the board (which now
+carries every run's hypothesis), recent reports, lessons and the budget,
+and drafts the plan section of the search-line issue. The kernel posts it
+(the planner never touches GitHub) and puts the plan's open directions,
+beside the current ledger activity, into every new climb's brief as
+advisory context under the existing admission and budget rules. No
+persistent planner inbox or session, no routine messages to live runs, no
+second plan store, no dependency on agent tasks or on the envelope change.
+It holds no authority: no starting runs, no spending, no measuring, no
+merging, no approving its own plan; the issue's veto window stays the human
+gate. Evidence: duplicate hypotheses and duplicated experiment spend against
+the weeks before, on the same benchmark. It cannot guarantee non-overlap
+(two authors can pick the same open direction from identical briefs before
+either claim reaches the ledger); if advisory context proves insufficient,
+an atomic claim at admission is the next step, and live redirection through
+`message --to` only after observed collisions justify it.
 
 **Sequencing.** Each stage lands as one PR, reviewed and run on one fleet
 from its commit, with its own acceptance evidence; "nothing moved" is not
 evidence.
 
 1. **Envelope and decoder.** `message_id`, `context_id`, `from`/`to`,
-   `in_reply_to`, one versioned decoder, every producer setting them.
-   Fleet evidence: old and new inbox files delivered identically, a restart
-   mid-wake, a duplicate append, a damaged entry, unchanged rendering,
-   positions and wakes.
-2. **Routing.** `reply --to`, the kernel's validation and limits, delivery
-   into the recipient's inbox, the board showing a message's sender. Fleet
-   evidence: one author tells a sibling something and the sibling reads it
-   at its next wake; a forged identity, a flood, a message in review and one
-   to an ended run each handled as specified; a crash between append and
-   delivery replays once.
-3. **Agent tasks.** The one-shot child above. Fleet evidence: a report comes
-   back; a ceiling violation is refused; concurrent spend is reserved and
-   reconciled; timeout, cancellation and a parent ending first.
-4. **The planner.** One role on one benchmark. Fleet evidence: fewer
-   overlapping directions than the unplanned baseline over the same period;
-   veto, approval and stop exercised. Independent of stage 3.
+   `in_reply_to`, one versioned decoder, every producer setting them, the
+   header naming senders by identity. Fleet evidence: old and new inbox
+   files delivered identically, a restart mid-wake, a duplicate append, a
+   damaged entry, unchanged wakes.
+2. **One `message` verb and sibling routing.** `message --to
+   thread|self|<agent>`, `reply` and `note` retired, the kernel's validation
+   and limits, delivery into the recipient's inbox, the board showing a
+   message's sender. Fleet evidence: a public reply still lands once and
+   redacted; a note still comes back; one author tells a sibling something
+   and the sibling reads it at its next wake; a forged identity, a flood, a
+   message in review and one to an ended run each handled as specified.
+3. **The plan-writing planner.** One search line on gpt-speedrun. Fleet
+   evidence: fewer duplicate hypotheses and less duplicated spend than the
+   unplanned weeks before; the veto window exercised.
 
-Stage 1 is mechanical and could start now; stages 2 to 4 are the semantic
-choices, and each should be read by the owner before it is built.
+Sub-agents wait for their trigger. Stage 1 is mechanical; stages 2 and 3
+are the semantic ones and each is read by the owner before it is built.
 
 ## Criteria instead of approvals
 
