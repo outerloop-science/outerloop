@@ -164,6 +164,57 @@ or a discoverable server. Neither is built. MCP's Tasks extension would not
 change the lifecycle either way; the kernel already owns waits, parks and
 wakes, so a second durable-task mechanism inside a tool call has no job here.
 
+## If Outerloop decentralizes: kernel to kernel
+
+The owner's forward question: suppose every lab runs its own kernel and
+kernels talk to each other. That is the case where a protocol stops being
+speculative, because a kernel is what A2A was designed around: an always-on
+service with an identity, taking tasks and returning artifacts. Sessions on
+Slurm stay files; kernels on the network do not.
+
+What kernels would say to each other, and what already carries it:
+
+- **Shared research state on one target.** Attempts, hypotheses, results
+  and reports for a benchmark several labs work on. This is already
+  decentralized and already has a protocol: git. The research-log branch is
+  the ledger, PRs are the human-facing channel, and every kernel reads and
+  writes the same repository. What is missing for several kernels on one
+  repository is coordination, not transport: who publishes the board, and
+  per-kernel namespaces in the ledger so two kernels never fight over one
+  file.
+- **Delegated work.** A run on kernel A needs an experiment or a measurement
+  that kernel B's compute can run. This is a task: a sealed tree, a command,
+  a walltime, and back come numbers, logs and an artifact. It is the compute
+  seam (`submit`, `status`) crossing a trust boundary, and an A2A task fits
+  it directly: kernel A is the client, kernel B the agent; input-required
+  covers "send me the data shards"; the result is an artifact.
+- **Independent verification.** Kernel A asks kernel B to re-measure a claim
+  it did not produce. Also a task, with a signed verdict as the artifact.
+  A2A 1.0's signed Agent Cards give the identity; the protocol does not make
+  the measurement honest. That needs attestation or replay, the crux the
+  market note already names, and it stays a kernel-owned rigid step on the
+  verifying side.
+- **Discovery.** Which kernels exist, which benchmarks they host, what
+  compute they offer. Agent Cards carry the description; a registry or the
+  target repository itself carries the list. AGNTCY's schema work is the
+  candidate for a registry if one is ever needed.
+- **Authors across kernels.** The sibling view across labs on one target is
+  the shared ledger again, read through git, not a message between kernels.
+
+What a protocol does not solve there, and what would need its own design:
+trust in another kernel's numbers (attestation, replay), credit and budgets
+across kernels (A2A carries none; the Agent Payments Protocol launched
+beside it is the closest thing), and provenance (which kernel measured what,
+signed). Those are the same rigid steps every kernel keeps for itself today,
+extended across a boundary.
+
+The consequence for the present design is small and concrete: keep the
+message model A2A-shaped and keep the transport behind the inbox, so that a
+kernel-to-kernel adapter is the same adapter as the service-agent one, with
+each kernel acting as client in one direction and agent in the other. The
+market design (a separate private note) is the first place this would be
+needed; git stays the substrate for everything that is about one repository.
+
 ## Criteria instead of approvals
 
 Nothing in code now. The note itself is the deliverable. What would justify
@@ -171,7 +222,8 @@ each later step:
 
 - **An A2A adapter** when a service-shaped agent has a concrete owner and a
   first integration: the cloud backend, an adopter who wants to bring an
-  agent with an existing A2A endpoint, or the planner from `scaling.md`. The
+  agent with an existing A2A endpoint, the planner from `scaling.md`, or
+  another kernel (the market). The
   integration defines the application contract inside A2A's envelope; the
   adapter feeds the inbox; the kernel stays a client and needs no Agent Card
   of its own. Pin the A2A version.
