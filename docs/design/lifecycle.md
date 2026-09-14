@@ -294,6 +294,8 @@ Multi-agent collaboration and sub-agent teams will need real addressing:
 sender and recipient, with routable messages. That is a future design item.
 The per-run inbox and outbox stay until then. Replies store their qualified
 thread when staged, so a later PR change does not change their destination.
+`agent-protocols.md` maps the lifecycle onto A2A's task and message model,
+which supplies that addressing when the time comes.
 
 ## Sequencing
 
