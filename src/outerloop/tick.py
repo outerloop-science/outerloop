@@ -609,7 +609,7 @@ def _merge_blessed_pr(
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
     def why_not(record: RunRecord, pr: dict) -> str:
-        """The first reason this PR is not merged now, "" when it is eligible."""
+        """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
             (record.state != PARKED, "the run is not parked"),
@@ -634,8 +634,7 @@ def _merge_blessed_pr(
 
     reason = why_not(record, pr)
     if reason:
-        if record.auto_blessed_head:  # a blessed PR that waits is worth a line
-            log.info("merge of %s#%s waits: %s", record.target, number, reason)
+        log.info("merge of %s#%s waits: %s", record.target, number, reason)
         return
     if not acquire_lease(root, record.run_id, holder, "", now):
         return
