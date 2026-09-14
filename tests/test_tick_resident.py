@@ -644,6 +644,15 @@ def test_the_env_file_policy_wins_over_the_environment(tmp_path: Path) -> None:
     )
     assert "ls-remote --tags --refs" in gitlog
     assert "reset --hard --quiet refs/tags/v0.1.0" in gitlog
+    # the pre-rename spelling is read neither from the file nor the environment
+    proc, gitlog = _deploy(
+        tmp_path / "c",
+        tags="v0.1.0",
+        env_file="AUTORESEARCH_AUTO_UPDATE=release\n",
+        AUTORESEARCH_AUTO_UPDATE="main",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "fetch" not in gitlog and "ls-remote" not in gitlog
 
 
 def test_an_unknown_policy_is_off_and_says_so(tmp_path: Path) -> None:

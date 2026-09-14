@@ -22,8 +22,9 @@ def test_contract_and_github_are_forbidden() -> None:
 
 
 def test_find_contract() -> None:
-    files = {".outerloop.yaml": "new"}
+    files = {".outerloop.yaml": "new", ".autoresearch.yaml": "old"}
     assert find_contract(lambda n: files.get(n)) == (".outerloop.yaml", "new")
+    assert find_contract(lambda n: {".autoresearch.yaml": "old"}.get(n)) is None
     assert find_contract(lambda n: None) is None
 
 

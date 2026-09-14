@@ -49,7 +49,8 @@ def env_file(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
 def test_env_file_values_reads_only_start_keys_last_wins_and_unquotes(tmp_path: Path) -> None:
     path = env_file(
         tmp_path,
-        "# comment\nOUTERLOOP_ROOT=/first\nOUTERLOOP_ROOT='/scratch/me/ar'\r\n"
+        "# comment\nAUTORESEARCH_PARTITION=old\nOUTERLOOP_ROOT=/first\n"
+        "OUTERLOOP_ROOT='/scratch/me/ar'\r\n"
         'OUTERLOOP_ACCOUNT="acct"\nOUTERLOOP_PANEL=\nOTHER=x\n'
         "OUTERLOOP_CADENCE_MIN = 20\n",
     )
@@ -116,6 +117,7 @@ def test_default_local_root(tmp_path: Path) -> None:
     from outerloop.cli import default_local_root
 
     env = {"HOME": str(tmp_path)}
+    (tmp_path / ".autoresearch").mkdir()  # an old root is not looked for
     assert default_local_root(env) == tmp_path / ".outerloop"
     (tmp_path / ".outerloop").mkdir()
     assert default_local_root(env) == tmp_path / ".outerloop"
@@ -143,6 +145,9 @@ def test_default_image_path(monkeypatch: Any, tmp_path: Path) -> None:
     from outerloop.tick import _default_image
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    old = tmp_path / "autoresearch-images" / "agent-py312.sif"
+    old.parent.mkdir()
+    old.write_text("")  # an old image dir is not looked for
     assert _default_image() == str(tmp_path / "outerloop-images" / "agent-py312.sif")
 
 

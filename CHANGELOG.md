@@ -22,7 +22,7 @@ tasks to finish.
 
 ### Removed
 
-- The pre-rename names are gone: the `AUTORESEARCH_*` environment names, `~/.config/autoresearch/`, `.autoresearch.yaml`, the `.autoresearch` channel directory, the `~/.autoresearch` local root default, `~/autoresearch-images`, the `autoresearch-resident` and `autoresearch-tick` job names, the `harness_key` file with its `*_HARNESS_KEY_FILE` setting, and the `climb_job_id` record field. A deployment still on any of them renames it before upgrading (the `.env` keys, the config directory, the image directory). The comment marker still recognizes old `autoresearch:` comments.
+- The pre-rename names are gone. The `AUTORESEARCH_*` environment names are no longer read by the package, the `.env` reader, the chain or the deploy step. `~/.config/autoresearch/`, `.autoresearch.yaml`, the `.autoresearch` channel directory, the `~/.autoresearch` local root default and `~/autoresearch-images` are no longer looked for. The `autoresearch-resident` and `autoresearch-tick` job names are no longer recognized. The `harness_key` file, the `*_HARNESS_KEY_FILE` setting and the `climb_job_id` record field are gone. Before upgrading, rename the `.env` keys, the config directory and the image directory. Cancel a resident or chain still queued under an old job name (`scancel --name autoresearch-resident`, or `autoresearch-tick`) before running `outerloop start`: the guard against two loops on one root knows only the current name. Old `autoresearch:` comment markers are still recognized.
 
 ### Fixed
 

@@ -8,6 +8,7 @@ from outerloop.paths import CONFIG_DIR_NAME, config_dir
 
 
 def test_fresh_machine_gets_the_new_dir(tmp_path: Path) -> None:
+    (tmp_path / ".config" / "autoresearch").mkdir(parents=True)  # not looked for
     assert config_dir(tmp_path) == tmp_path / ".config" / "outerloop"
     assert CONFIG_DIR_NAME == "outerloop"
 

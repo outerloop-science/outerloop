@@ -13,7 +13,8 @@ def test_brief_names_the_channel() -> None:
 
 
 def test_resolver(tmp_path: Path) -> None:
-    assert channel_dir(tmp_path) == ".outerloop"  # fresh clone -> new default
+    (tmp_path / ".autoresearch").mkdir()  # an old channel dir is not looked for
+    assert channel_dir(tmp_path) == ".outerloop"
     (tmp_path / ".outerloop").mkdir()
     assert channel_dir(tmp_path) == ".outerloop"
 

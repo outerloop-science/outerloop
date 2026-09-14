@@ -13,6 +13,9 @@ from outerloop import image as img
 
 
 def test_find_image(tmp_path: Path) -> None:
+    old = tmp_path / "autoresearch-images" / "agent-py312.sif"
+    old.parent.mkdir()
+    old.write_text("")  # an old image dir is not looked for
     assert img.find_image(tmp_path) == ""
     new = tmp_path / "outerloop-images" / "agent-py312.sif"
     new.parent.mkdir()

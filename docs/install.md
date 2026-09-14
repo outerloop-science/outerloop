@@ -85,7 +85,7 @@ That's the whole setup. Notes:
 - `bot_login` is **required** — the reviewer refuses to run without it, because
   that's how it knows never to review its own (or your bot's) pull requests.
   If you have no bot yet, any placeholder login works.
-- **If you forked this repo**, add `reviewer_repo: your-org/autoresearch` under
+- **If you forked this repo**, add `reviewer_repo: your-org/outerloop` under
   `with:` — otherwise your fork's changes never run.
 - **Pin the version in production**: `reviewer_ref: v0.1.0` (or a commit SHA).
   The default `main` moves.
@@ -351,6 +351,12 @@ the checkout under `OUTERLOOP_HOME` and moves it as `OUTERLOOP_AUTO_UPDATE`
 says (or pull it by hand); then run `outerloop permissions --open` from that
 checkout's environment. The sweep's log names the same pages until the
 permissions are accepted.
+
+A Slurm deployment coming from 0.1 whose resident or chain still runs under a
+pre-rename job name cancels it first (`scancel --name autoresearch-resident`,
+or `autoresearch-tick` for the per-cadence chain) and then runs `outerloop
+start`. `start` and the chain refuse a second loop on one root only under the
+current name, `outerloop-resident`.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
