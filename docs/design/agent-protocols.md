@@ -100,7 +100,7 @@ failed or canceled. The six endings travel as data on the final message.
 | --- | --- | --- |
 | a run | one task, in one context | legs are turns within it |
 | `running` | working | |
-| `parked` on jobs, on a submit, or on the next human message | input-required | the reason travels as data; a checkpoint timeout needs no answer and is a kernel-side wake |
+| `parked` on jobs, on a submit, or on the next human message | input-required | the kernel is the client: its next message is the answer (launch results, the verdicts, a human's comment); the reason travels as data; a checkpoint timeout needs no answer and is a kernel-side wake |
 | `ended` | completed (negative result, merged, rejected, budget exhausted) or failed/canceled (stuck, aborted) | the ending is metadata, not a state |
 | inbox message kinds | structured-data parts of a client message | kinds are data inside a part, not new part types |
 | `launch`, `submit`, `reply` | what the agent asks for in input-required | see the caveat below |
@@ -139,7 +139,9 @@ is not a store; it is an execution interface. So the honest shape is:
   rule. Outbound sends need their own care: a crash between a send and the
   record of its task id would resend and start duplicate remote work, so the
   adapter writes a send record (our message id, reused as A2A's message id)
-  before it sends, and a retry re-reads it.
+  before it sends. A2A leaves deduplication by message id optional, so on a
+  retry the adapter first lists the context's tasks and adopts the one that
+  carries that message id; it resends only when none does.
 - **Slurm and local compute keep the file channel** with no adapter at all.
   Nothing serves HTTP there and nothing needs to.
 
