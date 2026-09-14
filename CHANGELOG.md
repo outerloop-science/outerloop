@@ -13,6 +13,7 @@ tasks to finish.
 
 ### Fixed
 
+- The tick log says why a blessed PR is not merged yet (a message waits for the author, the run sleeps on jobs, the base moved, and so on), one line per sweep.
 - Runs retain their hypothesis through review. The status strip and sibling view carry it with the PR link, and the brief asks authors to check the view, refreshed at every wake, before choosing a direction and before submitting.
 
 - The board's squeue card scrolls sideways inside its box on a narrow screen instead of overflowing the page; the job name column is narrowed first.
