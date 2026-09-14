@@ -83,6 +83,10 @@ waiting spends no wake attempt and cannot end as stuck.
 
 ### Messages
 
+The envelope carries `message_id` (global `<recipient run id>/<key>`),
+`context_id` (the run it concerns), `to` (the recipient run id), and
+`in_reply_to` (an optional message id it answers).
+
 A message is the unit the kernel delivers. Every message has a source and an
 origin (the login, job name or run behind that source), a qualified thread
 such as `owner/repo#9` (the PR when one exists, else the issue the run claimed),
