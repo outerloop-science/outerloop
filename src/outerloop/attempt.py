@@ -816,6 +816,21 @@ def reply_id_marker(rid: str) -> str:
     return f"<!-- outerloop:reply-id {rid} -->"
 
 
+def acknowledge_messages(run_root: Path, run_id: str, seq: int) -> RunRecord:
+    """Advance the cursor under the same lock as sibling backlog checks."""
+    from outerloop.inbox import _inbox_handle, _lock_at
+
+    with (
+        _inbox_handle(run_root / "runs" / run_id) as inbox_fd,
+        os.fdopen(_lock_at(inbox_fd, ".message-lock"), "w") as lock,
+    ):
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        latest = load_record(run_root, run_id)
+        record = dc_replace(latest, inbox_seq=max(latest.inbox_seq, seq))
+        save_record(run_root, record, time.time())
+        return record
+
+
 def deliver_messages(
     record: RunRecord,
     github: GitHubClient,
@@ -861,7 +876,6 @@ def deliver_messages(
     posted = 0
     try:
         from outerloop.inbox import _inbox_handle, _keys, _lock_at, decode
-        from outerloop.syscall import MAX_MESSAGES_PER_LEG
 
         journal = state.get("message_delivery", [])
         if isinstance(journal, dict):
@@ -900,9 +914,6 @@ def deliver_messages(
                 continue
             item = entry["item"]
             destination, text = item.get("to"), item.get("text")
-            if index > MAX_MESSAGES_PER_LEG:
-                refuse(index, "at most 8 messages per leg")
-                continue
             if not isinstance(text, str) or not text.strip() or len(text) > MAX_REPLY_CHARS:
                 refuse(index, "invalid message text")
                 continue
@@ -924,13 +935,14 @@ def deliver_messages(
             if destination == "thread":
                 continue
             recipient: RunRecord | None
-            if destination == "self":
+            if destination == "self" or destination == record.agent_id:
                 recipient = record
             else:
                 matches = [
                     r
                     for r in list_runs(root)
-                    if r.target == record.target
+                    if r.run_id != record.run_id
+                    and r.target == record.target
                     and r.agent_id == destination
                     and r.state in (RUNNING, PARKED)
                 ]
@@ -972,8 +984,7 @@ def deliver_messages(
             if "message" not in entry:
                 stem = f"message-{entry['counter']:020d}"
                 posted += flush_replies(run_dir, post, seen, thread_for(record), through=stem)
-                if not (run_dir / "outbox" / f"{stem}.posted").exists():
-                    return posted
+                # Public retries belong to the durable outbox from here on.
                 entry["delivered"] = True
                 persist()
                 continue
@@ -985,7 +996,11 @@ def deliver_messages(
                     fcntl.flock(lock, fcntl.LOCK_EX)
                     recipient = load_record(root, str(entry["recipient"]))
                     known = _keys(recipient_dir)
-                    if (
+                    if message.kind == "agent-message" and recipient.state not in (RUNNING, PARKED):
+                        item = entry["item"]
+                        refuse(index, "no live run on this target (absent or ended)")
+                        append(run_dir, Message(**entry["message"]))
+                    elif (
                         recipient.run_id != record.run_id
                         and message.key not in known
                         and sum(
@@ -1401,9 +1416,7 @@ def _wake_author_sleep(
 
     def acknowledge(seq: int) -> None:
         nonlocal record
-        latest = load_record(run_root, run_id)
-        record = dc_replace(latest, inbox_seq=seq)
-        save_record(run_root, record, time.time())
+        record = acknowledge_messages(run_root, run_id, seq)
 
     # The wake's climb IO: measures go through the DISPATCHED measurer (this is
     # a wake job with bounded walltime — the gate's evals run as their own jobs
@@ -4063,8 +4076,7 @@ def live_attempt(
 
         def acknowledge(seq: int) -> None:
             nonlocal record
-            record = dc_replace(load_record(run_root, run_id), inbox_seq=seq)
-            save_record(run_root, record, time.time())
+            record = acknowledge_messages(run_root, run_id, seq)
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park

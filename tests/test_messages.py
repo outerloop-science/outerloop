@@ -202,14 +202,6 @@ def test_missing_or_damaged_reference_refuses_message(tmp_path, damage):
     assert pending(tmp_path / "runs" / recipient.run_id, 0) == []
 
 
-def test_kernel_leg_limit(tmp_path):
-    sender, _ = runs(tmp_path)
-    send(tmp_path, sender, *(outgoing("self", str(i)) for i in range(9)))
-    messages = pending(tmp_path / "runs" / sender.run_id, 0)
-    assert sum(m.kind == "agent-message" for m in messages) == 8
-    assert "at most 8 messages" in messages[-1].payload["text"]
-
-
 def test_snapshot_chain_and_bounds(tmp_path, capsys):
     own = tmp_path / "run-agent-01"
     ws = tmp_path / "ws"
@@ -443,7 +435,8 @@ def test_ambiguity_refusal_never_wakes(tmp_path):
 
 
 def test_sender_matching_agent_id_is_self(tmp_path):
-    sender, _ = runs(tmp_path)
+    sender, recipient = runs(tmp_path)
+    save_record(tmp_path, replace(recipient, agent_id="agent-01"), 2)
     sender = replace(sender, agent_id="agent-01")
     save_record(tmp_path, sender, 2)
     send(tmp_path, sender, *(outgoing("agent-01", str(i)) for i in range(5)))
@@ -461,7 +454,10 @@ def test_backlog_reloads_cursor_under_message_lock(tmp_path, monkeypatch):
 
     def acknowledge(fd, name):
         if name == ".message-lock":
-            save_record(tmp_path, replace(recipient, inbox_seq=4), 3)
+            from outerloop.attempt import acknowledge_messages
+
+            monkeypatch.setattr(inbox, "_lock_at", original)
+            acknowledge_messages(tmp_path, recipient.run_id, 4)
         return original(fd, name)
 
     monkeypatch.setattr(inbox, "_lock_at", acknowledge)
@@ -585,3 +581,92 @@ def test_public_staging_crash_replays_whole_journal(tmp_path, monkeypatch):
     deliver_messages(sender, cast(GitHubClient, github), (), (), own)
     assert github.posted == ["one", "two", "three"]
     assert "message_delivery" not in load_record(tmp_path, sender.run_id).stage
+
+
+@pytest.mark.parametrize("leftovers", [0, 8])
+def test_failed_public_posts_do_not_block_new_leg(tmp_path, leftovers):
+    class GitHub:
+        def list_comments(self, *args):
+            return []
+
+        def comment(self, *args):
+            raise OSError("offline")
+
+    sender, _ = runs(tmp_path)
+    sender = replace(
+        sender,
+        issue_number=17,
+        stage={
+            "message_counter": leftovers,
+            "message_delivery": [
+                {"item": outgoing(text=f"old {n}"), "counter": n, "delivered": False}
+                for n in range(1, leftovers + 1)
+            ],
+        },
+    )
+    save_record(tmp_path, sender, 2)
+    own = tmp_path / "runs" / sender.run_id
+    messages = (outgoing("self", "new leg"),) if leftovers else (outgoing(), outgoing("self"))
+    github = cast(GitHubClient, GitHub())
+    assert deliver_messages(sender, github, messages, (), own) == 0
+    received = pending(own, 0)
+    assert len(received) == 1 and received[0].kind == "agent-message"
+    assert received[0].payload["text"] == ("new leg" if leftovers else "hello")
+    assert len(list((own / "outbox").glob("*.json"))) == (leftovers or 1)
+    assert not list((own / "outbox").glob("*.posted"))
+    assert "message_delivery" not in load_record(tmp_path, sender.run_id).stage
+
+    # The outbox owns retries even after the journal is cleared.
+    class Online(GitHub):
+        def comment(self, *args):
+            pass
+
+    assert deliver_messages(sender, cast(GitHubClient, Online()), (), (), own) == (leftovers or 1)
+    assert len(pending(own, 0)) == 1
+
+
+def test_acknowledgement_holds_backlog_lock(tmp_path, monkeypatch):
+    import fcntl
+
+    import outerloop.attempt as attempt
+
+    sender, recipient = runs(tmp_path)
+    send(tmp_path, sender, *(outgoing("agent-02", str(i)) for i in range(4)))
+    original = attempt.save_record
+    checked = []
+
+    def save(root, record, now):
+        if record.run_id == recipient.run_id:
+            with (
+                (root / "runs" / record.run_id / "inbox/.message-lock").open("w") as lock,
+                pytest.raises(BlockingIOError),
+            ):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            checked.append(record.inbox_seq)
+        return original(root, record, now)
+
+    monkeypatch.setattr(attempt, "save_record", save)
+    attempt.acknowledge_messages(tmp_path, recipient.run_id, 4)
+    assert checked == [4]
+    send(tmp_path, sender, outgoing("agent-02", "fifth"))
+    assert len(pending(tmp_path / "runs" / recipient.run_id, 0)) == 5
+
+
+def test_recipient_ending_after_resolution_refuses_under_lock(tmp_path, monkeypatch):
+    import outerloop.inbox as inbox
+
+    sender, recipient = runs(tmp_path)
+    original = inbox._lock_at
+
+    def end(fd, name):
+        if name == ".message-lock":
+            save_record(tmp_path, replace(recipient, state="ended", ending="negative-result"), 3)
+        return original(fd, name)
+
+    monkeypatch.setattr(inbox, "_lock_at", end)
+    send(tmp_path, sender, outgoing("agent-02"))
+    own = tmp_path / "runs" / sender.run_id
+    assert pending(tmp_path / "runs" / recipient.run_id, 0) == []
+    note = pending(own, 0)[0]
+    assert note.source == "kernel" and "no live run" in note.payload["text"]
+    assert not wake_pending(own, sender)

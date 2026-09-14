@@ -325,7 +325,7 @@ between stages.
    ride along. No lifecycle change yet.
 2. **Messages reach a parked author.** Status: landed. `message` exists. A run with an open PR
    parks; comments and base moves are inbox messages; the author can launch,
-   reply and sleep in review. A session that edits code in review still goes
+   use `message` and sleep in review. A session that edits code in review still goes
    through today's re-measure-and-push until the next stage replaces it.
 3. **Submit in review, and `end`.** Status: landed in full, including `end`
    and the review top-up. The publish moves the PR head by
