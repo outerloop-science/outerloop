@@ -88,10 +88,16 @@ def decode(data: dict, run_id: str) -> Message:
     version = fields.pop("v", 1)
     if type(version) is not int or version not in (1, 2):
         raise ValueError("invalid inbox version")
-    fields.setdefault("message_id", f"{run_id}/{fields.get('key', '')}")
-    fields.setdefault("context_id", run_id)
-    fields.setdefault("to", run_id)
-    fields.setdefault("in_reply_to", "")
+    envelope = ("message_id", "context_id", "to", "in_reply_to")
+    if version == 1:
+        # a file from before the envelope: the fields it could not have
+        fields.setdefault("message_id", f"{run_id}/{fields.get('key', '')}")
+        fields.setdefault("context_id", run_id)
+        fields.setdefault("to", run_id)
+        fields.setdefault("in_reply_to", "")
+    elif any(name not in fields for name in envelope):
+        # a v2 file wrote them; one missing is damage, never a default
+        raise ValueError("incomplete inbox envelope")
     return Message(**fields)
 
 
