@@ -753,7 +753,7 @@ def test_envelope_does_not_change_wake_or_delivered_position(tmp_path):
 
 
 @pytest.mark.parametrize("version", [1, 2])
-@pytest.mark.parametrize("damage", ["missing", "unknown", "incomplete"])
+@pytest.mark.parametrize("damage", ["missing", "unknown", "incomplete", "foreign"])
 def test_malformed_envelope_is_skipped_by_all_deduplication(tmp_path, version, damage):
     import json
 
@@ -770,10 +770,12 @@ def test_malformed_envelope_is_skipped_by_all_deduplication(tmp_path, version, d
         raw.pop("kind")
     elif damage == "unknown":
         raw["unknown"] = "field"
-    elif version == 2:
+    elif damage == "incomplete" and version == 2:
         raw.pop("to")  # a v2 file wrote the envelope; a missing field is damage
+    elif damage == "foreign" and version == 1:
+        raw["to"] = "some-other-run"  # a v1 file cannot carry the envelope
     else:
-        pytest.skip("a v1 file never had the envelope; nothing to be incomplete")
+        pytest.skip("this damage shape does not exist for this version")
     path.write_text(json.dumps(raw))
     later = append(tmp_path, message(key="later"))
     assert pending(tmp_path, 0) == [first]
