@@ -1148,9 +1148,22 @@ def _merge_afterany(*parts: str) -> str:
 
 
 def _render_author_inbox(
-    messages: list[Message], *, budgets: str, redact_secrets: tuple[str, ...]
+    messages: list[Message],
+    *,
+    budgets: str,
+    redact_secrets: tuple[str, ...],
+    inbox_dir: Path | None = None,
 ) -> str:
-    return redact(render_inbox(messages, budgets=budgets, protocol=AUTHOR_PROTOCOL), redact_secrets)
+    return redact(
+        render_inbox(
+            messages,
+            budgets=budgets,
+            protocol=AUTHOR_PROTOCOL,
+            reader=inbox_dir.name if inbox_dir else "",
+            all_messages=pending_messages(inbox_dir, 0) if inbox_dir else None,
+        ),
+        redact_secrets,
+    )
 
 
 def attempt_once(
@@ -1189,7 +1202,7 @@ def attempt_once(
     gpu_hours_used: float = 0.0,
     tree_of: Callable[[str], str] | None = None,
     judged: tuple[str, AttemptResult] | None = None,
-    on_replies: Callable[[tuple[str, ...]], object] | None = None,
+    on_replies: Callable[[tuple[dict, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
     review_topup: bool = False,
     on_meter: Callable[[int, int, float], None] | None = None,
@@ -1278,7 +1291,7 @@ def attempt_once(
         request = read_syscall_request(workspace)
         if request is not None and on_replies is not None:
             # The callback stages replies with thread_for(record) before posting.
-            on_replies(request.replies)
+            on_replies(request.messages)
         return request
 
     def _finish_replies() -> None:
@@ -1326,6 +1339,14 @@ def attempt_once(
 
     _write_budget()
 
+    def _write_messages() -> None:
+        from outerloop.inbox import write_messages
+
+        if launcher is not None or on_replies is not None:
+            write_messages(workspace, inbox_dir, inbox_thread, redact_secrets)
+
+    _write_messages()
+
     def _budgets_line() -> str:
         _write_budget()
         return budgets_line(
@@ -1357,6 +1378,7 @@ def attempt_once(
                 harness,
                 _render_author_inbox(
                     messages,
+                    inbox_dir=inbox_dir,
                     budgets=_budgets_line(),
                     redact_secrets=redact_secrets,
                 ),
@@ -1459,8 +1481,10 @@ def attempt_once(
             on_meter(launches_used, sleeps_used, gpu_hours_used)
         append(inbox_dir, message)
         messages = pending_messages(inbox_dir, inbox_seq)
+        _write_messages()
         prompt = _render_author_inbox(
             messages,
+            inbox_dir=inbox_dir,
             budgets=_budgets_line(),
             redact_secrets=redact_secrets,
         )
@@ -1556,7 +1580,7 @@ def attempt_once(
                     session = dc_replace(session, final_text=request.report)
                 if on_stop is not None:
                     if request.report and on_replies is not None:
-                        on_replies((request.report,))
+                        on_replies(({"to": "thread", "text": request.report, "reply_to": None},))
                     session = dc_replace(session, final_text="")
                     return on_stop(session)
                 return AttemptResult(

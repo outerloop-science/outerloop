@@ -70,7 +70,6 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
             Launch(name="a", command="x", minutes=5, why="probe a"),
             Launch(name="sw", command="y", minutes=5, array=2),
         ),
-        note="",
         submit=False,
     )
     parked = RunParked(
@@ -124,7 +123,7 @@ def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
     record = RunRecord(
         run_id="tsp-8", target="org/pilot", task_title="t", state="running", benchmark="tsp"
     )
-    req = SyscallRequest(launches=(), note="", submit=True, report="H: token sk-secret-1 helps")
+    req = SyscallRequest(launches=(), submit=True, report="H: token sk-secret-1 helps")
     parked = RunParked(
         phase="candidate",
         afterany="afterany:301",
@@ -499,7 +498,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
                     artifacts=("out/curve.json",),
                 ),
             ),
-            note="compare to the lr sweep",
+            messages=({"to": "self", "text": "compare to the lr sweep", "reply_to": None},),
         ),
         launches_used=1,
         sleeps_used=1,
@@ -515,7 +514,7 @@ def test_author_sleep_park_persists_the_request_and_floors_on_the_launch(tmp_pat
     assert r.stage["syscall_launches"] == [
         {"name": "train", "minutes": 180, "artifacts": ["out/curve.json"]}
     ]
-    assert r.stage["syscall_note"] == "compare to the lr sweep"
+    assert "syscall_note" not in r.stage
     assert r.stage["launches_used"] == 1 and r.stage["sleeps_used"] == 1
     assert r.resume_session_id == "s9"  # the record's own field; no stage duplicate
 
@@ -539,7 +538,12 @@ def test_checkpoint_sleep_park_gets_a_near_term_deadline(tmp_path) -> None:
         suite_seed=9,
         candidate_sha="c" * 40,
         session=_session("s10"),
-        syscall=SyscallRequest(launches=(), note="pausing to reread results next wake"),
+        syscall=SyscallRequest(
+            launches=(),
+            messages=(
+                {"to": "self", "text": "pausing to reread results next wake", "reply_to": None},
+            ),
+        ),
         launches_used=2,
         sleeps_used=3,
     )
@@ -2011,7 +2015,7 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
                             "artifacts": ["out/tails.json"],
                         }
                     ],
-                    "note": "look at the tails",
+                    "messages": [{"to": "self", "text": "look at the tails", "reply_to": None}],
                 }
             ),
         },
@@ -2035,7 +2039,12 @@ def test_author_sleep_live_parks_and_submits_launch_jobs(
     assert record.stage["syscall_launches"] == [
         {"name": "probe", "minutes": 45, "artifacts": ["out/tails.json"]}
     ]
-    assert record.stage["syscall_note"] == "look at the tails"
+    from outerloop.inbox import pending
+
+    assert any(
+        m.payload.get("text") == "look at the tails"
+        for m in pending(tmp_path / "state" / "runs" / record.run_id, 0)
+    )
     assert record.stage["launches_used"] == 1 and record.stage["sleeps_used"] == 1
     assert record.resume_session_id == "s1"  # the wake resumes the SAME session
     # the agent-facing TOOL + its budget were installed into the channel dir
@@ -3161,7 +3170,7 @@ def test_gate_negative_wake_with_an_unchanged_tree_ends_without_a_second_gate(
             assert messages[0].payload["sealed_sha"] == rec.stage["candidate_sha"]
             assert messages[0].payload["base_sha"] == rec.stage["base_sha"]
             assert brief_text.startswith("Budgets:")
-            assert brief_text.split("## ", 1)[1].startswith("gate-verdict")
+            assert brief_text.split("## ", 1)[1].startswith("#1 gate-verdict")
             assert load_record(state, run_id).inbox_seq == 0
             return SessionResult(
                 stop_reason="end_turn",
@@ -3410,13 +3419,27 @@ def _write_parked_author_sleep(
             "report": "mid-flight",
             "base_branch": "main",
             "syscall_launches": [{"name": "probe", "artifacts": ["out.json"]}],
-            "syscall_note": "compare against the sweep",
             "launches_used": 1,
             "sleeps_used": 1,
             **({"submitted": True, "report": "the author's submit report"} if submitted else {}),
         },
     )
     save_record(state, record, 1_000_000.0)
+    from outerloop.inbox import Message, append
+
+    append(
+        state / "runs" / run_id,
+        Message(
+            0,
+            "agent-message",
+            "agent",
+            "",
+            1_000_000.0,
+            "self-reminder",
+            {"text": "compare against the sweep"},
+            origin=run_id,
+        ),
+    )
     fake = _FakeMeasurer(values=values or {}, raise_exc=raise_exc)
     monkeypatch.setattr(DispatchSettings, "measurer", lambda self, *a, **k: fake)
     # the wake pushes to the canonical target URL (never the ws git config);
@@ -3474,8 +3497,9 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     messages = pending(state / "runs" / run_id, 0)
     assert record.inbox_seq == messages[-1].seq
     assert pending(state / "runs" / run_id, record.inbox_seq) == []
-    assert messages[0].kind == "launch-result"
-    assert messages[0].payload["stdout_tail"].startswith("tail improvement")
+    assert messages[0].kind == "agent-message"
+    assert messages[1].kind == "launch-result"
+    assert messages[1].payload["stdout_tail"].startswith("tail improvement")
     assert refreshed == [(wsroot, siblings)]
     assert not (wsroot / "inbox").exists()
     # the SAME session was resumed, with the launch results as its prompt
@@ -3568,8 +3592,8 @@ def test_author_sleep_wake_keeps_the_submit_report_on_the_pr(tmp_path, monkeypat
     record = load_record(state, run_id)
     hyp = "The author's method helps. It preserves late updates."
     assert record.stage["hypothesis"] == hyp
-    assert _clear_stage(record).stage["hypothesis"] == hyp
-    assert _clear_stage(dc_replace(record, state="ended")).stage["hypothesis"] == hyp
+    assert _clear_stage(record, state).stage["hypothesis"] == hyp
+    assert _clear_stage(dc_replace(record, state="ended"), state).stage["hypothesis"] == hyp
     assert _report_fields((run_dir(state, run_id) / "report.md").read_text())[2] == hyp
 
 
@@ -5707,7 +5731,7 @@ def test_end_report_seals_notebook_releases_claim_and_posts_replies(tmp_path, ta
         def run(self, brief_text, workspace, resume_session_id=None):
             session = super().run(brief_text, workspace, resume_session_id)
             (workspace / ".outerloop" / "ending.md").write_text("No gain; retain the ablation.")
-            assert main(["reply", "The ablation is complete."], root=workspace) == 0
+            assert main(["message", "The ablation is complete."], root=workspace) == 0
             assert main(["end", "--report", ".outerloop/ending.md"], root=workspace) == 0
             return session
 
@@ -5737,7 +5761,7 @@ def test_end_report_seals_notebook_releases_claim_and_posts_replies(tmp_path, ta
     assert not github.prs
 
 
-def test_clear_stage_keeps_the_meters_with_the_topup() -> None:
+def test_clear_stage_keeps_the_meters_with_the_topup(tmp_path) -> None:
     """A run's spend before its PR opened rides into review with the grant:
     the review leg's ceilings apply to what is already used."""
     from outerloop.attempt import _clear_stage
@@ -5757,7 +5781,8 @@ def test_clear_stage_keeps_the_meters_with_the_topup() -> None:
             "candidate_sha": "x",
         },
     )
-    assert _clear_stage(record).stage == {
+    save_record(tmp_path, record, 1)
+    assert _clear_stage(record, tmp_path).stage == {
         "launches_used": 3,
         "sleeps_used": 2,
         "gpu_hours_used": 1.5,
@@ -5777,7 +5802,7 @@ def test_first_publish_grants_review_topup_and_clear_preserves_it(tmp_path, targ
     assert outcome.outcome == "improved"
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.stage["review_topup"] is True
-    assert _clear_stage(record).stage["review_topup"] is True
+    assert _clear_stage(record, tmp_path / "state").stage["review_topup"] is True
     # the publish writes no budget file (the next leg does); the grant raises
     # the ceilings the next leg's budget file, refusals and wake line use
     import json

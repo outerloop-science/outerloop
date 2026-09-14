@@ -89,7 +89,7 @@ def test_quoted_command_args_survive_to_the_abi(tmp_path: Path, capsys) -> None:
 
 def test_note_and_status_and_cancel(tmp_path: Path, capsys) -> None:
     run(tmp_path, "launch", "--name", "probe", "--", "echo", "hi")
-    run(tmp_path, "note", "check the tails first")
+    run(tmp_path, "message", "--to", "self", "check the tails first")
     capsys.readouterr()
     assert run(tmp_path, "status") == 0
     out = capsys.readouterr().out
@@ -108,7 +108,7 @@ def test_validation_fails_fast_in_session(tmp_path: Path, capsys) -> None:
         (["launch", "--name", "ok"], "needs a command"),
         (["launch", "--name", "ok", "--artifact", "../pw", "--", "x"], "repo-relative"),
         (["launch", "--name", "ok", "--minutes", "0", "--", "x"], "positive"),
-        (["note", "x" * 2001], "exceeds"),
+        (["message", "--to", "self", "x" * 20001], "exceeds"),
     ]
     for argv, needle in cases:
         assert run(tmp_path, *argv) == 2
@@ -216,7 +216,7 @@ def test_installed_reply_survives_sleep(tmp_path: Path) -> None:
 
     install_tool(tmp_path)
     tool = tmp_path / ".outerloop/syscall"
-    for args in (("reply", "first"), ("reply", "second"), ("sleep",)):
+    for args in (("message", "first"), ("message", "second"), ("sleep",)):
         result = subprocess.run(
             [sys.executable, "-I", str(tool), *args],
             cwd=tmp_path,
@@ -226,11 +226,11 @@ def test_installed_reply_survives_sleep(tmp_path: Path) -> None:
         assert result.returncode == 0, result.stderr
         if len(args) == 2:
             abi = json.loads((tmp_path / ".outerloop/syscall.json").read_text())
-            assert abi["type"] == "reply"
-            assert abi["replies"][-1] == args[1]
+            assert abi["type"] == "message"
+            assert abi["messages"][-1]["text"] == args[1]
     request = read_request(tmp_path)
     assert request is not None and request.sleep
-    assert request.replies == ("first", "second")
+    assert tuple(m["text"] for m in request.messages) == ("first", "second")
 
 
 # --- judge verbs: finding / conclude ---------------------------------------
@@ -654,29 +654,29 @@ def test_queue_shows_a_sweeps_pace(tmp_path: Path, capsys) -> None:
 
 
 def test_replies_stage_in_order_with_file_and_sleep(tmp_path: Path, capsys) -> None:
-    assert run(tmp_path, "reply", "first") == 0
+    assert run(tmp_path, "message", "first") == 0
     (tmp_path / "reply.txt").write_text("second")
-    assert run(tmp_path, "reply", "--file", "reply.txt") == 0
+    assert run(tmp_path, "message", "--file", "reply.txt") == 0
     assert run(tmp_path, "status") == 0
-    assert "reply staged: first" in capsys.readouterr().out
+    assert "message staged to thread: first" in capsys.readouterr().out
     request = read_request(tmp_path)
-    assert request is not None and request.replies == ("first", "second")
+    assert request is not None and tuple(m["text"] for m in request.messages) == ("first", "second")
     assert not request.sleep
     assert read_request(tmp_path) is None
-    assert run(tmp_path, "reply", "before sleep") == 0
+    assert run(tmp_path, "message", "before sleep") == 0
     assert run(tmp_path, "sleep") == 0
-    assert run(tmp_path, "reply", "after sleep") == 0
+    assert run(tmp_path, "message", "after sleep") == 0
     request = read_request(tmp_path)
     assert request is not None and request.sleep
-    assert request.replies == ("before sleep", "after sleep")
+    assert tuple(m["text"] for m in request.messages) == ("before sleep", "after sleep")
 
 
 def test_reply_refuses_an_oversized_batch_without_losing_staged_reply(tmp_path: Path) -> None:
-    assert run(tmp_path, "reply", "first") == 0
-    assert run(tmp_path, "reply", "x" * 65_536) == 2
+    assert run(tmp_path, "message", "first") == 0
+    assert run(tmp_path, "message", "x" * 65_536) == 2
     request = read_request(tmp_path)
-    assert request is not None and request.replies == ("first",)
-    assert run(tmp_path, "reply", "--file", "missing.txt") == 2
+    assert request is not None and tuple(m["text"] for m in request.messages) == ("first",)
+    assert run(tmp_path, "message", "--file", "missing.txt") == 2
 
 
 def test_installed_end_parity_and_status(tmp_path):
@@ -686,7 +686,7 @@ def test_installed_end_parity_and_status(tmp_path):
     tool = tmp_path / ".outerloop" / "syscall"
     report = tmp_path / "report.md"
     report.write_text("The experiment did not improve the score.")
-    for argv in (["reply", "Here are the details."], ["end", "--report", str(report)]):
+    for argv in (["message", "Here are the details."], ["end", "--report", str(report)]):
         result = subprocess.run([sys.executable, str(tool), *argv], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
     result = subprocess.run([sys.executable, str(tool), "status"], capture_output=True, text=True)
@@ -694,7 +694,7 @@ def test_installed_end_parity_and_status(tmp_path):
     request = read_request(tmp_path)
     assert request is not None and request.end and not request.sleep
     assert request.report == report.read_text()
-    assert request.replies == ("Here are the details.",)
+    assert tuple(m["text"] for m in request.messages) == ("Here are the details.",)
     assert (
         budget_error(
             request,
@@ -725,7 +725,7 @@ def test_end_conflicts_in_both_orders_leave_the_session_usable(tmp_path, capsys)
                 else "end is final for the leg; it cannot accompany launch or sleep"
             ) in note
             # A refusal does not end the session or prevent another tool call.
-            assert main(["reply", "Still here."], root=tmp_path) == 0
+            assert main(["message", "Still here."], root=tmp_path) == 0
             assert read_request(tmp_path) is not None
             assert main(["cancel"], root=tmp_path) == 0
             assert main(["end"], root=tmp_path) == 0

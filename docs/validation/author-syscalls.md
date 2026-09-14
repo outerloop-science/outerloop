@@ -48,7 +48,7 @@ The lifecycle to confirm, in order:
 5. **Wake:** the tick wakes the parked run; `gather_results` delivers artifacts
    into `<ws>/.outerloop/results/<name>/`, and the SAME session resumes
    (`resume_session_id` unchanged) with the results data-fenced + the author's
-   note echoed back.
+   `message --to self` delivered back.
 6. **Terminate:** the woken author either sleeps again (a fresh author-sleep
    park, counts advanced) or finishes → gate measures → candidate → publish.
 
