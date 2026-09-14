@@ -220,81 +220,114 @@ needed; git stays the substrate for everything that is about one repository.
 The owner's decision (2026-09-14): the message model becomes more A2A-shaped,
 and this is the same effort as multi-agent author coordination inside one
 kernel, which `lifecycle.md` had parked under "Later" and `scaling.md`
-describes as the planner. This section is the design for both; the
-sequencing at the end is what would be built.
+describes as the planner. This section is the design for both, revised
+after a second model's review, which cut it down: stable identities and
+bounded routing first, protocol naming only where it costs nothing, and no
+schema work ahead of an adapter.
+
+**Simple messages, not conversations.** There is no conversation object.
+A message is one thing said once; a response is another message that names
+the one it answers. The agent's own session is its memory of what it said
+and heard, resumed at every wake; the inbox is what arrived since. So at a
+wake the agent sees the full inbox view it sees today, everything
+undelivered in arrival order, each item fenced, and a message that answers
+an earlier one says so in one line ("agent-02, replying to your message
+about EMA: ..."). No threading, no grouping, no summaries of past exchanges;
+the session already holds those. This is what A2A's context and task ids
+are for as well: correlation, so a reader can tell what a message is about,
+never a structure the reader must reconstruct.
 
 **The envelope.** Today a message is (seq, kind, source, origin, thread,
-arrived, key, payload). The A2A-shaped envelope keeps every one of those
-facts under A2A's names and adds what routing needs:
+arrived, key, payload). The changes are small and each has one job:
 
-- `message_id`: today's key, unique per message, reused as A2A's messageId
-  when a message crosses an adapter.
-- `context_id`: what a message is about. Today always the run; with a
-  planner, a benchmark's search line; with sub-agents, the parent run.
-- `task_id`: the task the message belongs to. Today the run; a sub-agent's
-  task is its own id with the parent's as `parent_task_id`.
-- `role`: `user` for the kernel, a human and any client side (the planner
-  when it assigns); `agent` for an author or sub-agent answering.
-- `from` and `to`: the sender and the recipient as kernel identities
-  (a run id, an agent id, `kernel`, a GitHub login). Today's `source` and
-  `origin` become `from`'s category and identity; `to` is new and is what
-  coordination needs. Replies already store their destination when staged;
-  this makes every message do so.
-- `parts`: today's payload as one structured-data part carrying `kind`;
-  text and file parts for what is text and files. `kind` stays the word the
-  renderer switches on, so the renderer does not change.
-- `thread`, `arrived`, `seq`: unchanged (`thread` is the qualified GitHub
-  reference; `seq` is the inbox's own order).
+- `message_id`: globally unique, deterministic, namespaced by the inbox
+  (`<run id>/<key>`), so a message that crosses an adapter or is quoted by
+  another run has one name. Deduplication stays first-key-wins per inbox.
+- `context_id`: what a message is about, with one rule: the run it concerns.
+  A planner's own inbox is its search line's context; a message it sends
+  into an author's inbox is about that author's run.
+- `from` and `to`: `from` keeps today's category and identity (`source`,
+  `origin`) and the kernel sets it, never the sender; `to` is the recipient
+  as a kernel identity (a run id, `kernel`, a GitHub thread) and is what
+  routing needs. Replies already store their destination when staged; this
+  makes every message do so.
+- `in_reply_to`: optional, the `message_id` this one answers. Correlation,
+  nothing more.
+- `kind`, `payload`, `thread`, `arrived`, `seq`: unchanged. The renderer and
+  the wake rule read `kind` and `payload` today; they keep doing so. A2A's
+  `parts` and `role` are the adapter's business: `role` is relative to which
+  side of a protocol exchange one is on and must never imply permission
+  inside the kernel, and `parts` needs artifact ownership and size rules
+  that no adapter yet asks for.
 
-Old inbox files are read as before: missing fields take their defaults
-(`to` = the inbox's own run, `role` from the old `source`), the same way old
-record states are migrated on read. No file is rewritten.
+One versioned decoder reads every inbox file, for delivery, for
+deduplication and for appends alike: old files without the new fields get
+them on read (`to` = the inbox's own run, `message_id` from the run id and
+key); nothing is rewritten; a file the decoder cannot read stops delivery,
+as today, and never silently drops out of deduplication.
 
 **Routing: the kernel is the hub.** Agents never talk to each other
-directly; a message from one run to another is staged by its author
-(`reply --to <agent>` beside today's `reply`), validated by the kernel like
-every syscall, and appended by the kernel to the recipient's inbox with
-`from` set by the kernel, never by the sender. The sibling view stays a
+directly. An author stages a message to a sibling (`reply --to <run>`
+beside today's `reply`); the kernel validates it like every syscall and
+appends it to the recipient's inbox with `from` set by the kernel. The tool
+is untrusted, so the kernel owns the rules: the recipient must be a live
+run on the same target; the sender's identity is the run's, resolved by the
+kernel; per-run limits on messages, bytes and backlog, so a prompt-injected
+author cannot flood a sibling or start a loop; a message to a run in review
+queues behind its jobs and grants nothing; a message to an ended run is
+refused with one line back; the kernel never acknowledges a message with a
+message of its own. Delivery follows the existing rule: it waits behind the
+recipient's jobs and arrives at its next wake. The sibling view stays a
 derived read of the ledger; a message is for when an author has something
-to say to one sibling. Delivery follows the existing rule: it waits behind
-the recipient's jobs and arrives at its next wake.
+to say to one sibling.
 
-**Agent tasks.** A run can ask for an agent the way it asks for a job:
-`launch --agent <role> --brief <file>` stages a task; the kernel runs it as a
-session under the parent's RoleSpec ceiling (`agent-substrate.md` already
-defines the ceiling for subagents), meters it against the parent's budget,
-and delivers its outcome as a `task-result` message with the sub-task's
-report as a file part. Jobs and agent tasks are then the same thing to the
-sleeping author: work the kernel does and reports back. This is also how a
-planner assigns: an assignment is a message from the planner's task into an
-author's inbox, and the author's claim (its hypothesis) is a message back.
+**Agent tasks, the smallest version.** A run can ask for an agent the way
+it asks for a job: `launch --agent <role> --brief <file>` stages a task; the
+kernel runs one session under the parent's RoleSpec ceiling
+(`agent-substrate.md`), on a sealed snapshot, read-only, with no inbox of
+its own, no wakes, no delegation of its own and no publishing; it produces
+one report and one terminal result, delivered to the parent as a
+`task-result` message with the report attached. The kernel enforces the
+ceiling (tools, scope, key, containment), reserves the child's spend
+against the parent before dispatch and reconciles the actual cost, and
+defines timeout, cancellation and what happens when the parent ends first.
+The parent judges; the child supplies evidence. A resumable child with its
+own inbox is a later question, if ever.
 
 **The planner** is a role with its own context per benchmark search line
-(`scaling.md`), woken like any run, whose outputs are assignments to authors
-and whose inputs are their claims, results and the ledger. It holds no
-authority: the gate measures, the panel reads, a human merges, exactly as
-now. Its value is the non-overlap that `#360` asked for and the search
-program `scaling.md` describes.
+(`scaling.md`), woken like any run. Its assignments are messages into
+authors' inboxes and are advisory; the durable plan stays the GitHub issue
+with its veto window, provenance-checked approval and budget lanes. It
+holds no authority: it cannot approve its own plan, start author runs
+(the kernel admits runs), override a budget, write a verified result, grade
+its own work, or merge. Its value is the non-overlap `#360` asked for and
+the search program `scaling.md` describes. It does not need agent tasks to
+exist.
 
-**Sequencing.**
+**Sequencing.** Each stage lands as one PR, reviewed and run on one fleet
+from its commit, with its own acceptance evidence; "nothing moved" is not
+evidence.
 
-1. **Envelope.** The new fields with migration on read, the renderer
-   unchanged, every producer setting `from`, `to`, `role`, `context_id`,
-   `task_id`. No behaviour change; the fleet test is that nothing moves.
-2. **Routing.** `reply --to`, kernel-side validation (a recipient must be a
-   live run on the same target), delivery into the recipient's inbox, and
-   the board showing a message's sender. Proves one author can tell a
-   sibling something.
-3. **Agent tasks.** `launch --agent`, the RoleSpec ceiling, metering against
-   the parent, `task-result` messages. Proves a run can delegate a bounded
-   piece of work to a sub-agent and get a report back.
-4. **The planner.** One role using 2 and 3 on one benchmark. Proves
-   non-overlapping directions across the width.
+1. **Envelope and decoder.** `message_id`, `context_id`, `from`/`to`,
+   `in_reply_to`, one versioned decoder, every producer setting them.
+   Fleet evidence: old and new inbox files delivered identically, a restart
+   mid-wake, a duplicate append, a damaged entry, unchanged rendering,
+   positions and wakes.
+2. **Routing.** `reply --to`, the kernel's validation and limits, delivery
+   into the recipient's inbox, the board showing a message's sender. Fleet
+   evidence: one author tells a sibling something and the sibling reads it
+   at its next wake; a forged identity, a flood, a message in review and one
+   to an ended run each handled as specified; a crash between append and
+   delivery replays once.
+3. **Agent tasks.** The one-shot child above. Fleet evidence: a report comes
+   back; a ceiling violation is refused; concurrent spend is reserved and
+   reconciled; timeout, cancellation and a parent ending first.
+4. **The planner.** One role on one benchmark. Fleet evidence: fewer
+   overlapping directions than the unplanned baseline over the same period;
+   veto, approval and stop exercised. Independent of stage 3.
 
-Each stage lands as one PR, reviewed and run on one fleet from its commit,
-as the lifecycle stages were. Stage 1 is mechanical and could start now;
-stages 2 to 4 are the semantic choices, and each should be read by the
-owner before it is built.
+Stage 1 is mechanical and could start now; stages 2 to 4 are the semantic
+choices, and each should be read by the owner before it is built.
 
 ## Criteria instead of approvals
 
