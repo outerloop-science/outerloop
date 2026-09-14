@@ -669,6 +669,27 @@ class LocalCompute:
             Path(announce).unlink(missing_ok=True)
 
     def _release(self, job_id: str, *, unstarted: bool = False) -> None:
+        if not unstarted:
+            with self._pool() as pool:
+                pgids = {
+                    holder["pgid"]
+                    for holder in pool["holders"].values()
+                    if holder["id"] == job_id and holder["pgid"] > 0
+                }
+            # Let killed descendants be reaped without holding the pool lock.
+            deadline = time.monotonic() + 2
+            while pgids:
+                for pgid in list(pgids):
+                    try:
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        pgids.remove(pgid)
+                    except PermissionError:
+                        pass
+                remaining = deadline - time.monotonic()
+                if not pgids or remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
         with self._pool() as pool:
             for index, holder in list(pool["holders"].items()):
                 if holder["id"] == job_id and (
