@@ -170,102 +170,87 @@ that exists today.
 ## Cross-fleet messages on one target
 
 The owner asked (2026-09-15) whether `message --to agent-NN` could reach a
-sibling on another cluster. It can, with the same semantics as a local
-sibling: delivered at the recipient's next wake, a sent copy for the sender,
-refusals as context-only notes, the same envelope. No cluster accepts an
-inbound connection, so every cross-cluster path goes through a place both
-kernels reach. For now that place is the target's `research-log` branch,
-which already carries reports, the board and the sibling view between
-fleets. The owner accepted this transport on 2026-09-15.
+sibling on another cluster, and then set the shape: local files stay the
+store, and the kernel replicates them asynchronously to a shared medium for
+cross-cluster communication and persistence. This section is that shape.
 
-**Not a second mailbox.** The tick already ingests GitHub comments, reviews
-and check results by polling collections and appending them to the run's
-inbox with the one envelope. A sibling's message is one more inbound
-collection: the sender writes the envelope to GitHub, the recipient's tick
-appends it through the same `append`, the same dedupe key and the same wake
-rule. The inbox stays the one durable store.
+**Local files stay authoritative.** Every kernel keeps writing what it knows
+into its own state root exactly as today: records, leases, inboxes,
+outboxes, ledgers. Nothing a kernel needs in order to run its own runs waits
+on the network, so a GitHub outage delays cross-fleet traffic and nothing
+else.
 
-**Two prerequisites, both tier-2 items in their own right.** Agent ids must
-be unique across the target, and the sibling view must list every fleet's
-live runs. Today each state root allocates `agent-01` first, and each
-kernel's board pass writes `climb/status.json` whole, so a second fleet
-would collide on both.
+**One sync, not one path per thing.** The tick's board pass already does
+the general move: it turns local state into files on the target's
+`research-log` branch in one commit per pass, and every attempt fetches that
+branch back. The sync generalizes it. Each fleet has an outgoing tree under
+its state root (`shared/<fleet>/`) that the pass pushes in that one commit,
+and an incoming tree that the pass pulls from the medium and ingests: mail
+into the inboxes of the agents this kernel hosts, forum posts into the
+brief's context, other fleets' status files into the sibling view. Mail,
+forum and status are directories the sync knows, not mechanisms of their
+own. The medium is a backend behind the sync: `research-log` now, an object
+store later if latency or volume asks for it; the local files never change.
 
-1. **Addressing: slot ranges, flat ids.** Each deployment declares the slots
-   it may use (`OUTERLOOP_AGENT_SLOTS=05-08`, say), so `agent-NN` stays the
-   one name an author types and reads in headers, and branch names, the
-   board and the ledger do not change. The alternative, fleet-prefixed ids
-   (`empire-03`), touches every place an agent id appears and buys nothing
-   the range does not; it is the fallback if ranges prove too rigid.
-2. **Sibling view per fleet.** Each kernel writes `climb/status/<fleet>.json`
-   instead of the shared file; the board and `_sibling_entries` read the
-   directory and merge, and every entry carries its fleet. The sender's
-   kernel resolves a recipient from this merged view.
-3. **One path, recommended.** Every sibling message, local or remote, is
-   staged in the run's outbox (the durable outbox that already carries public
-   replies: same staging, same retry, same dedupe marker) and posted as
-   `mail/<recipient agent>/<message_id>.json` on `research-log`, the envelope
-   exactly as an inbox file stores it. Every kernel's tick lists `mail/` for
-   the agents it hosts, appends each file to that run's inbox, and removes
-   the file in the same pass's commit. `deliver_messages` never asks where a
-   recipient lives, fleets are symmetric, and the shared filesystem stops
-   being a message transport, which a deployment without one needs anyway.
-   The alternative keeps today's direct filesystem append for in-cluster
-   recipients as a fast path beside the collection; it saves nothing in
-   latency (a local message appended at leg end also wakes its recipient at
-   the next tick) and leaves two delivery paths. The owner picks.
-4. **Idempotence.** The dedupe key (`agent-msg:<sender run>:<n>`) is already
-   global, so a crash between the append and the removal is harmless: the
-   next tick reads the file again, `append` sees the key, the removal
-   happens. Delivery then follows the existing wake rule: a run parked on
-   jobs receives it with the job results, a run parked on nothing wakes at
-   that tick.
-5. **Refusals and bounces.** The sender's kernel refuses, with today's
-   context-only note, when the merged sibling view shows no live run under
-   that id, or when `mail/<agent>/` already holds four unread messages from
-   this sender (the backlog cap, counted in the collection). If the
-   recipient ended between that check and delivery, the receiving kernel
-   writes a bounce, `mail/<sender agent>/bounce-<message_id>.json`, a
-   context-only kernel note that reaches the sender at its next tick.
-6. **Groups.** `--to all`, or a search line, is still delivery: one envelope
-   in the collection with the group as `to`; each kernel appends it to the
-   live recipients it hosts under the same message id; one sent copy.
-7. **A forum is publication, not delivery.** Anything a run that starts next
-   week should be able to read cannot live in inboxes, which belong to live
-   runs. It lives where reports live: a `forum/<topic>/` directory on
-   `research-log`, threaded by `in_reply_to`, rendered as a board page,
-   inlined into new briefs like reports, browsable by a `reports`-style
-   verb, and never waking anyone. The planner's plan section is the first
-   forum-shaped artifact. The verb decides which store a text goes to, not
-   the transport.
-8. **Trust.** Mail files are written by kernels under the bot identity to a
-   bot-written branch, the standing that reports and the sibling view
-   already have, and they render as data like every message.
+**Messages.** `deliver_messages` already resolves a recipient among the runs
+in its own state root. A local recipient gets the envelope appended to its
+inbox directly, as today, and that path survives any outage. A recipient
+that the merged sibling view places on another fleet gets the same envelope
+written to `shared/<fleet>/mail/<recipient agent>/<message_id>.json`; the
+sender's sync pushes it, the recipient's sync pulls it and appends it
+through the same `append`. The dedupe key (`agent-msg:<sender run>:<n>`) is
+global, so re-pulling a file after a crash is harmless; the receiving sync
+removes the file from the medium in its own commit once appended. Delivery
+follows the existing wake rule. Refusals stay context-only notes: no live
+run under that id in the merged view, or four unread files from this sender
+already in the medium; a recipient that ended in flight yields a bounce file
+back to the sender's mail directory. Groups (`--to all`, a search line) fan
+out to each hosted live recipient under one message id. Latency for a
+remote recipient is one to two cadences; for a local one it is what it is
+today.
 
-**Load and where it stops.** A fleet's tick makes about four GitHub calls
-per parked run plus one board commit per pass, on the order of a hundred
-requests an hour for four agents against an App budget of five thousand;
-messages are bounded at eight per leg and four unread per pair, so a busy
-fleet adds tens of envelopes a day, one listing per tick, and one commit per
-sending leg (or none, if mail rides the tick's board commit, which is the
-first thing to change when commit contention appears). Git pushes do not
-count against the REST budget. The ceilings, in the order they would bite:
-commit contention on `research-log` with many fleets (batch per cadence);
-latency of one to two cadences (the cadence is the knob); GitHub as the one
-medium (an outage stalls mail with everything else; the outbox holds it).
+**Forum.** A forum post is publication, not delivery: anything a run that
+starts next week should read cannot live in inboxes, which belong to live
+runs. Posts go to `shared/<fleet>/forum/<topic>/<message_id>.json`, the sync
+pushes them, every fleet's sync pulls the whole `forum/` tree, and the brief
+inlines the newest posts as it inlines reports; a `reports`-style verb
+browses them; nothing wakes. The planner's plan section is the first
+forum-shaped artifact. Research content belongs on GitHub, human-readable
+and versioned, so the forum's medium stays `research-log` even if mail
+moves to a bucket one day; the two directories need not share a medium.
 
-**The exit.** When kernel state moves to an object store, as compute-cloud.md
-plans, inboxes move with it and every kernel appends to any run's inbox
-directly with a conditional put: one path, no transit collection, no GitHub
-in the loop. The collection reader written now points at a bucket prefix
-then; the envelope, the dedupe key and the wake rule do not change.
+**Persistence.** The same sync can replicate a run's durable artifacts,
+report, transcripts, launch ledger and inbox history, to an artifact store
+as a backup and for cross-cluster forensics. It should not replicate records
+and leases: they churn every tick, the local filesystem is authoritative for
+them, and a stale copy elsewhere is a hazard. GitHub is not that store; a
+bucket is (compute-cloud.md). A deployment with no shared filesystem at all
+gives the storage interface its bucket implementation for records, leases
+and inboxes, and the sync is unchanged on top.
 
-**Build.** Six pieces: the slot-range setting, per-fleet status files with a
-merging reader, the outbox post of an envelope to the collection, the
-collection read in the tick, the bounce, and group fan-out; plus tests for
-the crash between append and removal and for the backlog count. It waits
-for a second fleet to share a target, which in turn waits for the Empire AI
-tier-1 try-out.
+**Prerequisites, both tier-2 items in their own right.** Agent ids unique
+across the target, by slot ranges per deployment (`OUTERLOOP_AGENT_SLOTS=
+05-08`; ids stay flat, branch names, board and ledger unchanged;
+fleet-prefixed ids are the fallback), and a sibling view per fleet
+(`status/<fleet>.json` in the shared tree, merged on read) so a sender can
+place a recipient.
+
+**Load and ceilings.** One commit per pass per fleet whatever the message
+count, one fetch per pass, and a fetch per attempt that exists already;
+against an App budget of five thousand requests an hour the sync is noise.
+The ceilings, in order: commit contention on `research-log` with many
+fleets (the pass already retries on an expected-head conflict), cadence
+latency for remote recipients (the cadence is the knob), GitHub as the one
+medium for cross-fleet traffic (an outage delays it; local delivery and
+every job continue). Swapping the medium to a bucket changes the sync
+backend and nothing the kernel writes locally.
+
+**Build.** The slot-range setting, per-fleet status in the shared tree with a
+merging reader, the outgoing and incoming trees with the push and pull in
+the tick's pass, the remote branch in `deliver_messages`, the bounce, group
+fan-out, the forum verb; plus tests for the crash between pull and append
+and for the backlog count. It waits for a second fleet to share a target,
+which in turn waits for the Empire AI tier-1 try-out.
 
 ## Decisions for the owner
 
@@ -283,11 +268,12 @@ tier-1 try-out.
 4. **Pacing per fleet (tier 2).** Contract-declared shares, or each
    deployment's own lower value under the contract's ceiling. The second
    is recommended: the contract stays fleet-agnostic.
-5. **Sibling messages (tier 2).** The transport is settled: files on
-   `research-log` as one more inbound collection. Still open: one path for
-   every sibling message (recommended) or a direct in-cluster fast path
-   beside it; and slot ranges (recommended) or fleet-prefixed ids. Both
-   wait until two fleets share a target.
+5. **Sibling messages (tier 2).** Settled by the owner on 2026-09-15:
+   local files stay authoritative, local delivery stays direct, and one
+   generic sync replicates the shared tree to `research-log` for
+   cross-fleet mail, forum and status, with the medium swappable for a
+   bucket later. Still open: slot ranges (recommended) or fleet-prefixed
+   ids. Waits until two fleets share a target.
 
 ## Sources
 
