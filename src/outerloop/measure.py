@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,12 @@ def plan_measures(
 
 def _baseline_cache_path(cache_dir: Path, benchmark: str, base_sha: str) -> Path:
     return cache_dir / f"{benchmark}@{base_sha}.json"
+
+
+# how long a finished job's files may lag the scheduler's terminal state on a
+# shared filesystem before the measurer calls it "no result"
+RESULT_SETTLE_S = 90.0
+RESULT_POLL_S = 3.0
 
 
 def _no_result_note(job_id: str, state: str) -> str:
@@ -332,6 +339,19 @@ class DispatchedMeasurer:
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
 
+    def _settled(self, m: Measure) -> bool:
+        """Wait a little for a finished job's files. A shared filesystem can
+        show the scheduler's terminal state before the job's exit-code and
+        stdout reach the node reading them (Empire AI Alpha, 2026-09-15: a
+        measured improvement was read as "no result"). True once the files
+        are there; False after RESULT_SETTLE_S."""
+        deadline = time.monotonic() + RESULT_SETTLE_S
+        while not self._done(m):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(RESULT_POLL_S)
+        return True
+
     def _ended_without_result(self, m: Measure) -> str:
         """Why a dispatched job produced no result; a TIMEOUT means the eval
         needs more walltime."""
@@ -405,7 +425,10 @@ class DispatchedMeasurer:
                 pending.append(live)  # queued or running — the real job id
                 continue
             if self._marker(m):
-                # was dispatched, not live, no result -> died before result
+                # was dispatched, not live, no result -> died before result,
+                # unless the files are merely late on the shared filesystem
+                if self._settled(m):
+                    continue
                 raise EvalError(f"measure {m.name}: {self._ended_without_result(m)}")
             # No marker, not live, no result -> never dispatched -> dispatch.
             # RESIDUAL (bounded, accepted): if a prior process died in the
@@ -425,7 +448,10 @@ class DispatchedMeasurer:
             if state and is_terminal(state):
                 # the job already ENDED without writing a result (a local
                 # timeout, an instant cluster failure): parking would wait on
-                # a job that will never deliver — fail like a vanished job
+                # a job that will never deliver — fail like a vanished job,
+                # once the filesystem has had its moment
+                if self._settled(m):
+                    continue
                 raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
             pending.append(job_id)
         if pending or blind:

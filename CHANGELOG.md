@@ -33,6 +33,7 @@ tasks to finish.
 
 ### Fixed
 
+- A finished evaluation job whose files have not yet appeared on the shared filesystem is waited for (up to 90 s) before the measurer calls it a job without a result; a measured improvement on a lagging filesystem no longer ends the run as a negative.
 - `outerloop start` refuses to run when the configured author's CLI is missing: it checks the recorded path, else PATH, else `~/.local/bin`, and names the install command and `outerloop init --force`.
 
 - Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
