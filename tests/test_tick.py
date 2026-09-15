@@ -4245,7 +4245,7 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
 
 @pytest.mark.parametrize(
     "loop,ending",
-    [(False, "ok"), (False, "error"), (True, "interrupt"), (True, "term"), (True, "loop_error")],
+    [(True, "interrupt"), (True, "term"), (True, "loop_error")],  # a single tick takes no lease
 )
 def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
     import json
@@ -4258,6 +4258,7 @@ def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
 
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
     monkeypatch.setenv("OUTERLOOP_TICK_HOST", "login")
+    monkeypatch.setattr("outerloop.cli._resident_jobs", lambda: [])
     monkeypatch.setattr(
         sys, "argv", ["tick", "--root", str(tmp_path)] + (["--loop"] if loop else [])
     )
@@ -4298,3 +4299,18 @@ def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
     assert len(seen) == 1 and ":" in seen[0]["holder"]
     lease = acquire_tick_lease(tmp_path, "next:1", time.time(), 5400)
     release_tick_lease(lease)
+
+
+@pytest.mark.parametrize("resident", [["777"], None])
+def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplog, resident):
+    import sys
+
+    from outerloop import tick as mod
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
+    monkeypatch.setattr("outerloop.cli._resident_jobs", lambda: resident)
+    monkeypatch.setattr(mod, "tick", lambda *a, **k: pytest.fail("the loop must not tick"))
+    assert mod.main() == 2
+    assert "this loop stops" in caplog.text
+    assert (tmp_path / "TICK").read_text() == ""  # released on the way out

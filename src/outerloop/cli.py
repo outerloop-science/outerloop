@@ -499,25 +499,25 @@ def start(args: argparse.Namespace) -> int:
     gaps = _app_gaps_from_env({**values, **os.environ})
     if gaps is not None and gaps.problem:
         print(gaps.problem, file=sys.stderr)
-    if plan.mode in ("slurm", "login"):
-        # one loop per root: a login loop holds the root's tick lease, a
-        # resident chain holds the scheduler's singleton; each mode refuses
-        # to start over the other
-        import socket
-        import time
+    # one loop per root: a foreground loop (local or login) holds the root's
+    # tick lease, a resident chain holds the scheduler's singleton; every
+    # start refuses over a held lease, and the two Slurm modes refuse over
+    # each other (the resident submission re-checks the lease below)
+    import socket
+    import time
 
-        from outerloop.runstate import tick_lease_holder
-        from outerloop.tick import _loop_cadence_s
+    from outerloop.runstate import tick_lease_holder
+    from outerloop.tick import _loop_cadence_s
 
-        ttl = 3 * _loop_cadence_s(float(plan.cadence_min or 0))
-        held_by = tick_lease_holder(plan.root, time.time(), ttl, socket.gethostname())
-        if held_by:
-            print(
-                f"outerloop start: a loop already holds this root's tick lease ({held_by}); "
-                "stop it first",
-                file=sys.stderr,
-            )
-            return 2
+    ttl = 3 * _loop_cadence_s(float(plan.cadence_min or 0))
+    held_by = tick_lease_holder(plan.root, time.time(), ttl, socket.gethostname())
+    if held_by:
+        print(
+            f"outerloop start: a loop already holds this root's tick lease ({held_by}); "
+            "stop it first",
+            file=sys.stderr,
+        )
+        return 2
     if plan.mode == "login":
         existing = _resident_jobs()
         if existing is None or existing:
@@ -536,6 +536,7 @@ def start(args: argparse.Namespace) -> int:
             if key in TICK_ENV_KEYS:
                 env.setdefault(key, value)
         env["OUTERLOOP_COMPUTE"] = "local" if plan.mode == "local" else "slurm"
+        env.pop("OUTERLOOP_TICK_HOST", None)  # the plan decided; nothing inherited
         if plan.mode == "login":
             env.update(plan.export_env())
             env.pop("OUTERLOOP_RESIDENT", None)
@@ -599,6 +600,18 @@ def start(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    # a foreground loop can take the root's lease between the check above and
+    # the submission; the later party yields, here by withdrawing the job
+    held_by = tick_lease_holder(plan.root, time.time(), ttl, socket.gethostname())
+    if held_by:
+        cancelled = _cancel(job)
+        print(
+            f"a loop took this root's tick lease ({held_by}) while the resident tick was "
+            "submitted; "
+            + (f"withdrew job {job}." if cancelled else f"cancel it by hand: scancel {job}"),
+            file=sys.stderr,
+        )
+        return 0 if cancelled else 1
     print(
         f"resident tick submitted: job {job} on {plan.partition}, "
         f"{plan.resident_minutes} min walltime, hands over to itself. "

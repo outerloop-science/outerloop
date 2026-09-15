@@ -423,3 +423,31 @@ def test_tick_lease_same_host_takes_over_a_dead_holder(tmp_path, caplog):
     assert "taking over the tick lease left by alpha1:1" in caplog.text
     release_tick_lease(successor)
     assert tick_lease_holder(tmp_path, 151, 300, "alpha2") == ""
+
+
+def test_tick_lease_ttl_is_the_holders(tmp_path):
+    from outerloop.runstate import acquire_tick_lease, tick_lease_holder
+
+    lease = acquire_tick_lease(tmp_path, "alpha1:1", 100, 5400)  # a 30-min cadence
+    lease.close()  # crash
+    # a one-minute-cadence reader elsewhere must not call it stale after its own 3 minutes
+    assert tick_lease_holder(tmp_path, 400, 180, "alpha2") == "alpha1:1"
+    with pytest.raises(RuntimeError, match="alpha1:1"):
+        acquire_tick_lease(tmp_path, "alpha2:2", 400, 180)
+    assert tick_lease_holder(tmp_path, 100 + 5400 + 1, 180, "alpha2") == ""
+
+
+def test_heartbeat_stops_when_another_node_took_the_record(tmp_path):
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    lease = acquire_tick_lease(tmp_path, "alpha1:1", 100, 300)
+    # a node the file lock did not reach wrote its own record
+    foreign = json.dumps({"holder": "alpha2:2", "heartbeat": 150, "ttl": 300})
+    (tmp_path / "TICK").write_text(foreign)
+    with pytest.raises(RuntimeError, match="taken by alpha2:2"):
+        acquire_tick_lease(tmp_path, "alpha1:1", 200, 300, lease)
+    assert lease.closed
+    assert (tmp_path / "TICK").read_text() == foreign  # never overwritten by the loser
+    other = acquire_tick_lease(tmp_path, "alpha2:2", 200, 300)  # the winner heartbeats on
+    release_tick_lease(other, "alpha2:2")
+    assert (tmp_path / "TICK").read_text() == ""

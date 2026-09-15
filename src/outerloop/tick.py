@@ -3271,15 +3271,30 @@ def main() -> int:
         raise SystemExit(128 + signum)
 
     try:
-        # the login-host loop is the one tick without a scheduler fence
-        # (the resident chain has its singleton); it alone holds the root's lease
-        if os.environ.get("OUTERLOOP_TICK_HOST", "").strip().lower() == "login":
+        # every foreground loop holds the root's tick lease; a resident tick
+        # runs once under the scheduler's singleton and takes none
+        if args.loop:
             try:
                 lease = acquire_tick_lease(args.root, holder, time.time(), 3 * cadence_s)
             except RuntimeError as exc:
                 log.error("%s", exc)
                 return 2
             previous_term = signal.signal(signal.SIGTERM, stop)
+            if not local_mode():
+                # a login loop against Slurm: a resident chain queued between
+                # start's check and this lease owns the root (its own start
+                # re-checks the lease after submitting, so one side always yields)
+                from outerloop.cli import _resident_jobs
+
+                resident = _resident_jobs()
+                if resident is None or resident:
+                    log.error(
+                        "a resident tick is %s; this loop stops",
+                        f"queued or running (job {resident[0]})"
+                        if resident
+                        else "unknown (squeue failed)",
+                    )
+                    return 2
         if not args.loop:
             run_once()
             return 0
@@ -3296,7 +3311,7 @@ def main() -> int:
             time.sleep(max(0.0, cadence_s - (time.time() - started)))
     finally:
         if lease is not None:
-            release_tick_lease(lease)
+            release_tick_lease(lease, holder)
         if previous_term is not None:
             signal.signal(signal.SIGTERM, previous_term)
 

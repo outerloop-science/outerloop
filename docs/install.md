@@ -355,15 +355,18 @@ path is used on compute nodes. The tick only checks the image file exists and
 does not run Apptainer on the login node. Empty QOS uses Slurm's default;
 an empty binary setting uses `apptainer`.
 
-Only one loop may own a state root. `outerloop start` refuses a login loop
-while a resident chain is queued or running, and refuses a resident chain
-while a login loop holds the root's `TICK` lease. The lease names its holder
-as `host:pid` and heartbeats each tick; a file lock refuses a second loop
-while the owner runs. After a crash the next start on the same host takes the
-lease at once, and a start from another host once the heartbeat is three
-cadences old (file locks may not reach across nodes). Ctrl-C or SIGTERM
-releases it. Use tmux or a user service if the process should survive your
-terminal.
+Only one loop may own a state root. Every foreground loop, local or login,
+holds the root's `TICK` lease (holder `host:pid`, heartbeat and the holder's
+cadence written each tick); a file lock refuses a second loop while the owner
+runs. `outerloop start` refuses any loop while the lease is held, and a login
+loop while a resident chain is queued or running; a resident submission that
+finds the lease taken meanwhile withdraws its job, and a login loop that
+finds a resident queued after taking the lease stops. After a crash the next
+start on the same host takes the lease at once, and a start from another
+host once the heartbeat is three of the holder's cadences old (file locks may
+not reach across nodes); a loop whose record was overwritten from another
+node stops at its next heartbeat. Ctrl-C or SIGTERM releases the lease. Use
+tmux or a user service if the process should survive your terminal.
 
 The login loop does **not auto-update**, even with `OUTERLOOP_AUTO_UPDATE=main`.
 To restart or upgrade: stop the process, run `git pull`, run `uv sync`, then

@@ -939,3 +939,47 @@ def test_resident_tick_takes_no_root_lease(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "tick", lambda *a, **k: mod.TickReport())
     assert mod.main() == 0
     assert not (tmp_path / "TICK").exists()
+
+
+def test_local_start_refuses_a_held_lease(clean_env, monkeypatch, capsys):
+    import time
+
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must refuse"))
+    root = clean_env / "state"
+    lease = acquire_tick_lease(root, "alpha1:123", time.time(), 5400)
+    try:
+        assert main(["start", "--local", "--root", str(root)]) == 2
+        assert "alpha1:123" in capsys.readouterr().err
+    finally:
+        release_tick_lease(lease)
+
+
+def test_resident_submission_withdraws_when_a_loop_took_the_lease(clean_env, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from outerloop import runstate
+
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    jobs = iter([[], ["4242"]])
+    monkeypatch.setattr(cli, "_resident_jobs", lambda: next(jobs))
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="4242;cluster", stderr=""),
+    )
+    holders = iter(["", "alpha1:5"])  # free at the check, taken after the submission
+    monkeypatch.setattr(runstate, "tick_lease_holder", lambda *a, **k: next(holders))
+    cancelled: list[str] = []
+
+    def cancel(job: str) -> bool:
+        cancelled.append(job)
+        return True
+
+    monkeypatch.setattr(cli, "_cancel", cancel)
+    assert main(["start", "--root", str(clean_env / "state")]) == 0
+    assert cancelled == ["4242"]
+    assert "alpha1:5" in capsys.readouterr().err

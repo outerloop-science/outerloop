@@ -357,17 +357,21 @@ def list_runs(root: Path) -> list[RunRecord]:
 # --- leases ---
 
 
-def _tick_lease_state(lease: TextIO) -> tuple[str, float]:
-    """(holder, heartbeat) written in TICK; ("", 0) when it was released."""
+def _tick_lease_state(lease: TextIO) -> tuple[str, float, float]:
+    """(holder, heartbeat, ttl) written in TICK; ("", 0, 0) when it was released."""
     lease.seek(0)
     raw = lease.read()
     if not raw:
-        return "", 0.0
+        return "", 0.0, 0.0
     try:
         record = json.loads(raw)
-        return str(record.get("holder", "unknown")), float(record.get("heartbeat", 0))
+        return (
+            str(record.get("holder", "unknown")),
+            float(record.get("heartbeat", 0)),
+            float(record.get("ttl", 0)),
+        )
     except (ValueError, TypeError, AttributeError):
-        return "unreadable", os.fstat(lease.fileno()).st_mtime
+        return "unreadable", os.fstat(lease.fileno()).st_mtime, 0.0
 
 
 def _tick_lease_free(previous: str, heartbeat: float, host: str, now: float, ttl_s: float) -> bool:
@@ -389,8 +393,10 @@ def tick_lease_holder(root: Path, now: float, ttl_s: float, host: str) -> str:
             fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return _tick_lease_state(lease)[0] or "unknown"
-        previous, heartbeat = _tick_lease_state(lease)
-        return "" if _tick_lease_free(previous, heartbeat, host, now, ttl_s) else previous
+        previous, heartbeat, held_ttl = _tick_lease_state(lease)
+        # the holder's own cadence decides staleness, never the reader's
+        free = _tick_lease_free(previous, heartbeat, host, now, max(ttl_s, held_ttl))
+        return "" if free else previous
 
 
 def acquire_tick_lease(
@@ -400,9 +406,12 @@ def acquire_tick_lease(
 
     `holder` is host:pid. The lock fences a live holder however old its
     heartbeat; a dead one is taken over at once on the same host and after
-    the TTL from another. Never unlink TICK: every contender must lock the
-    same inode.
+    its own TTL from another. A heartbeat that finds another holder's record
+    (written from a node the lock did not reach) raises instead of
+    overwriting it. Never unlink TICK: every contender must lock the same
+    inode.
     """
+    heartbeat_only = lease is not None
     if lease is None:
         root.mkdir(parents=True, exist_ok=True)
         lease = (root / "TICK").open("a+")
@@ -412,9 +421,10 @@ def acquire_tick_lease(
                 fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 locked = False
-            previous, heartbeat = _tick_lease_state(lease)
+            previous, heartbeat, held_ttl = _tick_lease_state(lease)
             host = holder.rsplit(":", 1)[0]
-            if not locked or not _tick_lease_free(previous, heartbeat, host, now, ttl_s):
+            free = _tick_lease_free(previous, heartbeat, host, now, max(ttl_s, held_ttl))
+            if not locked or not free:
                 raise RuntimeError(f"tick lease held by {previous or 'unknown'}")
             if previous:
                 log.warning("taking over the tick lease left by %s", previous)
@@ -422,9 +432,13 @@ def acquire_tick_lease(
             lease.close()
             raise
     try:
+        if heartbeat_only:
+            current = _tick_lease_state(lease)[0]
+            if current not in ("", holder):
+                raise RuntimeError(f"tick lease taken by {current}")
         lease.seek(0)
         lease.truncate()
-        lease.write(json.dumps({"holder": holder, "heartbeat": now}))
+        lease.write(json.dumps({"holder": holder, "heartbeat": now, "ttl": ttl_s}))
         lease.flush()
         return lease
     except BaseException:
@@ -432,10 +446,10 @@ def acquire_tick_lease(
         raise
 
 
-def release_tick_lease(lease: TextIO) -> None:
-    """Clear our heartbeat and release the root lock, including on exceptions."""
+def release_tick_lease(lease: TextIO, holder: str = "") -> None:
+    """Release the root lock; clear the record only while it is still ours."""
     try:
-        if not lease.closed:
+        if not lease.closed and (not holder or _tick_lease_state(lease)[0] in ("", holder)):
             lease.seek(0)
             lease.truncate()
             lease.flush()
