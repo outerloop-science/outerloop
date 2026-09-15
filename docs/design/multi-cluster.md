@@ -19,16 +19,19 @@ GitHub: the contract, issues and their claim markers, PRs, and the target's
 `research-log` branch (ledger, board, reports, the siblings' `status.json`,
 research lines). Job state never leaves the cluster.
 
-The scheduler shows in five places: `compute.py` (`SlurmCompute` calls
-`sbatch`, `sacct`, `squeue`, `sinfo`, `scancel`; `JobSpec.to_argv` writes
-`--time`, `--mem`, `--gpus-per-node`, `--nice`, `--dependency`, `--begin`,
-`--array`), `scripts/tick_chain.sbatch` and `scripts/tick_resident.sh`
-(`singleton`, `afterany:self`, `--begin`, `squeue`), `cli.py` (`start` picks
-Slurm when `sbatch` is on PATH), and a few reads in `tick.py`. The container
-runtime shows in four: `dispatch.py` (launched jobs), `orchestrator.py` (the
-inline evaluator measurement), `harness.py` (author and judge sessions) and
-`image.py` (the image probe), each building `apptainer exec --containall
---cleanenv ...` by hand.
+The scheduler shows in `compute.py` (`SlurmCompute` calls `sbatch`,
+`sacct`, `squeue`, `sinfo`, `scancel`; `JobSpec.to_argv` writes `--time`,
+`--mem`, `--gpus-per-node`, `--nice`, `--dependency`, `--begin`, `--array`;
+backend selection is Slurm unless `OUTERLOOP_COMPUTE=local`), in
+`scripts/tick_chain.sbatch`, `scripts/tick_resident.sh` and
+`scripts/requeue_moved_successors.sh` (`singleton`, `afterany:self`,
+`--begin`, `squeue`, `scontrol`, `scancel`), in `cli.py` (`start` picks Slurm
+when `sbatch` is on PATH and forces `OUTERLOOP_COMPUTE=local` otherwise), and
+in a few reads in `tick.py`. The container runtime shows in four modules, at
+several call sites each: `dispatch.py` (launched jobs), `orchestrator.py`
+(the inline evaluator measurement), `harness.py` (one builder per contained
+backend) and `image.py` (the image probe), all building `apptainer exec
+--containall --cleanenv ...` by hand.
 
 ## The three tiers
 
@@ -45,29 +48,41 @@ try-out.
 benchmark. What that needs, in order of how soon it bites:
 
 - Agent ids unique across fleets, so two fleets' `agent-01` never collide.
-  The cross-fleet section below picks slot ranges per deployment, which
-  keeps ids flat and branch names (`agents/agent-NN`) unchanged; a fleet
-  name (`OUTERLOOP_FLEET`, for example `torch` or `empire`) is still carried
-  on run ids, the board and the per-fleet status files, so a reader can
-  tell where a run lives.
-- Pacing per fleet. `max_active_attempts` and `runs_per_week` are per
-  target in the contract; with N kernels they multiply by N. Either the
-  contract declares a share per fleet, or each deployment sets its own
-  lower value under the contract's ceiling. The second keeps the contract
-  fleet-agnostic and puts the knob where the operator of that cluster is.
-  Neither exists yet: `tick.py` reads both values from the contract alone,
-  so either shape is a build.
-- Publishes are safe across kernels: the ledger and board are pushed with an
-  expected-head guard, and PR merges go through GitHub. Issue claims are
-  not: `pick_issue` reads an issue's comments and then posts the claim
-  marker, so two kernels can both read it as unclaimed inside that window
-  and start duplicate work. Tier 2 needs an atomic claim; the cheapest is a
-  git ref on `research-log` (`refs/claims/<issue>`) pushed with the same
-  expected-head guard, which GitHub rejects for the loser. Self-initiated
-  direction picking reads `status.json` on `research-log`, which a second
-  fleet refreshes at its own cadence, so duplicate hypotheses are possible
-  in the window between two ticks. That is the same gap the plan-writing
-  planner (agent-protocols.md, stage 3) addresses; it is not fleet-specific.
+  Slot ranges per deployment (`OUTERLOOP_AGENT_SLOTS=05-08`) keep ids flat
+  and branch names (`agents/agent-NN`) unchanged. The range must bind every
+  launch path: today issue-requested launches pass no `--agent-id` and land
+  on the default `agent-01`. Each fleet publishes its range in its status
+  file, and a kernel that sees another fleet's range overlap its own refuses
+  to start new runs and says so, since two operators can misconfigure. A
+  fleet name (`OUTERLOOP_FLEET`) rides on run ids, the board and the status
+  files, so a reader can tell where a run lives; the board gains that
+  attribution.
+- Pacing per fleet. `max_active_attempts` and `runs_per_week` are read from
+  the contract alone, and a deployment-side lower value does not preserve
+  the target's ceiling: a contract allowance of ten with two fleets set to
+  eight permits sixteen. The contract therefore declares the shares
+  (`budgets.fleets: {torch: {max_active_attempts: 2, runs_per_week: 5},
+  empire: {...}}`), each kernel enforces its own share, and the target's
+  owner keeps one place that bounds total spend. New work either way.
+- Claims. Publishes are safe across kernels: the ledger batch is pushed with
+  an expected-head guard and PR merges go through GitHub. Issue claims are
+  not, for two reasons. `pick_issue` counts only claim markers written under
+  the bot's own login, so two fleets with different bot identities never see
+  each other's claims at all; and even under one identity the claim is a
+  read-then-post with a window in which both kernels read an issue as
+  unclaimed. So either every fleet of a target runs under one bot identity,
+  or claims move off comments to something identity-independent and atomic:
+  a `refs/claims/<issue>` ref on `research-log` created with the refs API's
+  create-if-absent, which the loser's request fails; the existing
+  expected-head helper updates branch heads and does not cover this, and
+  crash and release semantics for the ref are new work.
+- The sibling view per fleet, with run identity. Each kernel writes
+  `status/<fleet>.json` in the shared tree, readers merge, and every entry
+  carries its run id and fleet (today's entries carry the agent id only).
+  Self-initiated direction picking reads this view, which another fleet
+  refreshes at its own cadence, so duplicate hypotheses stay possible in the
+  window between two passes; that is the gap the plan-writing planner
+  addresses, not a fleet-specific one.
 - Messages across fleets: the section "Cross-fleet messages on one target"
   below.
 
@@ -133,20 +148,31 @@ resident job on a cheap CPU partition, chained by `singleton`) is the only
 one the code knows. The alternatives are a `scrontab` entry (NERSC), a loop
 process on a login node where policy allows it (the `tick --loop` that local
 mode already runs, but with `SlurmCompute`), or a resident on a GPU
-partition when nothing else exists (wasteful; a last resort). This is a
-deployment choice, not a kernel one, so it belongs in `outerloop start`:
-`OUTERLOOP_TICK_HOST=resident|scrontab|login`, with `resident` the default
-that exists today.
+partition when nothing else exists (wasteful; a last resort). Two things the
+kernel lacks for any of them: the tick host must be chosen separately from
+the compute backend (today the local `start` forces `OUTERLOOP_COMPUTE=local`
+along with the loop), and residents that `singleton` no longer serializes
+need a tick-level lease in the state root (the existing lease guards one
+run's wake, and tick coalescing is a timer, not mutual exclusion). So:
+`OUTERLOOP_TICK_HOST=resident|scrontab|login` in `outerloop start`, with
+`resident` the default that exists today, plus a tick lease. Empire AI needs
+none of it if our subaccount has a CPU partition.
 
 ## The try-out: Empire AI Alpha, tier 1
 
-1. Access. The owner logs in once and runs a ten-line probe: `sinfo` for
-   partitions and their time limits, `sacctmgr show assoc user=$USER` for
-   the subaccount, `module load apptainer && apptainer --version`, an
-   outbound `curl -sI https://api.github.com` from a login node and from a
-   one-minute job, `python3 --version`, and the quotas on home and scratch.
-   The probe's output decides whether anything in the previous section is
-   needed before the first tick.
+1. Access. The owner logs in once and runs a probe: `sinfo` for partitions
+   and their time limits, `sacctmgr show assoc user=$USER` for the
+   subaccount, `module load apptainer && apptainer --version`, an outbound
+   `curl -sI https://api.github.com` and one to the model API from a login
+   node and from a one-minute job (the contained session on a compute node
+   is what needs the model API), `python3 --version` (3.12 or newer) and
+   `which uv`, the quotas on home and scratch, GPU visibility under
+   `apptainer exec --nv` in a GPU job, and a two-node check that the shared
+   filesystem honors the primitives the kernel leans on (atomic rename,
+   `O_EXCL` creates and `flock` visible across nodes). It also asks the
+   policy question the documentation does not answer: whether a long-lived
+   process may sit on a login node. The probe's output decides whether
+   anything in the previous section is needed before the first tick.
 2. Install. A source checkout on Alpha (`git clone` and `uv sync`, as on
    Torch): in Slurm mode `outerloop start` submits `scripts/tick_chain.sbatch`
    from the checkout and refuses a bare PyPI install (shipping the chain
@@ -170,110 +196,154 @@ that exists today.
 ## Cross-fleet messages on one target
 
 The owner asked (2026-09-15) whether `message --to agent-NN` could reach a
-sibling on another cluster, and then set the shape: local files stay the
-store, and the kernel replicates them asynchronously to a shared medium for
-cross-cluster communication and persistence. This section is that shape.
+sibling on another cluster, and set the shape: local files stay the store,
+and the kernel replicates them asynchronously to a shared medium. A second
+reader (codex) reviewed the first draft against the code; its findings are
+folded in here.
 
-**Local files stay authoritative.** Every kernel keeps writing what it knows
-into its own state root exactly as today: records, leases, inboxes,
-outboxes, ledgers. Nothing a kernel needs in order to run its own runs waits
-on the network, so a GitHub outage delays cross-fleet traffic and nothing
-else.
+**Local files stay authoritative.** Every kernel keeps writing what it needs
+to run its own runs into its own state root: records, leases, inboxes,
+outboxes, ledgers. None of that waits on the network.
 
-**One sync, not one path per thing.** The tick's board pass already does
-the general move: it turns local state into files on the target's
-`research-log` branch in one commit per pass, and every attempt fetches that
-branch back. The sync generalizes it. Each fleet has an outgoing tree under
-its state root (`shared/<fleet>/`) that the pass pushes in that one commit,
-and an incoming tree that the pass pulls from the medium and ingests: mail
-into the inboxes of the agents this kernel hosts, forum posts into the
-brief's context, other fleets' status files into the sibling view. Mail,
-forum and status are directories the sync knows, not mechanisms of their
-own. The medium is a backend behind the sync: `research-log` now, an object
-store later if latency or volume asks for it; the local files never change.
+**One sync.** The tick's board pass already turns local state into files on
+`research-log` and every attempt fetches that branch back. The sync
+generalizes it: each fleet has an outgoing tree under its state root
+(`shared/<fleet>/`) that the pass pushes, and an incoming tree that the pass
+pulls and ingests (mail into the inboxes of the runs this kernel hosts,
+forum posts into the brief's context, other fleets' status into the sibling
+view). Mail, forum and status are directories the sync knows, not
+mechanisms of their own. Today the pass is not one commit: the ledger batch
+is pushed with the expected-head guard, while the status file and report
+archival each go through `put_file` on their own; folding them into one
+guarded commit per pass is part of this build. The medium behind the sync is
+a backend, `research-log` now; a bucket later is a per-directory choice (the
+forum stays on GitHub as research content; mail may move if latency asks).
 
-**Messages.** `deliver_messages` already resolves a recipient among the runs
-in its own state root. A local recipient gets the envelope appended to its
-inbox directly, as today, and that path survives any outage. A recipient
-that the merged sibling view places on another fleet gets the same envelope
-written to `shared/<fleet>/mail/<recipient agent>/<message_id>.json`; the
-sender's sync pushes it, the recipient's sync pulls it and appends it
-through the same `append`. The dedupe key (`agent-msg:<sender run>:<n>`) is
-global, so re-pulling a file after a crash is harmless; the receiving sync
-removes the file from the medium in its own commit once appended. Delivery
-follows the existing wake rule. Refusals stay context-only notes: no live
-run under that id in the merged view, or four unread files from this sender
-already in the medium; a recipient that ended in flight yields a bounce file
-back to the sender's mail directory. Groups (`--to all`, a search line) fan
-out to each hosted live recipient under one message id. Latency for a
-remote recipient is one to two cadences; for a local one it is what it is
-today.
+**Mail is immutable; receivers keep cursors.** A message to a run on another
+fleet is written to `shared/<fleet>/mail/<recipient run>/<sender run>/
+<counter>.json`, the inbox envelope as-is, addressed to a run id, never to
+an agent id: the sender's kernel resolves the agent to a run through the
+merged sibling view at send time, so a reused slot or a later run under the
+same agent id never receives mail meant for an earlier one. The receiver
+keeps a cursor per sender run beside its inbox, the way it keeps a position
+per GitHub collection, appends every file past the cursor through the same
+`append`, and advances the cursor after the append. Nothing is deleted from
+the medium: the kernel has no delete primitive on the branch, a deleted file
+stays in history anyway, and a receiver deleting the sender's file would race
+the sender republishing it. The sender prunes its own outgoing files after
+they are acknowledged and a retention window has passed, in its own commit.
+
+**Acknowledgments carry the caps.** Each fleet's status file publishes, per
+sender run, the cursor its receivers have reached. The sender's kernel reads
+it, so in-flight is counter minus acknowledged, and the per-pair cap of four
+applies to in-flight mail (unacknowledged transport), which is a different
+quantity from the local cap, which reads the recipient's `inbox_seq`. A
+message unacknowledged past an expiry window (a recipient that ended, a
+fleet that went away, a run no fleet hosts) is bounced by the sender's own
+kernel as a context-only note to its author; no other kernel need act.
+
+**Groups.** `--to all`, or a search line, is expanded by the sender's kernel
+into explicit recipient run ids at send time and the list is persisted in
+the delivery journal, one file per recipient, so a retry after a crash
+reuses the same list instead of recomputing "all" against a changed fleet.
+
+**Local delivery stays direct.** `deliver_messages` already resolves
+recipients in its own state root; a local recipient gets the envelope
+appended straight into its inbox and that path survives any outage. Only a
+recipient the merged view places on another fleet takes the mail path.
+
+**Crash windows, each with a test.** Sender: local write of the outgoing
+file, then push at the next pass (the file is durable, the push retries).
+Receiver: pull, append, cursor advance (a crash after append re-appends on
+the next pass and `append` dedupes within that inbox by the global key
+`agent-msg:<sender run>:<n>`; a crash before append re-reads). Medium: two
+fleets committing at once (the expected-head retry; with several fleets the
+pass may need a bounded retry loop within a tick so a fleet is not starved
+until its next cadence). Ids: an overlap of slot ranges could make two
+distinct messages share a key; the overlap check above is what prevents it.
 
 **Forum.** A forum post is publication, not delivery: anything a run that
-starts next week should read cannot live in inboxes, which belong to live
-runs. Posts go to `shared/<fleet>/forum/<topic>/<message_id>.json`, the sync
-pushes them, every fleet's sync pulls the whole `forum/` tree, and the brief
-inlines the newest posts as it inlines reports; a `reports`-style verb
-browses them; nothing wakes. The planner's plan section is the first
-forum-shaped artifact. Research content belongs on GitHub, human-readable
-and versioned, so the forum's medium stays `research-log` even if mail
-moves to a bucket one day; the two directories need not share a medium.
+starts next week should read cannot live in inboxes. Posts go to
+`shared/<fleet>/forum/<topic>/<message_id>.json`, every fleet pulls the
+whole `forum/` tree, the brief inlines the newest posts as it inlines
+reports, a `reports`-style verb browses them, nothing wakes. Retention: posts
+older than a window are compacted into a digest, the way reports distill
+into lessons, so the tree and the fetch stay bounded.
 
-**Persistence.** The same sync can replicate a run's durable artifacts,
-report, transcripts, launch ledger and inbox history, to an artifact store
-as a backup and for cross-cluster forensics. It should not replicate records
-and leases: they churn every tick, the local filesystem is authoritative for
-them, and a stale copy elsewhere is a hazard. GitHub is not that store; a
-bucket is (compute-cloud.md). A deployment with no shared filesystem at all
-gives the storage interface its bucket implementation for records, leases
-and inboxes, and the sync is unchanged on top.
+**Latency, honestly.** One to two cadences when both fleets and GitHub are
+healthy. A recipient that started after the sender's kernel last pulled the
+view is not in it yet and the message is refused with a note saying to try
+again next leg. Conflicts, outages and a recipient parked on long jobs all
+stretch it; arrival in the inbox is not the agent reading it.
 
-**Prerequisites, both tier-2 items in their own right.** Agent ids unique
-across the target, by slot ranges per deployment (`OUTERLOOP_AGENT_SLOTS=
-05-08`; ids stay flat, branch names, board and ledger unchanged;
-fleet-prefixed ids are the fallback), and a sibling view per fleet
-(`status/<fleet>.json` in the shared tree, merged on read) so a sender can
-place a recipient.
+**Load and ceilings.** A commit through the API costs one blob request per
+file plus a tree, a commit and a ref update; a pass with a handful of files
+is a dozen requests, against an App budget of five thousand an hour.
+Attempts fetch `research-log` in full at every wake today, so history growth
+from mail and forum is paid by every wake: a shallow or blob-filtered fetch
+for that branch is a work item before the volume exists. The ceilings, in
+order: commit contention with many fleets (the bounded retry above);
+cadence latency; GitHub as the one medium for cross-fleet traffic (an
+outage delays it while local delivery and every job continue).
 
-**Load and ceilings.** One commit per pass per fleet whatever the message
-count, one fetch per pass, and a fetch per attempt that exists already;
-against an App budget of five thousand requests an hour the sync is noise.
-The ceilings, in order: commit contention on `research-log` with many
-fleets (the pass already retries on an expected-head conflict), cadence
-latency for remote recipients (the cadence is the knob), GitHub as the one
-medium for cross-fleet traffic (an outage delays it; local delivery and
-every job continue). Swapping the medium to a bucket changes the sync
-backend and nothing the kernel writes locally.
+**Persistence.** The same sync can replicate a run's durable artifacts
+(report, transcripts, launch ledger, inbox history) to an artifact store, a
+bucket, for backup and cross-cluster forensics. It never replicates records
+and leases: they churn every tick and a stale copy elsewhere is a hazard. A
+deployment with no shared filesystem at all replaces the filesystem
+primitives themselves through the storage interface compute-cloud.md
+describes; that is outside this note.
 
-**Build.** The slot-range setting, per-fleet status in the shared tree with a
-merging reader, the outgoing and incoming trees with the push and pull in
-the tick's pass, the remote branch in `deliver_messages`, the bounce, group
-fan-out, the forum verb; plus tests for the crash between pull and append
-and for the backlog count. It waits for a second fleet to share a target,
-which in turn waits for the Empire AI tier-1 try-out.
+**What a GitHub outage does today, for the record.** Launched jobs and the
+wakes that carry their results continue; a wake whose origin fetch fails
+logs it and resumes on the local clone; the outbox holds public posts. But a
+failed contract fetch idles the launch lanes for that tick, and a publish
+that raises (a network failure included) ends the run as `aborted` with
+`publish-error`, the branch left on the remote. Runs mid-submit during an
+outage are therefore at risk now, before any of this design. A GitHub outage
+latch mirroring the model-API latch (classify the failure, re-park, retry,
+spend no attempt) is a small hardening PR and comes first.
+
+**Build.** The slot-range setting and its overlap check on every launch
+path; contract fleet shares; per-fleet status with run ids and
+acknowledgment cursors, merged on read; one guarded commit per pass; the
+outgoing and incoming trees with push and pull; receiver cursors; the remote
+branch in `deliver_messages` with run-id addressing and persisted group
+expansion; expiry bounces; sender-side pruning; the forum verb and digest;
+a shallow fetch of `research-log` for attempts; a tick lease for
+non-singleton tick hosts; the GitHub outage latch. Tests for each crash
+window above. It waits for a second fleet to share a target, which in turn
+waits for the Empire AI tier-1 try-out, except the outage latch, which
+waits for nothing.
 
 ## Decisions for the owner
 
-1. **Tick host.** Accept `OUTERLOOP_TICK_HOST` as the shape, with the
-   resident chain the default, `scrontab` for NERSC, and a login-node loop
-   only where the cluster's policy allows it? This is the one build that
-   every non-Torch cluster touches.
-2. **Bot identity per fleet.** One App for all fleets of the lab, or one
-   App per deployment? One App is simpler; per-deployment Apps make the
-   fleet visible in every PR and let an institution revoke one without the
-   others.
-3. **Order.** Empire AI first (nothing to build), NERSC second (container
-   seam and `scrontab`), ALCF last (PBS backend). Or a different order if an
-   allocation's clock is running.
-4. **Pacing per fleet (tier 2).** Contract-declared shares, or each
-   deployment's own lower value under the contract's ceiling. The second
-   is recommended: the contract stays fleet-agnostic.
-5. **Sibling messages (tier 2).** Settled by the owner on 2026-09-15:
-   local files stay authoritative, local delivery stays direct, and one
-   generic sync replicates the shared tree to `research-log` for
-   cross-fleet mail, forum and status, with the medium swappable for a
-   bucket later. Still open: slot ranges (recommended) or fleet-prefixed
-   ids. Waits until two fleets share a target.
+Settled on 2026-09-15: local files stay authoritative, local delivery stays
+direct, and one generic sync replicates the shared tree to `research-log`
+for cross-fleet mail, forum and status, with the medium swappable per
+directory later. Still the owner's:
+
+1. **Tick host.** Accept `OUTERLOOP_TICK_HOST=resident|scrontab|login` with
+   a tick lease, `resident` staying the default? Every non-Torch cluster
+   without a cheap CPU partition needs it; Empire AI may not.
+2. **Bot identity.** One App for every fleet of a target is now the
+   recommendation, because claim markers count only under the bot's own
+   login; per-deployment Apps need identity-independent claims first.
+3. **Order.** Empire AI first (nothing to build if the probe is clean),
+   NERSC second (container seam and `scrontab`), ALCF last (PBS backend).
+4. **Pacing.** Contract-declared fleet shares whose sum is the target's
+   ceiling, enforced per kernel; the earlier "each deployment sets a lower
+   value" does not hold the ceiling.
+5. **Addressing.** Slot ranges with the overlap check (recommended) or
+   fleet-prefixed ids.
+6. **Mail semantics.** Immutable files, receiver cursors, acknowledgments in
+   the status file, in-flight cap of four, expiry bounce by the sender's
+   kernel, sender-side pruning after a retention window (recommended); the
+   windows are numbers to pick.
+7. **Forum placement and retention.** Permanently on GitHub as research
+   content, compacted into digests after a window.
+8. **The outage latch first.** A publish that meets a GitHub failure today
+   ends the run aborted; fix that before any messaging code.
 
 ## Sources
 
