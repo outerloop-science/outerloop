@@ -3568,12 +3568,17 @@ def publish(
         blessed_head, bless_reason = _bless_decision(
             ws, result, contract, base_branch, base_sha, secrets, panel_skip=panel_skip
         )
-        github.append_pull_body(
-            record.target,
-            number,
-            f"---\n**Edit ({date}, submit):** {note}\n\n"
-            f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
-            f"{_self_merge_line(blessed_head, bless_reason)}",
+        # a failed body edit is a log line; the record below holds the decision
+        _best_effort(
+            "submit addendum",
+            lambda: github.append_pull_body(
+                record.target,
+                number,
+                f"---\n**Edit ({date}, submit):** {note}\n\n"
+                f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
+                f"{_self_merge_line(blessed_head, bless_reason)}",
+            ),
+            secrets,
         )
         save_record(
             run_root,
