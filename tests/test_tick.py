@@ -894,6 +894,115 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     assert heartbeat["disk"]["launch_ok"] is False
 
 
+@pytest.mark.parametrize("lane", ["intake", "steward", "self_initiated"])
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("service_dry_run", [False, True])
+def test_hold_launches_preserves_servicing_and_resumes(
+    tmp_path, monkeypatch, caplog, lane, dry_run, service_dry_run
+):
+    import logging
+    from unittest.mock import Mock
+
+    import outerloop.tick as tick_mod
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    contract = _self_contract()
+    monkeypatch.setattr("outerloop.contract.load_contract", lambda *a: contract)
+    github = Mock()
+    github.get_file_content.return_value = "contract"
+    services = {}
+    for name in ("service_syncs", "service_eval_cache", "service_research_log", "service_boards"):
+        services[name] = Mock()
+        monkeypatch.setattr(tick_mod, name, services[name])
+    monkeypatch.setattr(tick_mod, "contract_alarm", Mock())
+    lanes = {}
+    for name in ("intake", "steward", "self_initiated"):
+        lanes[name] = Mock(return_value=("work", "123") if name == lane else None)
+        monkeypatch.setattr(tick_mod, "service_" + name, lanes[name])
+    spec = tick_mod.ServiceSpec(
+        target="org/pilot",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        image="img.sif",
+        home=tmp_path,
+    )
+    slurm = FakeSlurm(states={"77": "TIMEOUT", "100": "COMPLETED"})
+    _running_run(tmp_path, "killed", job_id="77", age_s=3600)
+    # First observation starts the killed-job grace period.
+    tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW, min_free_bytes=1)
+    waiting_run(tmp_path)
+    sentinel = tmp_path / tick_mod.HOLD_LAUNCHES_SENTINEL
+    sentinel.touch()
+    dispatcher = RecordingDispatcher()
+
+    def step(now):
+        return tick(
+            tmp_path,
+            slurm.compute(),
+            dispatcher,
+            now=now,
+            github=github,
+            service_spec=spec,
+            dry_run=dry_run,
+            service_dry_run=service_dry_run,
+            min_free_bytes=1,
+            min_tick_s=0,
+        )
+
+    with caplog.at_level(logging.INFO):
+        held = step(NOW + GRACE + 1)
+        step(NOW + GRACE + 2)
+    assert held.launch_blocked
+    assert held.intake == held.steward == held.self_initiated == ("", "")
+    assert all(mock.call_count == 0 for mock in lanes.values())
+    assert held.running_ended == ("killed",)
+    assert load_record(tmp_path, "killed").state == ENDED
+    assert held.woken == (("r1", "COMPLETED"),)
+    assert bool(dispatcher.dispatched) is not dry_run
+    assert load_record(tmp_path, "r1").wake_attempts == (0 if dry_run else 2)
+    assert caplog.messages.count(f"launches held: {sentinel}") == 2
+    for name, mock in services.items():
+        assert mock.call_count == (0 if name == "service_eval_cache" and dry_run else 2)
+    assert github.get_file_content.call_count == 2
+
+    sentinel.unlink()
+    resumed = step(NOW + GRACE + 3)
+    assert not resumed.launch_blocked
+    assert getattr(resumed, lane) == ("work", "123")
+    assert lanes[lane].call_args.kwargs["dry_run"] is service_dry_run
+
+
+def test_hold_launches_reports_without_services(tmp_path):
+    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
+
+    (tmp_path / HOLD_LAUNCHES_SENTINEL).touch()
+    report = tick(tmp_path, FakeSlurm().compute(), RecordingDispatcher(), NOW, min_free_bytes=1)
+    assert report.launch_blocked
+
+
+def test_hold_launches_reported_on_a_coalesced_tick(tmp_path, caplog):
+    import logging
+
+    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
+
+    sentinel = tmp_path / HOLD_LAUNCHES_SENTINEL
+    sentinel.touch()
+    slurm = FakeSlurm()
+    run_tick(tmp_path, slurm, min_tick_s=0)  # stamps the work marker at NOW
+    with caplog.at_level(logging.INFO):
+        report = tick(
+            tmp_path,
+            slurm.compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            min_free_bytes=1,
+            min_tick_s=600,
+        )
+    assert report.coalesced and report.launch_blocked
+    assert f"launches held: {sentinel}" in caplog.messages
+
+
 def test_disk_preflight_passes_normally(tmp_path: Path, monkeypatch) -> None:
     """Healthy path must actually run the lanes: the report fields are only
     populated by the github branch, so the test provides one."""
@@ -4223,7 +4332,85 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
             events.append("merge")
 
     tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
-    if changed == "base":
-        assert events == []  # the sweep's own read already rules it out: no lease taken
-    else:
-        assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+
+
+@pytest.mark.parametrize("prefix", ["outerloop", "autoresearch"])
+def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
+    from outerloop.tick import _merge_blessed_pr
+
+    record = waiting_run(
+        tmp_path,
+        pr_url="https://github.com/org/repo/pull/9",
+        auto_bless_reason="base moved: origin/main new != measured old",
+    )
+    pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+
+    class GitHub:
+        def __init__(self):
+            self.comments = []
+            self.posts = []
+            self.fail_lookup = False
+            self.dial = "auto"
+            self.lookups = 0
+
+        def get_pull_request(self, *args):
+            return pr
+
+        def get_file_content(self, *args, **kwargs):
+            return (
+                "benchmarks: [{name: x, command: echo, metric: score, direction: max}]\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 3}\n"
+                f"scope: {{allowed: [src/]}}\nroadmap: docs/roadmap.md\nmerge: {self.dial}"
+            )
+
+        def list_comments(self, *args):
+            assert read_lease(tmp_path, record.run_id) is not None
+            self.lookups += 1
+            if self.fail_lookup:
+                raise RuntimeError("lookup failed")
+            return self.comments
+
+        def comment(self, repo, number, body):
+            assert read_lease(tmp_path, record.run_id) is not None
+            self.posts.append(body)
+            self.comments.append({"body": body, "user": {"login": "bot"}})
+
+    github = GitHub()
+
+    def tick_once():
+        _merge_blessed_pr(tmp_path, record, github, pr, "tick", NOW, "bot")
+        assert read_lease(tmp_path, record.run_id) is None
+
+    tick_once()
+    assert github.posts == [
+        "<!-- outerloop:self-merge-status -->\nSelf-merge waiting: no head was blessed at publish: "
+        "base moved: origin/main new != measured old."
+    ]
+    github.comments[0]["body"] = github.comments[0]["body"].replace("outerloop:", f"{prefix}:")
+    github.comments.append(
+        {"body": "<!-- outerloop:self-merge-status -->\nunrelated", "user": {"login": "human"}}
+    )
+    tick_once()
+    assert len(github.posts) == 1
+    save_record(tmp_path, replace(record, auto_bless_reason="panel did not run"), NOW)
+    tick_once()
+    assert len(github.posts) == 2
+    assert github.posts[-1].endswith("panel did not run.")
+    tick_once()
+    assert len(github.posts) == 2
+    save_record(tmp_path, record, NOW)
+    github.fail_lookup = True
+    tick_once()
+    assert len(github.posts) == 2
+    github.fail_lookup = False
+    tick_once()
+    assert len(github.posts) == 3
+    assert github.posts[0] == github.posts[-1]
+    # a manual-merge PR is a human's to merge: no status comment, no lookup
+    save_record(tmp_path, replace(record, auto_bless_reason="contract merge is manual"), NOW)
+    github.dial = "manual"
+    lookups = github.lookups
+    tick_once()
+    assert len(github.posts) == 3
+    assert github.lookups == lookups

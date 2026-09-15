@@ -70,6 +70,7 @@ from outerloop.runstate import (
 log = logging.getLogger(__name__)
 
 PAUSE_SENTINEL = "PAUSE"
+HOLD_LAUNCHES_SENTINEL = "HOLD_LAUNCHES"
 # Operator off-switch for dispatched wakes, mirroring PAUSE: touch
 # <root>/DISARM_WAKE (or set OUTERLOOP_DISPATCH_WAKE=0) and the waiting-run
 # sweep goes dry at the next tick; rm it and wakes resume, no chain restart.
@@ -160,7 +161,7 @@ class TickReport:
     self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
     steward: tuple[str, str] = ("", "")  # (issue tag, job_id) when a stewardship launched
     disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
-    launch_blocked: bool = False  # True when the preflight turned launch lanes off
+    launch_blocked: bool = False  # disk preflight or operator hold turned launch lanes off
     shed: tuple[str, ...] = ()  # ended runs whose workspaces housekeeping removed
 
 
@@ -601,19 +602,29 @@ def _observe_auto_pr(
 
 
 def _merge_blessed_pr(
-    root: Path, record: RunRecord, github: Any, pr: dict, holder: str, now: float
+    root: Path,
+    record: RunRecord,
+    github: Any,
+    pr: dict,
+    holder: str,
+    now: float,
+    bot_login: str = "",
 ) -> None:
     from outerloop.inbox import wake_pending
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def why_not(record: RunRecord, pr: dict) -> str:
+    def why_not(record: RunRecord, pr: dict, dial: str) -> str:
         """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
             (record.state != PARKED, "the run is not parked"),
             (record.agent_id.startswith("steward"), "a steward's PR is a human's to merge"),
-            (not record.auto_blessed_head, "no head was blessed at publish"),
+            (
+                not record.auto_blessed_head,
+                "no head was blessed at publish"
+                + (f": {record.auto_bless_reason}" if record.auto_bless_reason else ""),
+            ),
             (bool(_poll_targets(record)), "the run sleeps on jobs"),
             (wake_pending(run_dir(root, record.run_id), record), "a message waits for the author"),
             (pr.get("state") != "open" or bool(pr.get("merged")), "the PR is not open"),
@@ -624,17 +635,10 @@ def _merge_blessed_pr(
                 (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha"),
                 "the base moved",
             ),
-            (
-                _base_dial(github, record.target, pr, None) != "auto",
-                "the base contract is not auto",
-            ),
+            (dial != "auto", "the base contract is not auto"),
         )
         return next((reason for failed, reason in checks if failed), "")
 
-    reason = why_not(record, pr)
-    if reason:
-        log.info("merge of %s#%s waits: %s", record.target, number, reason)
-        return
     if not acquire_lease(root, record.run_id, holder, "", now):
         return
     try:
@@ -643,9 +647,44 @@ def _merge_blessed_pr(
         # guards only the head)
         record = load_record(root, record.run_id)
         pr = github.get_pull_request(record.target, number)
-        reason = why_not(record, pr)
+        dial = _base_dial(github, record.target, pr, None)
+        reason = why_not(record, pr, dial)
         if reason:
+            from outerloop.github import is_own_login
+            from outerloop.markers import has_marker, legacy_marker, marker
+
+            reason = redact(reason, _client_secrets(github))
             log.info("merge of %s#%s waits: %s", record.target, number, reason)
+            if dial != "auto":
+                # a manual-merge PR is a human's to merge; nothing to explain
+                return
+            try:
+                comments = github.list_comments(record.target, number)
+                latest = next(
+                    (
+                        str(c.get("body") or "")
+                        for c in reversed(comments)
+                        if has_marker(str(c.get("body") or ""), "self-merge-status")
+                        and is_own_login(
+                            str((c.get("user") or {}).get("login") or ""),
+                            bot_login or _bot_login_default(),
+                        )
+                    ),
+                    "",
+                )
+            except Exception as exc:
+                log.warning(
+                    "self-merge status lookup failed: %s", redact(str(exc), _client_secrets(github))
+                )
+                return
+            status = f"Self-merge waiting: {reason}."
+            previous = (
+                latest.replace(marker("self-merge-status"), "")
+                .replace(legacy_marker("self-merge-status"), "")
+                .strip()
+            )
+            if previous != status:
+                github.comment(record.target, number, f"{marker('self-merge-status')}\n{status}")
             return
         methods = github.allowed_merge_methods(record.target)
         if not methods:
@@ -998,7 +1037,7 @@ def sweep(
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        _merge_blessed_pr(root, record, github, pr, holder, now)
+                        _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
             except Exception as exc:
                 log.warning(
                     "GitHub polling failed on %s: %s: %s", record.run_id, type(exc).__name__, exc
@@ -1622,6 +1661,15 @@ def _sweep_one(
     # something RUNNING (or recently pending): nothing to do yet.
 
 
+def _launches_held(root: Path) -> bool:
+    """True when the operator's HOLD_LAUNCHES file is present; says so once."""
+    path = root / HOLD_LAUNCHES_SENTINEL
+    if not path.exists():
+        return False
+    log.info("launches held: %s", path)
+    return True
+
+
 def tick(
     root: Path,
     compute: Compute,
@@ -1639,8 +1687,8 @@ def tick(
     """One full tick. Pause sentinel wins over everything: a paused loop
     heartbeats (so the watchdog stays quiet) but touches nothing.
 
-    Disk preflight gates every lane that LAUNCHES new work (follow-up jobs,
-    intake claims, self-initiated climbs): a session started on a full or
+    Disk preflight and HOLD_LAUNCHES gate fresh intake, self-initiated and
+    steward runs; existing runs still receive wakes. A session started on a full or
     nearly-full filesystem dies mid-flight in ways that lose data. The sweep
     still runs — its writes are small, per-record contained, and ending runs
     matters more when storage is failing, not less.
@@ -1690,7 +1738,7 @@ def tick(
                 elapsed,
                 min_tick_s,
             )
-            return TickReport(coalesced=True)
+            return TickReport(coalesced=True, launch_blocked=_launches_held(root))
     report = sweep(
         root,
         compute,
@@ -1738,6 +1786,9 @@ def tick(
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
+    if _launches_held(root):
+        launch_ok = False
+    report = replace(report, disk=tuple(disk_health.warnings()), launch_blocked=not launch_ok)
     # Mid-leg sync is serviced regardless of follow-up/board servicing: it
     # only needs the workspace and the PAT (a git fetch, no GitHub REST and
     # no contract), and a live session waiting on `sync` must not depend on

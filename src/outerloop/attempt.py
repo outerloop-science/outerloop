@@ -216,24 +216,70 @@ def target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
+def _bless_decision(
+    ws: Workspace,
+    result: Any,
+    contract: Any,
+    base_branch: str,
+    base_sha: str,
+    secrets: tuple[str, ...] = (),
+    *,
+    panel_skip: str = "",
+) -> tuple[str, str]:
+    """Decide once; share the reason between the record, PR and log."""
+    head, reason, revision = "", "", "not read"
+    merge = getattr(contract, "merge", "manual")
+    if panel_skip or result.panel_rounds <= 0:
+        reason = "panel did not run"
+    elif result.panel_blocking_open or result.panel_degraded:
+        reason = "panel blocking or degraded"
+    elif merge != "auto":
+        reason = "contract merge is manual"
+    else:
+        ref = f"origin/{base_branch}"
+        try:
+            revision = _rev(ws, ref, strict=True)
+        except Exception as exc:
+            revision = f"{type(exc).__name__}: {exc}"
+            reason = f"{ref} unreadable: {revision}"
+        else:
+            if not revision:
+                reason = f"{ref} absent"
+            elif revision != base_sha:
+                reason = f"base moved: {ref} {revision} != measured {base_sha}"
+            else:
+                try:
+                    head = ws.git("rev-parse", "HEAD").strip()
+                    if not head:
+                        reason = "HEAD unreadable: empty revision"
+                except Exception as exc:
+                    reason = f"HEAD unreadable: {type(exc).__name__}: {exc}"
+    reason = redact(" ".join(reason.split()), secrets)[:480]
+    log.info(
+        "self-merge decision: panel_rounds=%s panel_blocking_open=%s panel_degraded=%s "
+        "contract.merge=%s base_branch=%s base_sha=%s rev=%s head=%s reason=%s",
+        result.panel_rounds,
+        result.panel_blocking_open,
+        result.panel_degraded,
+        merge,
+        base_branch,
+        base_sha,
+        redact(" ".join(revision.split()), secrets),
+        head,
+        reason,
+    )
+    return head, reason
+
+
 def _blessed_head(
     ws: Workspace, result: Any, contract: Any, base_branch: str, base_sha: str
 ) -> str:
-    """The pushed PR head the tick may later self-merge — only when this
-    publish was under merge:auto with a clean panel and a fresh base; "" otherwise.
-    An unreadable HEAD blesses nothing."""
-    if not (
-        result.panel_rounds > 0
-        and not (result.panel_blocking_open or result.panel_degraded)
-        and getattr(contract, "merge", "manual") == "auto"
-        and _rev(ws, f"origin/{base_branch}") == base_sha
-    ):
-        return ""
-    try:
-        return ws.git("rev-parse", "HEAD").strip()
-    except Exception as exc:
-        log.warning("could not read HEAD; not blessing self-merge: %s", exc)
-        return ""
+    """The head eligible for self-merge, or an empty string."""
+    return _bless_decision(ws, result, contract, base_branch, base_sha)[0]
+
+
+def _self_merge_line(head: str, reason: str) -> str:
+    return f"Self-merge: armed at {head}" if head else f"Self-merge: not armed ({reason})"
 
 
 def _arm_unless_base_moved(
@@ -1870,11 +1916,18 @@ def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
             ws.git("checkout", parent, "--", file)
 
 
-def _rev(ws: Workspace, ref: str) -> str:
-    """The commit `ref` names, or "" when it does not exist."""
+def _rev(ws: Workspace, ref: str, *, strict: bool = False) -> str:
+    """Resolve a commit; strict remote reads distinguish absent refs from git failures."""
     try:
+        if strict and ref.startswith("origin/"):
+            full_ref = f"refs/remotes/{ref}"
+            refs = ws.git("for-each-ref", "--format=%(refname)", full_ref).splitlines()
+            if full_ref not in refs:
+                return ""
         return ws.git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}").strip()
     except Exception:
+        if strict:
+            raise
         return ""
 
 
@@ -3577,22 +3630,28 @@ def publish(
         github.update_candidate_row(
             record.target, number, result.candidate, digits=bench.display_digits
         )
-        github.append_pull_body(
-            record.target,
-            number,
-            f"---\n**Edit ({date}, submit):** {note}\n\n"
-            f"{redact(result.submit_report or 'no report was given', secrets)}",
+        blessed_head, bless_reason = _bless_decision(
+            ws, result, contract, base_branch, base_sha, secrets, panel_skip=panel_skip
+        )
+        # a failed body edit is a log line; the record below holds the decision
+        _best_effort(
+            "submit addendum",
+            lambda: github.append_pull_body(
+                record.target,
+                number,
+                f"---\n**Edit ({date}, submit):** {note}\n\n"
+                f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
+                f"{_self_merge_line(blessed_head, bless_reason)}",
+            ),
+            secrets,
         )
         save_record(
             run_root,
             dc_replace(
                 _clear_stage(record, run_root),
                 state=PARKED,
-                auto_blessed_head=(
-                    _blessed_head(ws, result, contract, base_branch, base_sha)
-                    if not panel_skip
-                    else ""
-                ),
+                auto_blessed_head=blessed_head,
+                auto_bless_reason=bless_reason,
                 resume_session_id=result.session.session_id
                 if result.session
                 else record.resume_session_id,
@@ -3717,13 +3776,30 @@ def publish(
                 secrets,
                 merge_mode=getattr(contract, "merge", "manual"),
             )
+        blessed_head, bless_reason = _bless_decision(
+            ws, result, contract, base_branch, base_sha, secrets
+        )
+        if pr_number.isdigit():
+            # the PR exists by now; a failed body edit is a log line, not an
+            # aborted run
+            _best_effort(
+                "self-merge addendum",
+                lambda: github.append_pull_body(
+                    config.target,
+                    int(pr_number),
+                    f"---\n**Edit ({date}, publish):**\n\n"
+                    f"{_self_merge_line(blessed_head, bless_reason)}",
+                ),
+                secrets,
+            )
         final = RunRecord(
             **{
                 **record.__dict__,
                 "state": PARKED,
                 "pr_url": pr_url,
                 "stage": {**record.stage, "review_topup": True},
-                "auto_blessed_head": _blessed_head(ws, result, contract, base_branch, base_sha),
+                "auto_blessed_head": blessed_head,
+                "auto_bless_reason": bless_reason,
                 "resume_session_id": result.session.session_id if result.session else "",
                 "ending_note": pr_url,
             }
