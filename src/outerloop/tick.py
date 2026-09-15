@@ -1604,6 +1604,15 @@ def _sweep_one(
     # something RUNNING (or recently pending): nothing to do yet.
 
 
+def _launches_held(root: Path) -> bool:
+    """True when the operator's HOLD_LAUNCHES file is present; says so once."""
+    path = root / HOLD_LAUNCHES_SENTINEL
+    if not path.exists():
+        return False
+    log.info("launches held: %s", path)
+    return True
+
+
 def tick(
     root: Path,
     compute: Compute,
@@ -1672,7 +1681,7 @@ def tick(
                 elapsed,
                 min_tick_s,
             )
-            return TickReport(coalesced=True)
+            return TickReport(coalesced=True, launch_blocked=_launches_held(root))
     report = sweep(
         root,
         compute,
@@ -1720,9 +1729,7 @@ def tick(
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
-    hold_path = root / HOLD_LAUNCHES_SENTINEL
-    if hold_path.exists():
-        log.info("launches held: %s", hold_path)
+    if _launches_held(root):
         launch_ok = False
     report = replace(report, disk=tuple(disk_health.warnings()), launch_blocked=not launch_ok)
     # Mid-leg sync is serviced regardless of follow-up/board servicing: it

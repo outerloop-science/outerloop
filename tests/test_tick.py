@@ -981,6 +981,28 @@ def test_hold_launches_reports_without_services(tmp_path):
     assert report.launch_blocked
 
 
+def test_hold_launches_reported_on_a_coalesced_tick(tmp_path, caplog):
+    import logging
+
+    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
+
+    sentinel = tmp_path / HOLD_LAUNCHES_SENTINEL
+    sentinel.touch()
+    slurm = FakeSlurm()
+    run_tick(tmp_path, slurm, min_tick_s=0)  # stamps the work marker at NOW
+    with caplog.at_level(logging.INFO):
+        report = tick(
+            tmp_path,
+            slurm.compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            min_free_bytes=1,
+            min_tick_s=600,
+        )
+    assert report.coalesced and report.launch_blocked
+    assert f"launches held: {sentinel}" in caplog.messages
+
+
 def test_disk_preflight_passes_normally(tmp_path: Path, monkeypatch) -> None:
     """Healthy path must actually run the lanes: the report fields are only
     populated by the github branch, so the test provides one."""

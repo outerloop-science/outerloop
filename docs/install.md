@@ -398,12 +398,14 @@ the walltime the tick requests for the climb and author-sleep wake jobs it sizes
 (clamped under a code ceiling).
 
 **Three operator switches.** `touch <root>/PAUSE` stops tick work except the
-heartbeat and stops the resident chain; existing jobs keep running, and resuming
-requires removing the file and running `outerloop start`.
-`touch <root>/DISARM_WAKE` dries wake delivery by the sweep and queued wake jobs
-until `rm <root>/DISARM_WAKE`, while fresh launches, ending records, and the chain
-keep running (the starting environment's `OUTERLOOP_DISPATCH_WAKE=0` also disarms
-wakes; it is not read from `.env`).
+heartbeat; jobs already running continue. The resident chain drains on it (it
+cancels its successor and exits), so after `rm <root>/PAUSE` run `outerloop
+start` there; the per-tick chain and the local loop resume on their own at the
+next tick.
+`touch <root>/DISARM_WAKE` stops wake delivery by the sweep and by queued wake
+jobs until `rm <root>/DISARM_WAKE`, while fresh launches, ending records, and
+the chain keep running (the starting environment's `OUTERLOOP_DISPATCH_WAKE=0`
+also disarms wakes; it is not read from `.env`).
 `touch <root>/HOLD_LAUNCHES` stops fresh intake, self-initiated, and steward runs
 until `rm <root>/HOLD_LAUNCHES`, with no chain restart, while the sweep, wake and
 message delivery, GitHub polling, self-merge sweep, board, and ending records
