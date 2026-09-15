@@ -295,6 +295,23 @@ says so — rerun `outerloop init --force` online, or set the login in the
 
 ### 2c. Run the loop
 
+**Host prerequisites for model backends.** From the outerloop checkout:
+
+| Backend | Host prerequisite | Install command |
+| --- | --- | --- |
+| Claude author or reviewer | Claude Code CLI ([official setup](https://code.claude.com/docs/en/setup)) | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| Codex author or reviewer | Pinned Codex CLI | `bash scripts/install_codex.sh` |
+| Hermes reviewer (not an author backend) | Pinned hermes-agent source checkout, run through `uv` | `bash scripts/install_hermes.sh` |
+
+Install the selected backend before setup. `init` records the absolute Claude
+or Codex path found on PATH (or in `~/.local/bin`) as `OUTERLOOP_<BACKEND>_BIN`.
+`start` checks only the configured author's CLI: the recorded path takes
+precedence, otherwise it searches PATH. A missing or non-executable CLI stops
+launch before any job runs. After installing or moving it, run
+`outerloop init --force` to record its path again. `--dry-run` prints the launch
+command without checking the CLI. For Hermes, set `REVIEW_HERMES_REPO` to the installed checkout (the installer
+defaults to `~/hermes-agent`); contained review sessions bind its source read-only.
+
 The quickest path is the guided setup:
 
 ```bash

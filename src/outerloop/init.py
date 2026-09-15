@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
+from outerloop.harness import HARNESS_INSTALL
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
@@ -107,13 +108,6 @@ def author_bin_env(backend: str) -> str:
     return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
 
 
-HARNESS_INSTALL = {
-    "claude": "npm install -g @anthropic-ai/claude-code "
-    "(or: curl -fsSL https://claude.ai/install.sh | bash)",
-    "codex": "npm install -g @openai/codex",
-}
-
-
 def locate_harness(backend: str) -> str:
     """The absolute path of `backend`'s CLI on this machine: PATH first, then
     ~/.local/bin (where the native installers put it and where a Slurm job,
@@ -131,8 +125,8 @@ def _harness_hint(answers: InitAnswers) -> None:
     if not answers.author_bin:
         name = answers.author_backend or AUTHOR_BACKENDS[0]
         print(
-            f"  no `{name}` binary found on PATH or in ~/.local/bin — the first climb would end\n"
-            f"  with spawn-error. Install it: {HARNESS_INSTALL.get(name, 'see its docs')}\n"
+            f"  no `{name}` binary found on PATH or in ~/.local/bin — start will refuse to run\n"
+            f"  until it is installed. Install it: {HARNESS_INSTALL.get(name, 'see its docs')}\n"
             "  then run `outerloop init --force` so its path is recorded."
         )
 

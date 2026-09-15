@@ -696,7 +696,7 @@ def test_init_records_the_harness_binary_or_says_how_to_install_it(
     monkeypatch.setattr(init, "locate_harness", lambda backend: "")
     assert init.main([*base, "--force"]) == 0
     out = capsys.readouterr().out
-    assert "no `claude` binary" in out and "npm install -g @anthropic-ai/claude-code" in out
+    assert "no `claude` binary" in out and "curl -fsSL https://claude.ai/install.sh | bash" in out
     assert "OUTERLOOP_CLAUDE_BIN" not in (tmp_path / ".env").read_text()
 
 
@@ -860,3 +860,33 @@ def test_github_app_rerun_captures_a_missing_installation_id(
     assert init.main(argv) == 1
     err = capsys.readouterr().err
     assert "apps/myapp/installations/new" in err and "init --force --github-app" in err
+
+
+@pytest.mark.real_locate_harness
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_init_records_real_path_lookup(tmp_path, monkeypatch, backend):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / backend
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert (
+        init.main(
+            [
+                "--yes",
+                "--compute",
+                "local",
+                "--target",
+                "o/r",
+                "--pat-file",
+                "/some/pat",
+                "--author-backend",
+                backend,
+            ]
+        )
+        == 0
+    )
+    assert f"OUTERLOOP_{backend.upper()}_BIN={binary.resolve()}" in (tmp_path / ".env").read_text()

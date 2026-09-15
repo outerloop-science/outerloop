@@ -312,6 +312,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(cli, "ENV_FILE", tmp_path / "absent.env")
     monkeypatch.setattr(cli, "find_uv", lambda: ("/usr/bin/uv", ""))
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", sys.executable)
+    monkeypatch.setenv("OUTERLOOP_CODEX_BIN", sys.executable)
     return tmp_path
 
 
@@ -578,52 +580,76 @@ def test_tick_subcommand_forwards_to_the_tick_entry(monkeypatch: pytest.MonkeyPa
     assert seen[1:] == ["--root", "/r", "--loop"]
 
 
-def test_missing_harness_binary_checks_only_the_configured_backend(tmp_path: Path) -> None:
-    """#294: init records the CLI path; a missing one would end every climb with
-    spawn-error. Only the configured backend's path counts, and an explicit empty
-    value in the environment clears a stale recorded path."""
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_missing_harness_binary_resolution(tmp_path: Path, backend: str) -> None:
     from outerloop.cli import missing_harness_binary
 
-    present = tmp_path / "claude"
-    present.write_text("")
-    nope = str(tmp_path / "nope")
-    assert missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": str(present)}, {}) == ""
-    assert missing_harness_binary({}, {}) == ""
-    problem = missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": nope}, {})
-    assert "OUTERLOOP_CLAUDE_BIN" in problem and "init --force" in problem
-    # a stale path for the backend the loop never spawns does not block it
-    stale_other = {"OUTERLOOP_CLAUDE_BIN": nope, "OUTERLOOP_AUTHOR_BACKEND": "codex"}
-    assert missing_harness_binary(stale_other, {}) == ""
-    assert missing_harness_binary(
-        {"OUTERLOOP_CODEX_BIN": nope}, {"OUTERLOOP_AUTHOR_BACKEND": "codex"}
-    )
-    # the environment wins over the file, and an explicit empty value clears the path
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    present = bin_dir / backend
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    other = "codex" if backend == "claude" else "claude"
+    values = {
+        "OUTERLOOP_AUTHOR_BACKEND": backend,
+        f"OUTERLOOP_{other.upper()}_BIN": str(tmp_path / "stale"),
+        "REVIEW_HERMES_REPO": str(tmp_path / "stale-hermes"),
+    }
+    env = {"PATH": str(bin_dir)}
+    problem = missing_harness_binary(values, env)
+    assert f"`{backend}` on PATH" in problem
+    assert "init --force" in problem
     assert (
-        missing_harness_binary(
-            {"OUTERLOOP_CLAUDE_BIN": nope}, {"OUTERLOOP_CLAUDE_BIN": str(present)}
-        )
-        == ""
-    )
-    assert (
-        missing_harness_binary({"OUTERLOOP_CLAUDE_BIN": nope}, {"OUTERLOOP_CLAUDE_BIN": ""}) == ""
-    )
+        "https://claude.ai/install.sh" if backend == "claude" else "scripts/install_codex.sh"
+    ) in problem
+    present.write_text("#!/bin/sh\nexit 0\n")
+    present.chmod(0o755)
+    assert missing_harness_binary(values, env) == ""  # stale other backends do not block
+    values[key] = str(present)
+    assert missing_harness_binary(values, {"PATH": ""}) == ""
+    values[key] = str(tmp_path / "gone")
+    assert f"{key}={values[key]}" in missing_harness_binary(values, env)  # no PATH fallback
+    assert missing_harness_binary(values, {**env, key: str(present)}) == ""
+    assert missing_harness_binary(values, {**env, key: ""}) == ""
+    present.chmod(0o644)
+    assert missing_harness_binary(values, {**env, key: str(present)})
+    present.unlink()
+    present.mkdir()
+    assert missing_harness_binary(values, {**env, key: str(present)})
 
 
-def test_start_refuses_a_missing_recorded_harness_binary(
-    clean_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_start_refuses_missing_harness_before_any_execution(
+    clean_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    backend: str,
+    recorded: bool,
 ) -> None:
-    """Through `start` itself: a recorded binary that is gone stops the launch
-    before any plan is made."""
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/sbatch")
-    monkeypatch.chdir(checkout(clean_env))
-    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", str(clean_env / "gone"))
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", backend)
+    monkeypatch.setenv(
+        f"OUTERLOOP_{backend.upper()}_BIN", str(clean_env / "gone") if recorded else ""
+    )
+    monkeypatch.setenv("PATH", str(clean_env))
+    monkeypatch.setattr(cli, "plan_start", lambda **kw: pytest.fail("must refuse before planning"))
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
+    monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must not exec"))
     assert main(["start"]) == 2
     err = capsys.readouterr().err
-    assert "OUTERLOOP_CLAUDE_BIN" in err and "is not a file" in err
-    # the same stale path is ignored when the loop is configured for codex
-    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
-    assert main(["start"]) == 2
-    assert "state root" in capsys.readouterr().err  # past the binary check
+    assert backend in err and "not an executable file" in err
+    assert (str(clean_env / "gone") if recorded else "on PATH") in err
+
+
+def test_start_dry_run_allows_missing_recorded_binary(clean_env, monkeypatch, capsys):
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", str(clean_env / "gone"))
+    assert main(["start", "--local", "--dry-run"]) == 0
+    assert "outerloop.tick" in capsys.readouterr().out
+
+
+def test_hermes_is_a_review_backend_not_an_author(tmp_path):
+    problem = cli.missing_harness_binary({"OUTERLOOP_AUTHOR_BACKEND": "hermes"}, {})
+    assert "unsupported author backend 'hermes'" in problem
+    assert "scripts/install_hermes.sh" in problem
 
 
 # ---------------------------------------------------------------- uv
@@ -829,6 +855,7 @@ def test_login_exec_exports_slurm_settings(clean_env, monkeypatch):
     monkeypatch.setattr(cli.os, "nice", niced.append)
     settings = {key: "" for key in TICK_ENV_KEYS}
     settings.update(OUTERLOOP_QOS="priority", OUTERLOOP_APPTAINER_BIN="/apps/apptainer")
+    settings.update(OUTERLOOP_CLAUDE_BIN=sys.executable, OUTERLOOP_CODEX_BIN=sys.executable)
     settings.update(
         OUTERLOOP_TICK_HOST="login", OUTERLOOP_ACCOUNT="acct", OUTERLOOP_PARTITION="cpu"
     )
@@ -983,3 +1010,36 @@ def test_resident_submission_withdraws_when_a_loop_took_the_lease(clean_env, mon
     assert main(["start", "--root", str(clean_env / "state")]) == 0
     assert cancelled == ["4242"]
     assert "alpha1:5" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_start_launches_with_resolved_author(clean_env, monkeypatch, backend, recorded):
+    from outerloop.harness import default_binary
+
+    binary = clean_env / backend
+    shim(clean_env, backend, "exit 0\n")
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    monkeypatch.delenv(key)
+    monkeypatch.setenv("PATH", str(clean_env) if not recorded else "")
+    values = {"OUTERLOOP_AUTHOR_BACKEND": backend}
+    if recorded:
+        values[key] = str(binary)
+    monkeypatch.setattr(
+        cli, "ENV_FILE", env_file(clean_env, "\n".join(f"{k}={v}" for k, v in values.items()))
+    )
+    seen = []
+
+    def launch(cmd, env):
+        seen.append(default_binary(backend, env))
+        return 0
+
+    monkeypatch.setattr(cli, "_exec", launch)
+    assert main(["start", "--local", "--root", str(clean_env / "state")]) == 0
+    assert seen == [str(binary.resolve())]
+
+
+def test_missing_path_does_not_accept_a_cli_only_in_cwd(tmp_path, monkeypatch):
+    shim(tmp_path, "claude", "exit 0\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli.missing_harness_binary({}, {"PATH": str(tmp_path / "absent")})

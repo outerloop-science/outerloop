@@ -33,6 +33,8 @@ tasks to finish.
 
 ### Fixed
 
+- `outerloop start` refuses to run when the configured author's CLI is missing: it checks the recorded path, else PATH, else `~/.local/bin`, and names the install command and `outerloop init --force`.
+
 - Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
 - PRs under `merge: auto` say why self-merge is waiting, and the publish records and logs the bless decision.
 

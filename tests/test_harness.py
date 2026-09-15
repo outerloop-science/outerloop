@@ -864,19 +864,22 @@ def test_role_key_tolerates_a_missing_file_only_under_vertex(tmp_path, monkeypat
         role_key(missing, "codex")  # vertex never excuses a non-claude backend
 
 
-def test_default_binary_prefers_the_recorded_path(monkeypatch) -> None:
-    """init records OUTERLOOP_<BACKEND>_BIN; every lane (climb, follow-up, steward)
-    spawns that binary, else the native installer's ~/.local/bin path (#294)."""
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_default_binary_prefers_the_recorded_path(monkeypatch, tmp_path, backend) -> None:
     from outerloop.harness import default_binary
 
-    monkeypatch.delenv("OUTERLOOP_CLAUDE_BIN", raising=False)
-    monkeypatch.delenv("OUTERLOOP_CODEX_BIN", raising=False)
-    assert default_binary("claude").endswith("/.local/bin/claude")
-    assert default_binary("codex").endswith("/.local/bin/codex")
-    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", "/opt/bin/claude")
-    assert default_binary("claude") == "/opt/bin/claude"
-    monkeypatch.setenv("OUTERLOOP_CODEX_BIN", "~/tools/codex")
-    assert default_binary("codex").endswith("/tools/codex") and "~" not in default_binary("codex")
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert default_binary(backend) == backend
+    binary = tmp_path / backend
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    assert default_binary(backend) == str(binary.resolve())
+    monkeypatch.setenv(key, f"/opt/bin/{backend}")
+    assert default_binary(backend) == f"/opt/bin/{backend}"
+    monkeypatch.setenv(key, f"~/tools/{backend}")
+    assert default_binary(backend) == str(Path.home() / "tools" / backend)
 
 
 def test_no_lane_hardcodes_the_harness_path() -> None:
