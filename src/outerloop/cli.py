@@ -397,7 +397,9 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
     if (not recorded and not os.path.isabs(binary)) or not (
         Path(binary).is_file() and os.access(binary, os.X_OK)
     ):
-        looked_for = f"{key}={recorded}" if recorded else f"`{backend}` on PATH"
+        looked_for = (
+            f"{key}={recorded}" if recorded else f"`{backend}` on PATH or ~/.local/bin/{backend}"
+        )
         return (
             f"{backend} author CLI: {looked_for} is not an executable file; "
             f"install it with `{HARNESS_INSTALL[backend]}`, then run "

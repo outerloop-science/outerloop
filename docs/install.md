@@ -308,16 +308,17 @@ directory. Hermes remains a review backend, provisioned with
 
 **Host prerequisites for model backends.** From the outerloop checkout:
 
-| Backend | Host prerequisite | Install command |
-| --- | --- | --- |
-| Claude author or reviewer | Pinned Claude Code CLI | `bash scripts/install_claude.sh` |
-| Codex author or reviewer | Pinned Codex CLI | `bash scripts/install_codex.sh` |
-| Hermes reviewer (not an author backend) | Pinned hermes-agent source checkout, run through `uv` | `bash scripts/install_hermes.sh` |
+- Claude, as author or reviewer: the pinned Claude Code CLI; install with
+  `bash scripts/install_claude.sh`.
+- Codex, as author or reviewer: the pinned Codex CLI; install with
+  `bash scripts/install_codex.sh`.
+- Hermes, as reviewer only (not an author backend): the pinned hermes-agent
+  source checkout, run through `uv`; install with `bash scripts/install_hermes.sh`.
 
 `init` records the absolute Claude
 or Codex path found on PATH (or in `~/.local/bin`) as `OUTERLOOP_<BACKEND>_BIN`.
 `start` checks only the configured author's CLI: the recorded path takes
-precedence, otherwise it searches PATH. A missing or non-executable CLI stops
+precedence, otherwise it searches PATH, then `~/.local/bin`. A missing or non-executable CLI stops
 launch before any job runs. After installing or moving it, run
 `outerloop init --force` to record its path again. `--dry-run` prints the launch
 command without checking the CLI. For Hermes, set `REVIEW_HERMES_REPO` to the installed checkout (the installer

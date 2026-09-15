@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import time
@@ -33,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
-from outerloop.harness import HARNESS_INSTALL
+from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
@@ -118,13 +117,14 @@ def locate_harness(backend: str) -> str:
     name = backend or AUTHOR_BACKENDS[0]
     recorded = os.environ.get(author_bin_env(name), "")
     if recorded:
+        # an operator's explicit path is kept when it works and reported when it does not
         path = Path(recorded).expanduser().absolute()
         return str(path) if path.is_file() and os.access(path, os.X_OK) else ""
-    found = shutil.which(name)
-    if found:
-        return str(Path(found).resolve())
-    local = Path.home() / ".local" / "bin" / name
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else ""
+    # the harness's own lookup, minus any path already recorded: absolute PATH
+    # entries only (never the working directory), then ~/.local/bin
+    env = {k: v for k, v in os.environ.items() if k != f"OUTERLOOP_{name.upper()}_BIN"}
+    found = default_binary(name, env)
+    return found if os.path.isabs(found) else ""
 
 
 def install_harness(backend: str) -> str:

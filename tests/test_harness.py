@@ -871,6 +871,7 @@ def test_default_binary_prefers_the_recorded_path(monkeypatch, tmp_path, backend
     key = f"OUTERLOOP_{backend.upper()}_BIN"
     monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))  # not the runner's own ~/.local/bin
     assert default_binary(backend) == backend
     binary = tmp_path / backend
     binary.write_text("#!/bin/sh\n")
@@ -880,6 +881,24 @@ def test_default_binary_prefers_the_recorded_path(monkeypatch, tmp_path, backend
     assert default_binary(backend) == f"/opt/bin/{backend}"
     monkeypatch.setenv(key, f"~/tools/{backend}")
     assert default_binary(backend) == str(Path.home() / "tools" / backend)
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_default_binary_falls_back_to_the_native_install_dir(monkeypatch, tmp_path, backend):
+    """A Slurm job with a bare PATH still finds a CLI the native installer put
+    under ~/.local/bin; a recorded path or a PATH hit wins over it."""
+    from outerloop.harness import default_binary
+
+    monkeypatch.delenv(f"OUTERLOOP_{backend.upper()}_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    local = tmp_path / ".local" / "bin" / backend
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\n")
+    assert default_binary(backend) == backend  # not executable yet
+    local.chmod(0o755)
+    assert default_binary(backend) == str(local)
+    assert default_binary(backend, {"PATH": ""}) == backend  # no HOME given: no guess
 
 
 def test_no_lane_hardcodes_the_harness_path() -> None:
