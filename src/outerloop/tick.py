@@ -613,7 +613,7 @@ def _merge_blessed_pr(
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def why_not(record: RunRecord, pr: dict) -> str:
+    def why_not(record: RunRecord, pr: dict, dial: str) -> str:
         """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
@@ -634,10 +634,7 @@ def _merge_blessed_pr(
                 (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha"),
                 "the base moved",
             ),
-            (
-                _base_dial(github, record.target, pr, None) != "auto",
-                "the base contract is not auto",
-            ),
+            (dial != "auto", "the base contract is not auto"),
         )
         return next((reason for failed, reason in checks if failed), "")
 
@@ -649,13 +646,17 @@ def _merge_blessed_pr(
         # guards only the head)
         record = load_record(root, record.run_id)
         pr = github.get_pull_request(record.target, number)
-        reason = why_not(record, pr)
+        dial = _base_dial(github, record.target, pr, None)
+        reason = why_not(record, pr, dial)
         if reason:
             from outerloop.github import is_own_login
             from outerloop.markers import has_marker, legacy_marker, marker
 
             reason = redact(reason, _client_secrets(github))
             log.info("merge of %s#%s waits: %s", record.target, number, reason)
+            if dial != "auto":
+                # a manual-merge PR is a human's to merge; nothing to explain
+                return
             try:
                 comments = github.list_comments(record.target, number)
                 latest = next(

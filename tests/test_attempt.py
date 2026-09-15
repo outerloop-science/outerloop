@@ -5908,6 +5908,41 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     assert record.auto_blessed_head == expected
 
 
+def test_publish_addendum_failure_never_fails_the_publish(tmp_path, monkeypatch, caplog):
+    import json
+    import logging
+
+    from outerloop.github import GitHubClient
+    from outerloop.runstate import PARKED
+
+    _seed_target(tmp_path, monkeypatch, CONTRACT + "\nmerge: auto\n")
+
+    class GitHub(FakeGitHub):
+        def append_pull_body(self, *args, **kwargs):
+            raise RuntimeError("PATCH failed")
+
+    github = GitHub()
+    with caplog.at_level(logging.WARNING), _queued_local([13.876, 13.1]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-addendum",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
+            github=cast(GitHubClient, github),
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-09-13T00:00:00Z",
+            panel_lenses=_panel_lens(json.dumps({"findings": [], "notes": "clean"})),
+        )
+    assert outcome.outcome == "improved"
+    assert outcome.pr_url.endswith("/pull/1")
+    record = load_record(tmp_path / "state", "tsp-addendum")
+    assert record.state == PARKED
+    assert record.pr_url == outcome.pr_url
+    assert record.auto_blessed_head
+    assert "self-merge addendum failed" in caplog.text
+
+
 @pytest.mark.parametrize("base_moved", [False, True])
 def test_resumed_line_publish_bless_decision(tmp_path, monkeypatch, base_moved, caplog):
     import json

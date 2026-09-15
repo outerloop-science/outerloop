@@ -4242,15 +4242,22 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
             self.comments = []
             self.posts = []
             self.fail_lookup = False
+            self.dial = "auto"
+            self.lookups = 0
 
         def get_pull_request(self, *args):
             return pr
 
         def get_file_content(self, *args, **kwargs):
-            return None
+            return (
+                "benchmarks: [{name: x, command: echo, metric: score, direction: max}]\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 3}\n"
+                f"scope: {{allowed: [src/]}}\nroadmap: docs/roadmap.md\nmerge: {self.dial}"
+            )
 
         def list_comments(self, *args):
             assert read_lease(tmp_path, record.run_id) is not None
+            self.lookups += 1
             if self.fail_lookup:
                 raise RuntimeError("lookup failed")
             return self.comments
@@ -4291,3 +4298,10 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
     tick_once()
     assert len(github.posts) == 3
     assert github.posts[0] == github.posts[-1]
+    # a manual-merge PR is a human's to merge: no status comment, no lookup
+    save_record(tmp_path, replace(record, auto_bless_reason="contract merge is manual"), NOW)
+    github.dial = "manual"
+    lookups = github.lookups
+    tick_once()
+    assert len(github.posts) == 3
+    assert github.lookups == lookups

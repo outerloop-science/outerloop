@@ -26,7 +26,7 @@ tasks to finish.
 
 ### Fixed
 
-- PRs explain why self-merge is waiting, and publish records and logs the blessing decision.
+- PRs under `merge: auto` say why self-merge is waiting, and the publish records and logs the bless decision.
 
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
 

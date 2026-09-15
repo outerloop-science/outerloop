@@ -3710,11 +3710,17 @@ def publish(
             ws, result, contract, base_branch, base_sha, secrets
         )
         if pr_number.isdigit():
-            github.append_pull_body(
-                config.target,
-                int(pr_number),
-                f"---\n**Edit ({date}, publish):**\n\n"
-                f"{_self_merge_line(blessed_head, bless_reason)}",
+            # the PR exists by now; a failed body edit is a log line, not an
+            # aborted run
+            _best_effort(
+                "self-merge addendum",
+                lambda: github.append_pull_body(
+                    config.target,
+                    int(pr_number),
+                    f"---\n**Edit ({date}, publish):**\n\n"
+                    f"{_self_merge_line(blessed_head, bless_reason)}",
+                ),
+                secrets,
             )
         final = RunRecord(
             **{
