@@ -6072,6 +6072,8 @@ def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch,
     assert "GitError: denied" in logs[0]
     assert "private-token" not in caplog.text and "secret-header" not in caplog.text
     assert "user:" not in caplog.text and "moved line" not in caplog.text
+
+
 def test_publish_addendum_failure_never_fails_the_publish(tmp_path, monkeypatch, caplog):
     import json
     import logging
