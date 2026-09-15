@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -566,18 +567,21 @@ def test_transcripts_accumulate_per_session_not_clobber(tmp_path: Path) -> None:
     assert Path(second.transcript_path).exists()
 
 
-def test_container_image_wraps_in_apptainer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured", [False, True])
+def test_container_image_wraps_in_apptainer(tmp_path: Path, monkeypatch, configured) -> None:
     """Containment: --containall/--cleanenv, only workspace + run-home bound,
     binary bind-mounted, key via APPTAINERENV_ (env, never argv)."""
     binary = fake_claude(tmp_path, json.dumps(CANNED))
     # the fake stands in for apptainer itself; it records argv + env
     ws = tmp_path / "ws"
     ws.mkdir()
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", binary if configured else "/wrong/path")
+    options: dict[str, Any] = {} if configured else {"apptainer_binary": binary}
     harness = ClaudeCodeHarness(
         api_key="sk-c",
         binary="/real/claude",
         container_image="/img/agent.sif",
-        apptainer_binary=binary,
+        **options,
     )
     result = harness.run("task", ws)
     assert not result.is_error
@@ -611,7 +615,8 @@ def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]
     return str(script), calls, envs
 
 
-def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured", [False, True])
+def test_codex_author_runs_contained_in_apptainer(tmp_path: Path, monkeypatch, configured) -> None:
     """AUTHOR mode: BOTH codex login and codex exec run inside apptainer
     (--containall/--cleanenv), so neither exposes the author key to the host —
     login is contained too, not only the exec. The host codex binary is
@@ -621,13 +626,15 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path) -> None:
     binary, calls, envs = _recording_apptainer(tmp_path, json.dumps(CANNED))
     ws = tmp_path / "ws"
     ws.mkdir()
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", binary if configured else "/wrong/path")
+    options: dict[str, Any] = {} if configured else {"apptainer_binary": binary}
     harness = CodexHarness(
         api_key="sk-o",
         binary="/real/codex",
         model="gpt-5.6-terra",
         sandbox="danger-full-access",
         container_image="/img/agent.sif",
-        apptainer_binary=binary,
+        **options,
     )
     harness.run("task", ws)
     logged = calls.read_text()

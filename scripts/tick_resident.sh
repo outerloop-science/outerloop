@@ -45,13 +45,15 @@ submit_successor() {
     # them only when set.
     local acct_arg=""
     [ -n "${OUTERLOOP_ACCOUNT:-}" ] && acct_arg="--account=${OUTERLOOP_ACCOUNT}"
+    local qos_arg=""
+    [ -n "${OUTERLOOP_QOS:-}" ] && qos_arg="--qos=${OUTERLOOP_QOS}"
     local part_arg=""
     [ -n "${OUTERLOOP_PARTITION:-}" ] && part_arg="--partition=${OUTERLOOP_PARTITION}"
     local out="" attempt
     for attempt in 1 2 3; do
         if out=$(sbatch --parsable --dependency="$dep" --time="$resident_minutes" \
                     --job-name="$RESIDENT_JOB_NAME" --export=ALL \
-                    ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} \
+                    ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} ${qos_arg:+"$qos_arg"} \
                     "$shim" 2>/dev/null); then
             printf '%s' "${out%%;*}"
             return 0

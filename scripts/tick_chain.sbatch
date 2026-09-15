@@ -52,6 +52,8 @@ done
 # partition may be a comma-list like "a,b"), pass them through.
 acct_arg=""
 [ -n "${OUTERLOOP_ACCOUNT:-}" ] && acct_arg="--account=${OUTERLOOP_ACCOUNT}"
+qos_arg=""
+[ -n "${OUTERLOOP_QOS:-}" ] && qos_arg="--qos=${OUTERLOOP_QOS}"
 part_arg=""
 [ -n "${OUTERLOOP_PARTITION:-}" ] && part_arg="--partition=${OUTERLOOP_PARTITION}"
 
@@ -104,7 +106,7 @@ while [ "$i" -le "$need" ]; do
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
         if sbatch --dependency=singleton --begin="$begin" \
-                  ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} \
+                  ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} ${qos_arg:+"$qos_arg"} \
                   "${OUTERLOOP_HOME:-}/scripts/tick_chain.sbatch"; then
             break
         fi

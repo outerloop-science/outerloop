@@ -55,6 +55,7 @@ from outerloop.runstate import (
     Lease,
     RunRecord,
     acquire_lease,
+    acquire_tick_lease,
     lease_is_stale,
     list_runs,
     load_record,
@@ -62,6 +63,7 @@ from outerloop.runstate import (
     read_lease,
     reap_lease,
     release_lease,
+    release_tick_lease,
     run_dir,
     save_record,
     update_lease_holder,
@@ -233,6 +235,7 @@ class ServiceSpec:
     # Partition MaxTime for work jobs — the panel-augmented walltime clamps
     # here (see MAX_ATTEMPT_JOB_MINUTES). Raise together with job_partition.
     max_job_minutes: int = MAX_ATTEMPT_JOB_MINUTES
+    qos: str = ""
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -2594,6 +2597,7 @@ def service_self_initiated(
             JobSpec(
                 job_name=f"climb-{benchmark}-{slot_agent}"[:60],
                 account=spec.account,
+                qos=spec.qos,
                 partition=spec.job_partition or spec.partition,
                 time_minutes=job_minutes,
                 command=_flight_command(
@@ -2725,6 +2729,7 @@ def service_steward(
                 JobSpec(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
+                    qos=spec.qos,
                     partition=spec.job_partition or spec.partition,
                     time_minutes=min(limits.attempt_job_minutes, spec.max_job_minutes),
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
@@ -2863,6 +2868,7 @@ def service_intake(
                 JobSpec(
                     job_name=f"climb-issue-{task.number}",
                     account=spec.account,
+                    qos=spec.qos,
                     partition=spec.job_partition or spec.partition,
                     time_minutes=job_minutes,
                     command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
@@ -2976,6 +2982,7 @@ class JobWakeDispatcher:
             JobSpec(
                 job_name=name,
                 account=self.spec.account,
+                qos=self.spec.qos,
                 partition=self.spec.job_partition or self.spec.partition,
                 time_minutes=job_minutes,
                 command=_flight_command(self.spec.home, name, self.now, argv),
@@ -3123,6 +3130,7 @@ def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
     app_file = os.environ.get("OUTERLOOP_GITHUB_APP_FILE", "")
     account = os.environ.get("OUTERLOOP_ACCOUNT", "")
     partition = os.environ.get("OUTERLOOP_PARTITION", "")
+    qos = os.environ.get("OUTERLOOP_QOS", "")
     image = os.environ.get("OUTERLOOP_IMAGE", _default_image())
     home = os.environ.get("OUTERLOOP_HOME", "")
     # Account and partition are optional on Slurm: empty ones leave the billing
@@ -3166,6 +3174,7 @@ def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
             github = GitHubClient(auth=resolve_bot_auth(pat_file, app_file))
             service_spec = ServiceSpec(
                 account=account,
+                qos=qos,
                 partition=partition,
                 run_root=root,
                 image=image,
@@ -3211,6 +3220,8 @@ def _loop_cadence_s(cadence_min: float) -> float:
 
 def main() -> int:
     import argparse
+    import signal
+    import socket
     import time
 
     parser = argparse.ArgumentParser(
@@ -3241,8 +3252,7 @@ def main() -> int:
     parser.add_argument(
         "--loop",
         action="store_true",
-        help="run a tick every cadence in the foreground — the local-mode "
-        "chain (Slurm deployments use tick_chain.sbatch instead)",
+        help="run a tick every cadence in the foreground (local or login tick host)",
     )
     parser.add_argument(
         "--cadence-min",
@@ -3322,20 +3332,60 @@ def main() -> int:
             len(report.shed),
         )
 
-    if not args.loop:
-        run_once()
-        return 0
-    # The local-mode chain: same stateless tick, a foreground loop instead of
-    # sbatch successors. Records on disk carry all state, so killing and
-    # restarting the loop resumes exactly like the Slurm chain would.
     cadence_s = _loop_cadence_s(args.cadence_min)
-    while True:
-        started = time.time()
-        try:
+    lease = None
+    holder = f"{socket.gethostname()}:{os.getpid()}"
+    previous_term = None
+
+    def stop(signum: int, frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        # every foreground loop holds the root's tick lease; a resident tick
+        # runs once under the scheduler's singleton and takes none
+        if args.loop:
+            # the handler goes in first: a SIGTERM between taking the lease
+            # and installing it would leave the lease to its TTL
+            previous_term = signal.signal(signal.SIGTERM, stop)
+            try:
+                lease = acquire_tick_lease(args.root, holder, time.time(), 3 * cadence_s)
+            except RuntimeError as exc:
+                log.error("%s", exc)
+                return 2
+            if not local_mode():
+                # a login loop against Slurm: a resident chain queued between
+                # start's check and this lease owns the root (its own start
+                # re-checks the lease after submitting, so one side always yields)
+                from outerloop.cli import _resident_jobs
+
+                resident = _resident_jobs()
+                if resident is None or resident:
+                    log.error(
+                        "a resident tick is %s; this loop stops",
+                        f"queued or running (job {resident[0]})"
+                        if resident
+                        else "unknown (squeue failed)",
+                    )
+                    return 2
+        if not args.loop:
             run_once()
-        except Exception:
-            log.exception("tick failed; the loop continues")
-        time.sleep(max(0.0, cadence_s - (time.time() - started)))
+            return 0
+        while True:
+            started = time.time()
+            if lease is not None:
+                acquire_tick_lease(args.root, holder, started, 3 * cadence_s, lease)
+            try:
+                run_once()
+            except Exception:
+                log.exception("tick failed; the loop continues")
+            if lease is not None:
+                acquire_tick_lease(args.root, holder, time.time(), 3 * cadence_s, lease)
+            time.sleep(max(0.0, cadence_s - (time.time() - started)))
+    finally:
+        if lease is not None:
+            release_tick_lease(lease, holder)
+        if previous_term is not None:
+            signal.signal(signal.SIGTERM, previous_term)
 
 
 if __name__ == "__main__":

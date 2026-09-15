@@ -10,6 +10,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -89,13 +91,15 @@ def _run_chain(
     )
 
 
-def test_per_cadence_chain_queues_two_successors_and_execs_the_tick(tmp_path: Path) -> None:
+@pytest.mark.parametrize("qos", ["", "priority"])
+def test_per_cadence_chain_queues_two_successors_and_execs_the_tick(tmp_path: Path, qos) -> None:
     home, root, bindir, shimlog = _install(tmp_path)
-    proc = _run_chain(home, _env(home, root, bindir))
+    proc = _run_chain(home, _env(home, root, bindir, OUTERLOOP_QOS=qos))
     assert proc.returncode == 0, proc.stderr
     sbatch = (shimlog / "sbatch").read_text().splitlines()
     assert len(sbatch) == 2
     for line in sbatch:
+        assert ("--qos=priority" in line) == bool(qos)
         assert "--dependency=singleton" in line and "--begin=" in line
         assert "--partition=cpu_short" in line and "--deadline" not in line
         assert "afterany" not in line
@@ -104,14 +108,17 @@ def test_per_cadence_chain_queues_two_successors_and_execs_the_tick(tmp_path: Pa
     assert "=== tick" in log and "(resident)" not in log
 
 
+@pytest.mark.parametrize("qos", ["", "priority"])
 def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_clean(
     tmp_path: Path,
+    qos,
 ) -> None:
     home, root, bindir, shimlog = _install(tmp_path)
     env = _env(
         home,
         root,
         bindir,
+        OUTERLOOP_QOS=qos,
         OUTERLOOP_RESIDENT="1",
         OUTERLOOP_RESIDENT_CADENCE_S="1",
         OUTERLOOP_RESIDENT_MINUTES="360",
@@ -125,6 +132,7 @@ def test_resident_loop_keeps_one_successor_resubmits_on_shim_change_and_pauses_c
     # one successor at start, one resubmit after the shim changed — never two queued
     assert len(sbatch) == 2
     for line in sbatch:
+        assert ("--qos=priority" in line) == bool(qos)
         assert "--dependency=afterany:42,singleton" in line
         assert "--time=360" in line and "--job-name=outerloop-resident" in line
         assert "--export=ALL" in line and "--begin" not in line

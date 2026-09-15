@@ -22,6 +22,9 @@ tasks to finish.
 
 ### Added
 
+- `OUTERLOOP_TICK_HOST=login` (or `--tick-host login`) runs a niced foreground tick loop against Slurm, with one tick lease per state root.
+- `OUTERLOOP_QOS` sets the QOS for every submitted Slurm job.
+- `OUTERLOOP_APPTAINER_BIN` selects the container executable on compute nodes.
 - `<root>/HOLD_LAUNCHES` holds fresh kernel launches while existing runs, wake delivery, and the tick chain continue; remove the file to resume.
 
 ### Removed

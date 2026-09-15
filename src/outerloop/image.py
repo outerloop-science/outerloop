@@ -40,6 +40,11 @@ APPTAINER_UNPRIV_URL = (
 PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
 
 
+def apptainer_from_env() -> str:
+    """The operator's container executable, resolved without running it."""
+    return os.environ.get("OUTERLOOP_APPTAINER_BIN", "").strip() or "apptainer"
+
+
 def image_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / IMAGE_DIR_NAME
 
@@ -145,7 +150,7 @@ def containment_check(*, runner: Callable[..., Any] = subprocess.run) -> str:
         return "apptainer does not exist on macOS"
     if not sys.platform.startswith("linux"):
         return f"apptainer is not available on {sys.platform}"
-    binary = shutil.which("apptainer")
+    binary = shutil.which(apptainer_from_env())
     if binary is None:
         return "apptainer is not installed (not on PATH)"
     binds = ",".join(d for d in ("/bin", "/lib", "/lib64", "/usr") if os.path.exists(d))

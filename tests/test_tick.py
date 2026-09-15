@@ -812,6 +812,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     panel_key.write_text("k")  # preflight: no usable key, no launch
     panel_key.chmod(0o600)
     spec = ServiceSpec(
+        qos="priority",
         target="org/pilot",
         account="acct",
         partition="part",
@@ -825,6 +826,7 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
 
     def runner(argv, timeout_s):
         if argv[0] == "sbatch":
+            assert "--qos=priority" in argv
             submitted.append(" ".join(argv))
             return CommandResult(0, "123\n", "")
         return CommandResult(0, "RUNNING\n", "")  # sacct liveness probe
@@ -1672,11 +1674,14 @@ roadmap: docs/roadmap.md
     submitted: list[list[str]] = []
 
     def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            assert "--qos=priority" in argv
         submitted.append(list(argv))
         return CommandResult(0, "321\n", "")
 
     def spec(key: str) -> ServiceSpec:
         return ServiceSpec(
+            qos="priority",
             target="org/pilot",
             account="a",
             partition="p",
@@ -1771,7 +1776,11 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     image.write_text("")
     pat = tmp_path / "pat"
     pat.write_text("t")
+    monkeypatch.setattr(
+        "outerloop.image.containment_check", lambda: pytest.fail("tick must not probe Apptainer")
+    )
     env = {
+        "OUTERLOOP_QOS": "priority",
         "OUTERLOOP_PAT_FILE": str(pat),
         "OUTERLOOP_ACCOUNT": "a",
         "OUTERLOOP_PARTITION": "p",
@@ -1786,7 +1795,7 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
     _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None
+    assert spec is not None and spec.qos == "priority"
     assert spec.target == "org/repo"
     assert spec.panel == "verify" and spec.panel_key_file == "/keys/verifier"
     # no target, no servicing: there is no fallback repo to write to
@@ -1872,6 +1881,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
 
     def make(**kw: Any) -> ServiceSpec:
         return ServiceSpec(
+            qos="priority",
             target="org/pilot",
             account="a",
             partition="p",
@@ -1914,6 +1924,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     judge.chmod(0o600)
     monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(judge))
     no_image = ServiceSpec(
+        qos="priority",
         target="org/pilot",
         account="a",
         partition="p",
@@ -1942,6 +1953,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     submitted: list[str] = []
 
     def runner(argv, timeout_s):
+        assert "--qos=priority" in argv
         submitted.append(" ".join(argv))
         return CommandResult(0, "123\n", "")
 
@@ -2069,12 +2081,14 @@ def test_job_wake_dispatcher_submits_a_resume_job_after_the_eval_jobs(tmp_path, 
 
     def runner(argv, timeout_s):
         if argv[0] == "sbatch":
+            assert "--qos=priority" in argv
             submits.append(list(argv))
             return CommandResult(0, "9001\n", "")
         raise AssertionError(argv)
 
     compute = SlurmCompute(runner=runner)
     spec = ServiceSpec(
+        qos="priority",
         account="acct",
         partition="cpu_short",
         run_root=tmp_path,
@@ -4335,6 +4349,79 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
     assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
 
 
+@pytest.mark.parametrize(
+    "loop,ending",
+    [(True, "interrupt"), (True, "term"), (True, "loop_error")],  # a single tick takes no lease
+)
+def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
+    import json
+    import signal
+    import sys
+    import time
+
+    from outerloop import tick as mod
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
+    monkeypatch.setenv("OUTERLOOP_TICK_HOST", "login")
+    monkeypatch.setattr("outerloop.cli._resident_jobs", lambda: [])
+    monkeypatch.setattr(
+        sys, "argv", ["tick", "--root", str(tmp_path)] + (["--loop"] if loop else [])
+    )
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    seen = []
+
+    def one_tick(*args, **kwargs):
+        data = json.loads((tmp_path / "TICK").read_text())
+        seen.append(data)
+        with pytest.raises(RuntimeError, match="tick lease held"):
+            acquire_tick_lease(tmp_path, "second:99", time.time(), 5400)
+        if ending in ("error", "loop_error"):
+            raise ValueError("failed tick")
+        return mod.TickReport()
+
+    def sleep(seconds):
+        assert json.loads((tmp_path / "TICK").read_text())["heartbeat"] >= seen[0]["heartbeat"]
+        with pytest.raises(RuntimeError, match="tick lease held"):
+            acquire_tick_lease(tmp_path, "second:99", time.time(), 5400)
+        if ending == "term":
+            signal.raise_signal(signal.SIGTERM)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mod, "tick", one_tick)
+    monkeypatch.setattr(time, "sleep", sleep)
+    if ending == "ok":
+        assert mod.main() == 0
+    else:
+        with pytest.raises(
+            {
+                "error": ValueError,
+                "interrupt": KeyboardInterrupt,
+                "term": SystemExit,
+                "loop_error": KeyboardInterrupt,
+            }[ending]
+        ):
+            mod.main()
+    assert len(seen) == 1 and ":" in seen[0]["holder"]
+    lease = acquire_tick_lease(tmp_path, "next:1", time.time(), 5400)
+    release_tick_lease(lease)
+
+
+@pytest.mark.parametrize("resident", [["777"], None])
+def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplog, resident):
+    import sys
+
+    from outerloop import tick as mod
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
+    monkeypatch.setattr("outerloop.cli._resident_jobs", lambda: resident)
+    monkeypatch.setattr(mod, "tick", lambda *a, **k: pytest.fail("the loop must not tick"))
+    assert mod.main() == 2
+    assert "this loop stops" in caplog.text
+    assert (tmp_path / "TICK").read_text() == ""  # released on the way out
+
+
 @pytest.mark.parametrize("prefix", ["outerloop", "autoresearch"])
 def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
     from outerloop.tick import _merge_blessed_pr
@@ -4414,3 +4501,25 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
     tick_once()
     assert len(github.posts) == 3
     assert github.lookups == lookups
+
+
+def test_sigterm_handler_is_installed_before_the_lease(tmp_path, monkeypatch):
+    import signal
+    import sys
+
+    from outerloop import tick as mod
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    seen = []
+
+    def acquire(*args, **kwargs):
+        seen.append(callable(signal.getsignal(signal.SIGTERM)))
+        raise RuntimeError("held elsewhere")
+
+    monkeypatch.setattr(mod, "acquire_tick_lease", acquire)
+    before = signal.getsignal(signal.SIGTERM)
+    assert mod.main() == 2
+    assert seen == [True]
+    assert signal.getsignal(signal.SIGTERM) is before  # restored on the way out
