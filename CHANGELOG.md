@@ -26,6 +26,8 @@ tasks to finish.
 
 ### Fixed
 
+- A run's ending pushes its line snapshot once, with the kernel's GitHub auth; without auth nothing is pushed and the log says so, and a refused push is retried only when the remote line moved.
+
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
 
 - The tick log says why a blessed PR is not merged yet (a message waits for the author, the run sleeps on jobs, the base moved, and so on), one line per sweep.

@@ -659,7 +659,8 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     real_clone = Workspace.clone
 
     def fake_clone(url, dest, auth=None, dry_run=False):
-        return real_clone(str(bare), dest, auth=None, dry_run=dry_run)
+        # Preserve kernel auth: ending snapshots refuse unauthenticated workspaces.
+        return real_clone(str(bare), dest, auth=auth, dry_run=dry_run)
 
     monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
@@ -4003,7 +4004,8 @@ def _line_ws(tmp_path: Path, bare: Path):
     """A Workspace cloned from the test origin, checked out on main."""
     from outerloop.github import Workspace
 
-    ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=None)
+    # Line pushes require kernel auth, even with a local test remote.
+    ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=NoAuth())
     ws.git("checkout", "-q", "-B", "main", "origin/main")
     return ws
 
@@ -4310,9 +4312,36 @@ def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
         _git(target_repo, "rev-parse", "agents/agent-99")
 
 
-def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_repo_lines) -> None:
+def test_live_attempt_records_every_terminal_in_the_notebook(
+    tmp_path, target_repo_lines, monkeypatch
+) -> None:
     """End to end on the lines contract: a no-improvement run still lands the
     session's final tree on the agent's branch, message naming run + outcome."""
+    from outerloop import github as github_mod
+
+    auth = NoAuth()
+    pushes = []
+    headers = []
+    real_snapshot = climb_mod._push_line_snapshot
+    real_git = github_mod._run_git
+    in_snapshot = False
+
+    def git(args, env, timeout=None):
+        if in_snapshot and ("fetch" in args or "push" in args):
+            headers.append(any("Authorization: Basic " in v for v in env.values()))
+        return real_git(args, env, timeout)
+
+    def push(ws, *args, **kwargs):
+        nonlocal in_snapshot
+        pushes.append(ws.auth)
+        in_snapshot = True
+        try:
+            return real_snapshot(ws, *args, **kwargs)
+        finally:
+            in_snapshot = False
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", push)
+    monkeypatch.setattr(github_mod, "_run_git", git)
     github = FakeGitHub()
     queue = [13.876, 14.5]  # candidate worse: negative terminal, no PR
     with _queued_local(queue):
@@ -4322,10 +4351,12 @@ def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_re
             run_id="tsp-lines-1",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),
+            bot_auth=auth,
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
+    assert pushes == [auth]
+    assert headers == [True, True]
     assert outcome.outcome == "no-improvement"
     assert github.prs == []
     assert (
@@ -4985,7 +5016,9 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     sibling = _git(other, "rev-parse", "HEAD").strip()
     # our run ends with its own tree
     (wsroot / "train.py").write_text("winner\n")
-    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    _push_line_snapshot(
+        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+    )
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
     assert head != sibling
     assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
@@ -5042,7 +5075,9 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
 
     monkeypatch.setattr(attempt_mod.Workspace, "push", racing_push)
     (wsroot / "train.py").write_text("winner\n")
-    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    _push_line_snapshot(
+        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+    )
     sibling = _git(other, "rev-parse", "HEAD").strip()
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
     assert len(pushes) == 2
@@ -5691,6 +5726,14 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
         def get_pull_request(self, repo, number):
             return {"state": "open", "head": {"sha": record.stage["base_sha"]}}
 
+    pushes = []
+    real_snapshot = climb_mod._push_line_snapshot
+
+    def push(*args, **kwargs):
+        pushes.append(1)
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", push)
     github = GitHub()
     outcome = resume_run(
         state,
@@ -5700,6 +5743,7 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
         bot_auth=NoAuth(),
         now=1_000_100.0,
     )
+    assert pushes == [1]
     ended = load_record(state, run_id)
     assert outcome.outcome == "negative-result"
     assert ended.state == "ended" and ended.ending == "negative-result"
@@ -5898,3 +5942,130 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     record = load_record(tmp_path / "state", "tsp-auto")
     expected = "" if base_moved else _git(target, "rev-parse", github.prs[0]["head"]).strip()
     assert record.auto_blessed_head == expected
+
+
+@pytest.mark.parametrize("has_auth", [False, True])
+@pytest.mark.parametrize("ending", ["deadline", "stuck"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_tick_snapshot_uses_kernel_auth(
+    tmp_path, target_repo_lines, monkeypatch, caplog, has_auth, ending, dry_run
+):
+    from types import SimpleNamespace
+
+    from outerloop import github as github_mod
+    from outerloop.attempt import _checkout_line
+    from outerloop.github import Workspace
+    from outerloop.tick import MAX_WAKE_ATTEMPTS, sweep
+
+    state = tmp_path / "state"
+    record = RunRecord(
+        run_id="tick-ending",
+        task_title="tick deadline",
+        target="org/pilot",
+        benchmark="tsp",
+        agent_id="agent-07",
+        state="running" if ending == "deadline" else "parked",
+        wake_attempts=MAX_WAKE_ATTEMPTS,
+        created=1,
+        deadline=2,
+    )
+    save_record(state, record, 1)
+    ws = Workspace.clone(
+        str(target_repo_lines), state / "runs" / record.run_id / "ws", auth=NoAuth()
+    )
+    _checkout_line(ws, ws.root, record.agent_id, "main")
+    (ws.root / "AGENT_MEMORY.md").write_text("deadline memory\n")
+    calls = []
+    real_git = github_mod._run_git
+
+    def git(args, env, timeout=None):
+        if "fetch" in args or "push" in args:
+            calls.append(any("Authorization: Basic " in v for v in env.values()))
+        return real_git(args, env, timeout)
+
+    monkeypatch.setattr(github_mod, "_run_git", git)
+    caplog.set_level("INFO", logger="outerloop.attempt")
+    monkeypatch.setattr(climb_mod, "target_clone_url", lambda target: str(target_repo_lines))
+    github = SimpleNamespace(auth=NoAuth() if has_auth else None)
+    report = sweep(
+        state,
+        _fake_dispatch().compute,
+        SimpleNamespace(),
+        3,
+        github=github,
+        bot_login="test-bot",
+        dry_run=dry_run,
+    )
+    assert (report.running_ended if ending == "deadline" else report.stuck) == (record.run_id,)
+    if dry_run and ending == "stuck":
+        assert calls == []
+        assert load_record(state, record.run_id).state == "parked"
+        return
+    assert calls == ([True, True] if has_auth else [])
+    logs = [r.message for r in caplog.records if "line snapshot" in r.message]
+    assert len(logs) == 1
+    assert f"auth={has_auth}" in logs[0]
+    assert "run=tick-ending line=agents/agent-07" in logs[0]
+    assert "sealed=" in logs[0]
+    if has_auth:
+        assert (
+            _git(target_repo_lines, "show", "agents/agent-07:AGENT_MEMORY.md")
+            == "deadline memory\n"
+        )
+    else:
+        assert "snapshot skipped: no GitHub auth" in logs[0]
+
+
+@pytest.mark.parametrize("operation", ["fetch", "push", "record", "cleanup"])
+def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch, caplog, operation):
+    import base64
+
+    from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
+    from outerloop.github import GitError
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "AGENT_MEMORY.md").write_text("keep this\n")
+    calls = []
+    seals = []
+    real_git = ws.git
+    real_snapshot = climb_mod.snapshot_tree
+    basic = base64.b64encode(b"x-access-token:unused").decode()
+    error = (
+        f"denied header-value={basic} https://user:private-token@github.com/org/repo "
+        "Authorization: Basic secret-header"
+    )
+
+    def fail(*args):
+        calls.append(operation)
+        raise GitError(error)
+
+    def git(*args):
+        if operation == "record" and args[:2] == ("update-ref", LINE_HEAD_REF):
+            fail()
+        if operation == "cleanup" and args[:2] == ("update-ref", "-d"):
+            fail()
+        return real_git(*args)
+
+    def snapshot(*args, **kwargs):
+        seals.append(1)
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(ws, "git", git)
+    if operation in ("fetch", "push"):
+        monkeypatch.setattr(ws, "fetch_origin" if operation == "fetch" else "push", fail)
+    monkeypatch.setattr(climb_mod, "snapshot_tree", snapshot)
+    caplog.set_level("INFO", logger="outerloop.attempt")
+    _push_line_snapshot(ws, "agents/agent-07", "failure-run", "no-improvement", ("private-token",))
+    assert calls == [operation]
+    assert len(seals) == (0 if operation == "fetch" else 1)
+    logs = [r.message for r in caplog.records if "failed:" in r.message]
+    assert len(logs) == 1
+    assert (
+        f"line snapshot {operation} run=failure-run line=agents/agent-07 auth=True sealed="
+        in logs[0]
+    )
+    assert "GitError: denied" in logs[0]
+    assert "private-token" not in caplog.text and "secret-header" not in caplog.text
+    assert basic not in caplog.text
+    assert "user:" not in caplog.text and "moved line" not in caplog.text
