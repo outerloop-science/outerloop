@@ -598,9 +598,7 @@ def test_missing_harness_binary_resolution(tmp_path: Path, backend: str) -> None
     problem = missing_harness_binary(values, env)
     assert f"`{backend}` on PATH" in problem
     assert "init --force" in problem
-    assert (
-        "https://claude.ai/install.sh" if backend == "claude" else "scripts/install_codex.sh"
-    ) in problem
+    assert f"scripts/install_{backend}.sh" in problem
     present.write_text("#!/bin/sh\nexit 0\n")
     present.chmod(0o755)
     assert missing_harness_binary(values, env) == ""  # stale other backends do not block

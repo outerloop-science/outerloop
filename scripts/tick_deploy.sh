@@ -213,6 +213,28 @@ if [ -n "$ENV_TRUSTED" ]; then
     done
 fi
 
+# The configured author's CLI is a host prerequisite (pinned installers under
+# scripts/); provision it when missing. Best-effort: a failure here must never
+# break the chain — start's preflight and the climb report a missing CLI.
+case "${OUTERLOOP_AUTHOR_BACKEND:-claude}" in
+    claude)
+        # a recorded path is the one the jobs will use, so it alone decides;
+        # otherwise an absolute PATH hit or the default install location counts
+        # (jobs ignore relative PATH entries, so the check does too)
+        if [ -n "${OUTERLOOP_CLAUDE_BIN:-}" ]; then
+            target="$OUTERLOOP_CLAUDE_BIN"; found=""
+            [ -x "$target" ] && found="$target"
+        else
+            target="$HOME/.local/bin/claude"
+            found="$(command -v claude 2>/dev/null || true)"
+            case "$found" in /*) ;; *) found="" ;; esac
+            [ -z "$found" ] && [ -x "$target" ] && found="$target"
+        fi
+        if [ -z "$found" ]; then
+            bash "$OUTERLOOP_HOME/scripts/install_claude.sh" "$target" || echo "deploy: claude install failed"
+        fi
+        ;;
+esac
 # The codex author binary is a host prerequisite; install it (idempotent, fast
 # path is a local version check) when ANY codex role is deployed — the fleet
 # author, or a codex panel lens (a claude-author/codex-panel rollout still

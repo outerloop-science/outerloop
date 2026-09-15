@@ -210,7 +210,7 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
 
 
 HARNESS_INSTALL = {
-    "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+    "claude": "bash scripts/install_claude.sh",
     "codex": "bash scripts/install_codex.sh",
     "hermes": "bash scripts/install_hermes.sh",
 }

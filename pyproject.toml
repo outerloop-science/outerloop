@@ -59,6 +59,11 @@ path = "src/outerloop/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/outerloop"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/install_claude.sh" = "outerloop/_installers/install_claude.sh"
+"scripts/install_codex.sh" = "outerloop/_installers/install_codex.sh"
+"scripts/install_hermes.sh" = "outerloop/_installers/install_hermes.sh"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

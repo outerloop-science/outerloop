@@ -21,6 +21,8 @@ import getpass
 import json
 import logging
 import os
+import shlex
+import subprocess
 import sys
 import time
 import urllib.error
@@ -108,16 +110,49 @@ def author_bin_env(backend: str) -> str:
 
 
 def locate_harness(backend: str) -> str:
-    """The absolute path of `backend`'s CLI on this machine: PATH first, then
+    """The absolute path of `backend`'s CLI: configured environment path, then PATH, then
     ~/.local/bin (where the native installers put it and where a Slurm job,
     with no login PATH, would not find it); "" when absent. Recorded in .env so
     every job spawns the same binary the operator installed."""
     name = backend or AUTHOR_BACKENDS[0]
+    recorded = os.environ.get(author_bin_env(name), "")
+    if recorded:
+        # an operator's explicit path is kept when it works and reported when it does not
+        path = Path(recorded).expanduser().absolute()
+        return str(path) if path.is_file() and os.access(path, os.X_OK) else ""
     # the harness's own lookup, minus any path already recorded: absolute PATH
     # entries only (never the working directory), then ~/.local/bin
     env = {k: v for k, v in os.environ.items() if k != f"OUTERLOOP_{name.upper()}_BIN"}
     found = default_binary(name, env)
     return found if os.path.isabs(found) else ""
+
+
+def cli_install_wanted(author_bin: str, args: argparse.Namespace) -> bool:
+    """Install the author's CLI only in the full setup, when none was found and
+    the operator did not opt out; the focused --github-app run sets up the App."""
+    return not author_bin and not args.no_install_harness and not args.github_app
+
+
+def install_harness(backend: str) -> str:
+    """Install a missing author CLI and return its executable host path."""
+    name = backend or AUTHOR_BACKENDS[0]
+    target = Path(os.environ.get(author_bin_env(name)) or Path.home() / ".local/bin" / name)
+    target = target.expanduser().absolute()
+    command = shlex.split(HARNESS_INSTALL[name])
+    script = Path(__file__).resolve().parents[2] / command[1]
+    if not script.is_file():
+        script = Path(__file__).resolve().parent / "_installers" / Path(command[1]).name
+    argv = [command[0], str(script), str(target)]
+    try:
+        subprocess.run(argv, check=True)
+        if not target.is_file() or not os.access(target, os.X_OK):
+            raise OSError(f"installer did not produce an executable at {target}")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            f"{name} installation failed: {exc}. Run manually: {shlex.join(argv)}"
+        ) from exc
+    print(f"installed {name} at {target}")
+    return str(target)
 
 
 def _harness_hint(answers: InitAnswers) -> None:
@@ -643,6 +678,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="author_backend",
         help=f"climbing author's backend ({' or '.join(AUTHOR_BACKENDS)}; default claude)",
     )
+    parser.add_argument(
+        "--no-install-harness",
+        action="store_true",
+        help="skip installing a missing author CLI",
+    )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
     image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
     image_flags.add_argument(
@@ -726,6 +766,13 @@ def main(argv: list[str] | None = None) -> int:
             key_path = write_author_key(answers.author_backend, pasted, config_dir=CONFIG_DIR)
             answers.author_key_file = str(key_path)
             print(f"wrote {key_path} (0600)")
+
+    if cli_install_wanted(answers.author_bin, args):
+        try:
+            answers.author_bin = install_harness(answers.author_backend)
+        except ValueError as exc:
+            print(f"outerloop init: {exc}", file=sys.stderr)
+            return 1
 
     # The image, only now: every check that could still end the run has passed
     # and the overwrite question is answered, so a download is never wasted.

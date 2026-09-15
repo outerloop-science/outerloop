@@ -142,6 +142,7 @@ def test_main_yes_writes_config(tmp_path: Path, monkeypatch, capsys) -> None:
 def _no_image_download(monkeypatch, request):
     """init never reaches the network in tests: no image is found or fetched, the
     token's login is not looked up, and no harness binary is found on this machine."""
+    monkeypatch.setattr(init, "install_harness", lambda backend: "")
     monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
     monkeypatch.setattr(init, "_token_login", lambda token: "")
     if not request.node.get_closest_marker("real_locate_harness"):
@@ -694,9 +695,9 @@ def test_init_records_the_harness_binary_or_says_how_to_install_it(
     assert init.main([*base, "--author-backend", "codex"]) == 0
     assert "OUTERLOOP_CODEX_BIN=/opt/bin/codex" in (tmp_path / ".env").read_text()
     monkeypatch.setattr(init, "locate_harness", lambda backend: "")
-    assert init.main([*base, "--force"]) == 0
+    assert init.main([*base, "--force", "--no-install-harness"]) == 0
     out = capsys.readouterr().out
-    assert "no `claude` binary" in out and "curl -fsSL https://claude.ai/install.sh | bash" in out
+    assert "no `claude` binary" in out and "bash scripts/install_claude.sh" in out
     assert "OUTERLOOP_CLAUDE_BIN" not in (tmp_path / ".env").read_text()
 
 

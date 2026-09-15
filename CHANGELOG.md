@@ -22,6 +22,8 @@ tasks to finish.
 
 ### Added
 
+- `outerloop init` installs a missing author CLI and records its path; `--no-install-harness` opts out. Claude has a pinned, SHA256-verified installer.
+
 - `OUTERLOOP_TICK_HOST=login` (or `--tick-host login`) runs a niced foreground tick loop against Slurm, with one tick lease per state root.
 - `OUTERLOOP_QOS` sets the QOS for every submitted Slurm job.
 - `OUTERLOOP_APPTAINER_BIN` selects the container executable on compute nodes.
