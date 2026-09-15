@@ -702,18 +702,39 @@ def test_init_records_the_harness_binary_or_says_how_to_install_it(
 
 @pytest.mark.real_locate_harness
 def test_locate_harness_prefers_path_then_local_bin(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(init.shutil, "which", lambda name: None)
-    monkeypatch.setattr(init.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_BIN", raising=False)
     assert init.locate_harness("claude") == ""
     local = tmp_path / ".local" / "bin" / "claude"
     local.parent.mkdir(parents=True)
     local.write_text("#!/bin/sh\n")
     local.chmod(0o755)
     assert init.locate_harness("claude") == str(local)
-    monkeypatch.setattr(init.shutil, "which", lambda name: str(tmp_path / "onpath" / name))
-    (tmp_path / "onpath").mkdir()
-    (tmp_path / "onpath" / "claude").write_text("")
-    assert init.locate_harness("claude").endswith("onpath/claude")
+    onpath = tmp_path / "onpath"
+    onpath.mkdir()
+    (onpath / "claude").write_text("#!/bin/sh\n")
+    (onpath / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", str(onpath))
+    assert init.locate_harness("claude") == str((onpath / "claude").resolve())
+
+
+@pytest.mark.real_locate_harness
+def test_locate_harness_never_records_the_working_directory(tmp_path: Path, monkeypatch) -> None:
+    """A relative or empty PATH entry must not turn a checkout's ./claude into
+    the deployment's recorded CLI."""
+    cwd = tmp_path / "checkout"
+    cwd.mkdir()
+    (cwd / "claude").write_text("#!/bin/sh\n")
+    (cwd / "claude").chmod(0o755)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_BIN", raising=False)
+    for path in ("", ".", f":{tmp_path / 'nowhere'}", "./"):
+        monkeypatch.setenv("PATH", path)
+        assert init.locate_harness("claude") == ""
+    monkeypatch.setenv("PATH", str(cwd))  # the same file through an absolute entry is fine
+    assert init.locate_harness("claude") == str((cwd / "claude").resolve())
 
 
 def test_repo_access_messages_name_the_cause(monkeypatch) -> None:

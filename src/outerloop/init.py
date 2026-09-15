@@ -21,7 +21,6 @@ import getpass
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 import urllib.error
@@ -31,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
-from outerloop.harness import HARNESS_INSTALL
+from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
@@ -114,11 +113,11 @@ def locate_harness(backend: str) -> str:
     with no login PATH, would not find it); "" when absent. Recorded in .env so
     every job spawns the same binary the operator installed."""
     name = backend or AUTHOR_BACKENDS[0]
-    found = shutil.which(name)
-    if found:
-        return str(Path(found).resolve())
-    local = Path.home() / ".local" / "bin" / name
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else ""
+    # the harness's own lookup, minus any path already recorded: absolute PATH
+    # entries only (never the working directory), then ~/.local/bin
+    env = {k: v for k, v in os.environ.items() if k != f"OUTERLOOP_{name.upper()}_BIN"}
+    found = default_binary(name, env)
+    return found if os.path.isabs(found) else ""
 
 
 def _harness_hint(answers: InitAnswers) -> None:
