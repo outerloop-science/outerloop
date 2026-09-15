@@ -221,15 +221,22 @@ guarded commit per pass is part of this build. The medium behind the sync is
 a backend, `research-log` now; a bucket later is a per-directory choice (the
 forum stays on GitHub as research content; mail may move if latency asks).
 
-**Mail is immutable; receivers keep cursors.** A message to a run on another
-fleet is written to `shared/<fleet>/mail/<recipient run>/<sender run>/
-<counter>.json`, the inbox envelope as-is, addressed to a run id, never to
-an agent id: the sender's kernel resolves the agent to a run through the
-merged sibling view at send time, so a reused slot or a later run under the
-same agent id never receives mail meant for an earlier one. The receiver
-keeps a cursor per sender run beside its inbox, the way it keeps a position
-per GitHub collection, appends every file past the cursor through the same
-`append`, and advances the cursor after the append. Nothing is deleted from
+**Mail is immutable; receivers keep cursors.** A message to an agent on
+another fleet is written to `shared/<fleet>/mail/<recipient agent>/<sender
+run>/<counter>.json`, the inbox envelope as-is. The address is the agent id,
+as it is for local delivery and for `--to self`: the agent is the durable
+party (one memory thread per agent across sleeps and runs), so a message
+reaches whatever run of that agent is live when it arrives. The envelope
+also records the run the sender saw in the merged view, and when the
+receiver delivers to a later run of the same agent the rendered message
+carries a line saying it was sent before this run started, so the author
+can weigh it as context. The receiver keeps a cursor per sender run beside
+its inbox, the way it keeps a position per GitHub collection, appends every
+file past the cursor through the same `append`, and advances the cursor
+after the append. When no run of that agent is live, the mail is held in
+the medium until one appears; the owner's call, recorded below, is whether
+local delivery adopts the same rule (today a local recipient with no live
+run is refused at once) so that there is one rule. Nothing is deleted from
 the medium: the kernel has no delete primitive on the branch, a deleted file
 stays in history anyway, and a receiver deleting the sender's file would race
 the sender republishing it. The sender prunes its own outgoing files after
@@ -240,12 +247,13 @@ sender run, the cursor its receivers have reached. The sender's kernel reads
 it, so in-flight is counter minus acknowledged, and the per-pair cap of four
 applies to in-flight mail (unacknowledged transport), which is a different
 quantity from the local cap, which reads the recipient's `inbox_seq`. A
-message unacknowledged past an expiry window (a recipient that ended, a
-fleet that went away, a run no fleet hosts) is bounced by the sender's own
-kernel as a context-only note to its author; no other kernel need act.
+message unacknowledged past an expiry window (an agent with no live run in
+that time, a fleet that went away, a slot no fleet owns) is bounced by the
+sender's own kernel as a context-only note to its author; no other kernel
+need act.
 
 **Groups.** `--to all`, or a search line, is expanded by the sender's kernel
-into explicit recipient run ids at send time and the list is persisted in
+into explicit recipient agent ids at send time and the list is persisted in
 the delivery journal, one file per recipient, so a retry after a crash
 reuses the same list instead of recomputing "all" against a changed fleet.
 
@@ -311,8 +319,8 @@ spend no attempt) is a small hardening PR and comes first.
 path; contract fleet shares; per-fleet status with run ids and
 acknowledgment cursors, merged on read; one guarded commit per pass; the
 outgoing and incoming trees with push and pull; receiver cursors; the remote
-branch in `deliver_messages` with run-id addressing and persisted group
-expansion; expiry bounces; sender-side pruning; the forum verb and digest;
+branch in `deliver_messages` with agent addressing, the held state and
+persisted group expansion; expiry bounces; sender-side pruning; the forum verb and digest;
 a shallow fetch of `research-log` for attempts; a tick lease for
 non-singleton tick hosts; the GitHub outage latch. Tests for each crash
 window above. It waits for a second fleet to share a target, which in turn
@@ -339,10 +347,13 @@ directory later. Still the owner's:
    value" does not hold the ceiling.
 5. **Addressing.** Slot ranges with the overlap check (recommended) or
    fleet-prefixed ids.
-6. **Mail semantics.** Immutable files, receiver cursors, acknowledgments in
-   the status file, in-flight cap of four, expiry bounce by the sender's
-   kernel, sender-side pruning after a retention window (recommended); the
-   windows are numbers to pick.
+6. **Mail semantics.** Addressed to the agent id (settled 2026-09-15);
+   immutable files, receiver cursors, acknowledgments in the status file,
+   in-flight cap of four, mail held while the agent has no live run, expiry
+   bounce by the sender's kernel, sender-side pruning after a retention
+   window (recommended); the windows are numbers to pick. Whether local
+   delivery also holds instead of refusing when the agent has no live run,
+   so both paths share one rule (recommended).
 7. **Forum placement and retention.** Permanently on GitHub as research
    content, compacted into digests after a window.
 8. **The outage latch first.** A publish that meets a GitHub failure today
