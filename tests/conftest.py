@@ -59,3 +59,10 @@ def _configured_bot_login(monkeypatch: pytest.MonkeyPatch) -> None:
     they unset it themselves to exercise the fail-closed paths."""
     if "OUTERLOOP_BOT_LOGIN" not in os.environ:
         monkeypatch.setenv("OUTERLOOP_BOT_LOGIN", "agentic-learning-bot")
+
+
+@pytest.fixture(autouse=True)
+def _no_tick_lease_settle(monkeypatch):
+    """The settle read-back after a fresh tick lease is a one-second sleep in
+    production; tests that want it pass settle_s explicitly."""
+    monkeypatch.setattr("outerloop.runstate.TICK_LEASE_SETTLE_S", 0.0)

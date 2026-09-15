@@ -463,3 +463,23 @@ def test_legacy_bless_reason_defaults_empty(tmp_path):
     latest = load_record(tmp_path, record.run_id)
     assert latest.auto_blessed_head == "head"
     assert latest.auto_bless_reason == ""
+
+
+def test_fresh_tick_lease_yields_when_another_node_wrote_during_the_settle(tmp_path, monkeypatch):
+    import json
+
+    from outerloop import runstate
+
+    foreign = json.dumps({"holder": "alpha2:2", "heartbeat": 100, "ttl": 300})
+
+    def other_node_writes(seconds):
+        assert seconds == 0.25
+        (tmp_path / "TICK").write_text(foreign)  # a lock that did not span nodes
+
+    monkeypatch.setattr(runstate.time, "sleep", other_node_writes)
+    with pytest.raises(RuntimeError, match="taken by alpha2:2"):
+        runstate.acquire_tick_lease(tmp_path, "alpha1:1", 100, 300, settle_s=0.25)
+    assert (tmp_path / "TICK").read_text() == foreign  # the loser left the winner's record
+    monkeypatch.setattr(runstate.time, "sleep", lambda seconds: None)
+    lease = runstate.acquire_tick_lease(tmp_path, "alpha2:2", 101, 300, settle_s=0.25)
+    runstate.release_tick_lease(lease, "alpha2:2")

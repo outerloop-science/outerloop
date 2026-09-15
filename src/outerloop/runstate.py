@@ -19,6 +19,7 @@ import fcntl
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TextIO
@@ -400,19 +401,33 @@ def tick_lease_holder(root: Path, now: float, ttl_s: float, host: str) -> str:
         return "" if free else previous
 
 
+# after a fresh acquisition the record is read back once this many seconds
+# later: where the lock does not span nodes, two starts can both write, and
+# the one whose record did not stand yields before its first tick
+TICK_LEASE_SETTLE_S = 1.0
+
+
 def acquire_tick_lease(
-    root: Path, holder: str, now: float, ttl_s: float, lease: TextIO | None = None
+    root: Path,
+    holder: str,
+    now: float,
+    ttl_s: float,
+    lease: TextIO | None = None,
+    *,
+    settle_s: float | None = None,
 ) -> TextIO:
     """Take or heartbeat TICK; keep its file lock until the loop exits.
 
     `holder` is host:pid. The lock fences a live holder however old its
     heartbeat; a dead one is taken over at once on the same host and after
-    its own TTL from another. A heartbeat that finds another holder's record
-    (written from a node the lock did not reach) raises instead of
-    overwriting it. Never unlink TICK: every contender must lock the same
-    inode.
+    its own TTL from another. A fresh acquisition reads its record back
+    after `settle_s` and yields when another holder's stands; a heartbeat
+    that finds another holder's record raises instead of overwriting it.
+    Never unlink TICK: every contender must lock the same inode.
     """
     heartbeat_only = lease is not None
+    if settle_s is None:
+        settle_s = TICK_LEASE_SETTLE_S
     if lease is None:
         root.mkdir(parents=True, exist_ok=True)
         lease = (root / "TICK").open("a+")
@@ -441,6 +456,11 @@ def acquire_tick_lease(
         lease.truncate()
         lease.write(json.dumps({"holder": holder, "heartbeat": now, "ttl": ttl_s}))
         lease.flush()
+        if not heartbeat_only and settle_s > 0:
+            time.sleep(settle_s)
+            current = _tick_lease_state(lease)[0]
+            if current != holder:
+                raise RuntimeError(f"tick lease taken by {current or 'unknown'}")
         return lease
     except BaseException:
         lease.close()
