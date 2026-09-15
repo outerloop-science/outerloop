@@ -65,14 +65,8 @@ benchmark. What that needs, in order of how soon it bites:
   fleet refreshes at its own cadence, so duplicate hypotheses are possible
   in the window between two ticks. That is the same gap the plan-writing
   planner (agent-protocols.md, stage 3) addresses; it is not fleet-specific.
-- Messages across fleets. `message --to agent-NN` resolves the recipient in
-  the local state root, so a sibling on another cluster is unreachable.
-  First version: the kernel refuses with the usual context-only note
-  ("agent-05 runs on another fleet"). Second version: GitHub as the bus, a
-  `mail/<fleet>/<run>/` directory on `research-log` that every tick polls
-  and appends into the recipient's inbox, delivered at the next wake like
-  any message. That is the kernel-to-kernel item agent-protocols.md defers;
-  it needs no new transport, only a poll and the existing inbox.
+- Messages across fleets: the section "Cross-fleet messages on one target"
+  below.
 
 **Tier 3, one kernel driving remote compute.** Still a non-goal: it needs a
 file transport and cross-scheduler dependencies for no gain over tier 2.
@@ -170,6 +164,73 @@ that exists today.
    logs. The kernel's own evidence (tick log, run directories, the board)
    is what "seen working" means.
 
+## Cross-fleet messages on one target
+
+The owner asked (2026-09-15) whether `message --to agent-NN` could reach a
+sibling on another cluster. It can, with the same semantics as a local
+sibling: delivered at the recipient's next wake, a sent copy for the sender,
+refusals as context-only notes, the same envelope. Nothing new serves HTTP;
+the `research-log` branch, which already carries reports, the board and the
+sibling view between fleets, carries the mail too.
+
+**Two prerequisites, both tier-2 items in their own right.** Agent ids must
+be unique across the target, and the sibling view must list every fleet's
+live runs. Today each state root allocates `agent-01` first, and each
+kernel's board pass writes `climb/status.json` whole, so a second fleet
+would collide on both.
+
+1. **Addressing: slot ranges, flat ids.** Each deployment declares the slots
+   it may use (`OUTERLOOP_AGENT_SLOTS=05-08`, say), so `agent-NN` stays the
+   one name an author types and reads in headers, and branch names, the
+   board and the ledger do not change. The alternative, fleet-prefixed ids
+   (`empire-03`), touches every place an agent id appears and buys nothing
+   the range does not; it is the fallback if ranges prove too rigid.
+2. **Sibling view per fleet.** Each kernel writes `climb/status/<fleet>.json`
+   instead of the shared file; the board and `_sibling_entries` read the
+   directory and merge, and every entry carries its fleet. The sender's
+   kernel resolves a recipient from this merged view.
+3. **Transport: mail on `research-log`.** A message whose recipient is not
+   in the local state root is written as `mail/<recipient agent>/
+   <message_id>.json`, the envelope exactly as an inbox file stores it, in
+   the sending kernel's next board commit (one commit per pass, the existing
+   expected-head guard, retry on conflict). Every kernel's tick lists
+   `mail/<agent>/` for the agents it hosts, appends each file to that run's
+   inbox through the same `append`, and removes the file in that pass's
+   commit. The dedupe key (`agent-msg:<sender run>:<n>`) is already global,
+   so a crash between the append and the removal is harmless: the next tick
+   reads the file again, `append` sees the key, the removal happens. Delivery
+   then follows the existing wake rule: a run parked on jobs receives it
+   with the job results, a run parked on nothing wakes at that tick.
+4. **Refusals and bounces.** The sender's kernel refuses, with today's
+   context-only note, when the merged sibling view shows no live run under
+   that id, or when `mail/<agent>/` already holds four unread messages from
+   this sender (the backlog cap, counted in the mail directory instead of
+   the recipient's inbox). If the recipient ended between that check and
+   delivery, the receiving kernel writes a bounce, `mail/<sender agent>/
+   bounce-<message_id>.json`, a context-only kernel note that reaches the
+   sender at its next tick. Ambiguity cannot arise once ids are unique.
+5. **Latency.** Sender leg ends, its kernel commits the mail in the same
+   tick, the recipient's kernel sees it at its next tick, the wake follows:
+   one to two cadences, the same order as a local message to a run parked on
+   jobs. Fine for coordination between authors; not a chat.
+6. **Trust.** Mail files are written by kernels under the bot identity to a
+   bot-written branch, the standing that reports and the sibling view
+   already have, and they render as data like every message. A human with
+   write access to `research-log` could forge one, which is the standing a
+   human comment on a PR has today.
+7. **What it is not.** No HTTP endpoint, no new service, no protocol
+   adoption. It is the file-shaped kernel-to-kernel adapter that
+   agent-protocols.md reserves, feeding the one inbox; when a service-shaped
+   agent appears, the same mail directory is what an A2A adapter would write
+   into.
+
+**Build.** Five pieces: the slot-range setting, per-fleet status files with a
+merging reader, the mail write in `deliver_messages` for a non-local
+recipient, the mail read in the tick, and the bounce; plus tests for the
+crash between append and removal and for the backlog count. It waits for a
+second fleet to share a target, which in turn waits for the Empire AI tier-1
+try-out.
+
 ## Decisions for the owner
 
 1. **Tick host.** Accept `OUTERLOOP_TICK_HOST` as the shape, with the
@@ -186,9 +247,10 @@ that exists today.
 4. **Pacing per fleet (tier 2).** Contract-declared shares, or each
    deployment's own lower value under the contract's ceiling. The second
    is recommended: the contract stays fleet-agnostic.
-5. **Cross-fleet messages (tier 2).** Refuse-with-a-note first, GitHub as
-   the bus second, as sketched above; both wait until two fleets share a
-   target.
+5. **Cross-fleet messages (tier 2).** The mail-on-`research-log` design in
+   the section below, with slot ranges for addressing. Both wait until two
+   fleets share a target, and the owner picks between slot ranges and
+   fleet-prefixed ids before the build.
 
 ## Sources
 
