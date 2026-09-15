@@ -126,6 +126,106 @@ def test_dispatched_but_vanished_fails_not_resubmits(tmp_path):
     assert submitted == []
 
 
+def test_late_result_files_are_waited_for(tmp_path, monkeypatch):
+    """A shared filesystem can show the scheduler's terminal state before the
+    job's files reach the reader (Empire AI Alpha, 2026-09-15: an improvement
+    was read as "no result"). With a marker, no live job and no result, the
+    measurer waits up to RESULT_SETTLE_S for the exit-code before it gives up."""
+    from outerloop import measure as mod
+
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 60.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    clock = [0.0]
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 2:  # the files show up on the second poll
+            _land(m, cand, 0.61)
+
+    monkeypatch.setattr(mod.time, "sleep", sleep)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    assert m.results(_measures()) == {"baseline": 0.50, "candidate": 0.61}
+    assert slept == [3.0, 3.0]
+    assert submitted == []
+
+
+def test_late_stdout_is_waited_for_too(tmp_path, monkeypatch):
+    """The files can arrive in either order: an exit-code without its stdout is
+    not a readable result yet."""
+    from outerloop import measure as mod
+
+    m = _measurer(tmp_path, [], live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 60.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    clock = [0.0]
+    slept: list[float] = []
+    ev = m.run_dir / f"eval-{m._slot(cand)}"
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 1:
+            (ev / "exit-code").write_text("0")  # exit-code first, stdout later
+        if len(slept) == 3:
+            (ev / "stdout").write_text(json.dumps({"metric": "r2", "value": 0.61}) + "\n")
+
+    monkeypatch.setattr(mod.time, "sleep", sleep)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    assert m.results(_measures()) == {"baseline": 0.50, "candidate": 0.61}
+    assert slept == [3.0, 3.0, 3.0]
+
+
+def test_a_nonzero_exit_is_final_without_stdout(tmp_path, monkeypatch):
+    """A failed checkout leaves exit-code 97 and no stdout; the settle must not
+    hold that known failure for the whole window."""
+    from outerloop import measure as mod
+
+    m = _measurer(tmp_path, [], live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _land(m, cand, value=None, code="97", job="102")  # exit-code only
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 60.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    slept: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+    with pytest.raises(EvalError):
+        m.results(_measures())
+    assert slept == []
+
+
+def test_no_result_after_the_settle_window_is_final(tmp_path, monkeypatch):
+    from outerloop import measure as mod
+
+    m = _measurer(tmp_path, [], live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 9.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    clock = [0.0]
+    slept: list[float] = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(mod.time, "sleep", sleep)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    with pytest.raises(EvalError, match="vanished"):
+        m.results(_measures())
+    assert slept == [3.0, 3.0, 3.0]  # three polls, then the verdict
+
+
 def test_walltime_kill_is_named_in_the_error(tmp_path):
     """An eval killed at its walltime leaves no result; the note must say
     TIMEOUT and what it means (an author read "vanished" as broken

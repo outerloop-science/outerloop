@@ -66,3 +66,11 @@ def _no_tick_lease_settle(monkeypatch):
     """The settle read-back after a fresh tick lease is a one-second sleep in
     production; tests that want it pass settle_s explicitly."""
     monkeypatch.setattr("outerloop.runstate.TICK_LEASE_SETTLE_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_result_settle(monkeypatch):
+    """The measurer waits up to RESULT_SETTLE_S for a finished job's files;
+    tests that want the wait set it explicitly."""
+    monkeypatch.setattr("outerloop.measure.RESULT_SETTLE_S", 0.0)
+    monkeypatch.setattr("outerloop.measure.RESULT_POLL_S", 0.0)

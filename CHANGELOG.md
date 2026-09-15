@@ -35,6 +35,7 @@ tasks to finish.
 
 ### Fixed
 
+- The measurer waits up to 90 seconds for the files of a finished evaluation job. A filesystem delay no longer ends a measured improvement as a negative result.
 - `outerloop start` refuses to run when the configured author's CLI is missing: it checks the recorded path, else PATH, else `~/.local/bin`, and names the install command and `outerloop init --force`.
 
 - Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
