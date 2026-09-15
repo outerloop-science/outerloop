@@ -92,9 +92,10 @@ benchmark. What that needs, in order of how soon it bites:
   create-if-absent, which the loser's request fails; the existing
   expected-head helper updates branch heads and does not cover this, and
   crash and release semantics for the ref are new work.
-- The sibling view per fleet, with run identity. Each kernel writes
-  `status/<fleet>.json` in the shared tree, readers merge, and every entry
-  carries its run id and fleet (today's entries carry the agent id only).
+- The sibling view per fleet. Each kernel writes `status/<fleet>.json` in
+  the shared tree, readers merge, and every entry names its fleet (today's
+  entries already carry the run id and the agent id; what is missing is the
+  fleet, and a file each kernel can write without clobbering the others).
   Self-initiated direction picking reads this view, which another fleet
   refreshes at its own cadence, so duplicate hypotheses stay possible in the
   window between two passes; that is the gap the plan-writing planner
@@ -442,10 +443,16 @@ directory later. Still the owner's:
    whether a requested run counts against the width or takes an id beyond
    it (recommended).
 
-9. **Empire AI Beta.** Accept the order above (Alpha first; Beta after the
-   per-deployment env file and the pyxis seam), and say whether the
-   allocation-bundling item is worth building for Beta's four-GPU floor or
-   whether Beta hosts only four-GPU benchmarks.
+9. **Empire AI Beta.** Decided (2026-09-15): Beta hosts four-GPU-sized
+   experiments; allocation bundling for small jobs is not built. Order as
+   above (Alpha first; Beta after the per-deployment env file and the pyxis
+   seam). Still open: where author sessions and wake jobs run on Beta, since
+   the four-GPU floor applies to them too. Recommended: on the login host,
+   as a hybrid compute where sessions and wakes run locally next to the loop
+   and only evaluations and launches go to Slurm; the alternatives are a
+   session inside its experiment's allocation (a change to the sleep and
+   wake substrate) or four-GPU session jobs (idle GPUs while the model
+   thinks).
 
 ## Sources
 
