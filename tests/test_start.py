@@ -631,6 +631,7 @@ def test_start_refuses_missing_harness_before_any_execution(
         f"OUTERLOOP_{backend.upper()}_BIN", str(clean_env / "gone") if recorded else ""
     )
     monkeypatch.setenv("PATH", str(clean_env))
+    monkeypatch.setenv("HOME", str(clean_env))  # not the runner's own ~/.local/bin
     monkeypatch.setattr(cli, "plan_start", lambda **kw: pytest.fail("must refuse before planning"))
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
     monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must not exec"))
