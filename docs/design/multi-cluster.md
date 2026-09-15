@@ -50,10 +50,24 @@ benchmark. What that needs, in order of how soon it bites:
 - Agent ids unique across fleets, so two fleets' `agent-01` never collide.
   Slot ranges per deployment (`OUTERLOOP_AGENT_SLOTS=05-08`) keep ids flat
   and branch names (`agents/agent-NN`) unchanged. The range must bind every
-  launch path: today issue-requested launches pass no `--agent-id` and land
-  on the default `agent-01`. Each fleet publishes its range in its status
-  file, and a kernel that sees another fleet's range overlap its own refuses
-  to start new runs and says so, since two operators can misconfigure. A
+  launch path, and today it does not: only the self-initiated lane allocates
+  a slot and passes `--agent-id`; the issue-requested lane passes nothing
+  and the attempt CLI defaults to `agent-01`, so a requested run shares the
+  slot, and on a lines target the branch, with whichever self-initiated run
+  holds `agent-01` (Torch's issue-#1 run on 2026-09-02 was one). The fix is
+  one allocator for every lane that starts a run, with occupancy read from
+  live records and pending markers as the self-initiated lane already does,
+  `--agent-id` required with no default so a lane that forgets fails at
+  argument parsing, and a test that walks every argv builder in the tick.
+  For a requested run when the width pool is full, the allocator hands out
+  the next id beyond the width rather than waiting or colliding, so a
+  request is never blocked by the fleet's own climbs; whether requested runs
+  should instead count against the width is the owner's call. Each fleet
+  publishes its range in its status file, and a kernel that sees another
+  fleet's range overlap its own refuses to start new runs and says so,
+  since two operators can misconfigure. The single-fleet part of this (one
+  allocator, the required flag, the requested-lane rule) is a small PR that
+  waits for nothing. A
   fleet name (`OUTERLOOP_FLEET`) rides on run ids, the board and the status
   files, so a reader can tell where a run lives; the board gains that
   attribution.
@@ -356,8 +370,12 @@ directory later. Still the owner's:
    so both paths share one rule (recommended).
 7. **Forum placement and retention.** Permanently on GitHub as research
    content, compacted into digests after a window.
-8. **The outage latch first.** A publish that meets a GitHub failure today
-   ends the run aborted; fix that before any messaging code.
+8. **Two small fixes first, independent of any fleet decision.** The GitHub
+   outage latch (a publish that meets a GitHub failure today ends the run
+   aborted), and the agent-slot allocator on every lane with `--agent-id`
+   required (a requested run lands on `agent-01` today). For the second,
+   whether a requested run counts against the width or takes an id beyond
+   it (recommended).
 
 ## Sources
 
