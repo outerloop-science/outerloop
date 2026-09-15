@@ -4346,10 +4346,7 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
             events.append("merge")
 
     tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
-    if changed == "base":
-        assert events == []  # the sweep's own read already rules it out: no lease taken
-    else:
-        assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
 
 
 @pytest.mark.parametrize(
