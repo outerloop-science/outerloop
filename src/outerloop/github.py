@@ -1382,9 +1382,13 @@ def _basic(token: str) -> str:
 def _run_git_with_credential(
     args: list[str], token: str | None, root: Path | None = None, timeout: float | None = None
 ) -> str:
-    """_run_git with the token in the environment. A failure's message never
-    carries the token or its Basic form, whatever git echoed, and the
-    original exception is not chained (a traceback would print it whole)."""
+    """_run_git with the token in the environment. An empty token is refused
+    before any network call (a provider that yields one is misconfigured,
+    and git would send a bad credential). A failure's message never carries
+    the token or its Basic form, whatever git echoed, and the original
+    exception is not chained (a traceback would print it whole)."""
+    if token == "":
+        raise GitError("the GitHub token is empty; no credentialed git call is made")
     try:
         return _run_git(args, _git_env(token, root), timeout=timeout)
     except GitError as exc:

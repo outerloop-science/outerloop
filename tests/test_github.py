@@ -577,3 +577,14 @@ def test_network_git_failure_never_carries_the_credential(monkeypatch, tmp_path)
     assert token not in text and basic not in text
     assert text.count("[redacted]") == 2
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+def test_network_git_refuses_an_empty_token_before_any_call(monkeypatch, tmp_path):
+    from outerloop import github as github_mod
+
+    monkeypatch.setattr(github_mod, "_run_git", lambda *a, **k: pytest.fail("no network call"))
+    with pytest.raises(github_mod.GitError, match="token is empty"):
+        github_mod._run_git_with_credential(["git", "fetch"], "", tmp_path)
+    # no token at all is a different case: an anonymous call is allowed
+    monkeypatch.setattr(github_mod, "_run_git", lambda *a, **k: "ok")
+    assert github_mod._run_git_with_credential(["git", "fetch"], None, tmp_path) == "ok"
