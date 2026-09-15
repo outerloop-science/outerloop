@@ -397,13 +397,20 @@ lesser of 10 minutes and half the cadence), and `OUTERLOOP_MAX_JOB_MINUTES` caps
 the walltime the tick requests for the climb and author-sleep wake jobs it sizes
 (clamped under a code ceiling).
 
-**Two operator switches.** `touch <root>/PAUSE` pauses the loop; `touch
-<root>/DISARM_WAKE` stops parked runs from being woken, by the sweep and by a
-wake job a park already queued, until the file is removed. Both are read at
-every tick and by every wake, no restart: the sentinel is the switch.
-(`OUTERLOOP_DISPATCH_WAKE=0` in the environment that starts the loop or the
-chain does the same; it is not read from `.env`.) Wakes are on by default: a
-loop that cannot wake strands every parked run without a word.
+**Three operator switches.** `touch <root>/PAUSE` stops tick work except the
+heartbeat; jobs already running continue. The resident chain drains on it (it
+cancels its successor and exits), so after `rm <root>/PAUSE` run `outerloop
+start` there; the per-tick chain and the local loop resume on their own at the
+next tick.
+`touch <root>/DISARM_WAKE` stops wake delivery by the sweep and by queued wake
+jobs until `rm <root>/DISARM_WAKE`, while fresh launches, ending records, and
+the chain keep running (the starting environment's `OUTERLOOP_DISPATCH_WAKE=0`
+also disarms wakes; it is not read from `.env`).
+`touch <root>/HOLD_LAUNCHES` stops fresh intake, self-initiated, and steward runs
+until `rm <root>/HOLD_LAUNCHES`, with no chain restart, while the sweep, wake and
+message delivery, GitHub polling, self-merge sweep, board, and ending records
+continue; existing runs keep spending, including their panels, author sessions,
+and the authors' own `launch` submissions.
 
 **Local mode without an image.** On a machine with no Apptainer image,
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own

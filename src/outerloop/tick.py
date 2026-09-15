@@ -70,6 +70,7 @@ from outerloop.runstate import (
 log = logging.getLogger(__name__)
 
 PAUSE_SENTINEL = "PAUSE"
+HOLD_LAUNCHES_SENTINEL = "HOLD_LAUNCHES"
 # Operator off-switch for dispatched wakes, mirroring PAUSE: touch
 # <root>/DISARM_WAKE (or set OUTERLOOP_DISPATCH_WAKE=0) and the waiting-run
 # sweep goes dry at the next tick; rm it and wakes resume, no chain restart.
@@ -160,7 +161,7 @@ class TickReport:
     self_initiated: tuple[str, str] = ("", "")  # (benchmark, job_id) when one launched
     steward: tuple[str, str] = ("", "")  # (issue tag, job_id) when a stewardship launched
     disk: tuple[str, ...] = ()  # preflight warnings (home entries are warn-only)
-    launch_blocked: bool = False  # True when the preflight turned launch lanes off
+    launch_blocked: bool = False  # disk preflight or operator hold turned launch lanes off
     shed: tuple[str, ...] = ()  # ended runs whose workspaces housekeeping removed
 
 
@@ -1641,6 +1642,15 @@ def _sweep_one(
     # something RUNNING (or recently pending): nothing to do yet.
 
 
+def _launches_held(root: Path) -> bool:
+    """True when the operator's HOLD_LAUNCHES file is present; says so once."""
+    path = root / HOLD_LAUNCHES_SENTINEL
+    if not path.exists():
+        return False
+    log.info("launches held: %s", path)
+    return True
+
+
 def tick(
     root: Path,
     compute: Compute,
@@ -1658,8 +1668,8 @@ def tick(
     """One full tick. Pause sentinel wins over everything: a paused loop
     heartbeats (so the watchdog stays quiet) but touches nothing.
 
-    Disk preflight gates every lane that LAUNCHES new work (follow-up jobs,
-    intake claims, self-initiated climbs): a session started on a full or
+    Disk preflight and HOLD_LAUNCHES gate fresh intake, self-initiated and
+    steward runs; existing runs still receive wakes. A session started on a full or
     nearly-full filesystem dies mid-flight in ways that lose data. The sweep
     still runs — its writes are small, per-record contained, and ending runs
     matters more when storage is failing, not less.
@@ -1709,7 +1719,7 @@ def tick(
                 elapsed,
                 min_tick_s,
             )
-            return TickReport(coalesced=True)
+            return TickReport(coalesced=True, launch_blocked=_launches_held(root))
     report = sweep(
         root,
         compute,
@@ -1757,6 +1767,9 @@ def tick(
     launch_ok = disk_health.launch_ok()
     if not launch_ok:
         log.warning("disk preflight failed; launch lanes are OFF this tick")
+    if _launches_held(root):
+        launch_ok = False
+    report = replace(report, disk=tuple(disk_health.warnings()), launch_blocked=not launch_ok)
     # Mid-leg sync is serviced regardless of follow-up/board servicing: it
     # only needs the workspace and the PAT (a git fetch, no GitHub REST and
     # no contract), and a live session waiting on `sync` must not depend on
