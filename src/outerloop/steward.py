@@ -530,7 +530,16 @@ def live_steward(
             )
             _best_effort(
                 "final record",
-                lambda: finish_run(run_root, final, final.ending, final.ending_note, now),
+                lambda: finish_run(
+                    run_root,
+                    final,
+                    final.ending,
+                    final.ending_note,
+                    now,
+                    auth=bot_auth,
+                    secrets=secrets,
+                    bot_login=config.bot_login,
+                ),
                 secrets,
             )
             report_path = run_dir / "report.md"
@@ -676,7 +685,16 @@ def live_steward(
         report_path = run_dir / "report.md"
         _best_effort(
             "ending record",
-            lambda: finish_run(run_root, final, final.ending, final.ending_note, now),
+            lambda: finish_run(
+                run_root,
+                final,
+                final.ending,
+                final.ending_note,
+                now,
+                auth=bot_auth,
+                secrets=secrets,
+                bot_login=config.bot_login,
+            ),
             secrets,
         )
         wrote = _best_effort(

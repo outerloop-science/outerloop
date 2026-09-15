@@ -30,6 +30,7 @@ tasks to finish.
 
 ### Fixed
 
+- Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
 - PRs under `merge: auto` say why self-merge is waiting, and the publish records and logs the bless decision.
 
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.

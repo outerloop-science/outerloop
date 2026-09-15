@@ -1058,6 +1058,8 @@ def sweep(
                 deferred,
                 reaped,
                 stuck,
+                github,
+                bot_login,
             )
         except Exception as exc:
             log.warning("sweep failed on %s: %s: %s", record.run_id, type(exc).__name__, exc)
@@ -1077,7 +1079,7 @@ def sweep(
         # NOT the global dry_run: that flag only dries WAKE delivery;
         # ending killed climbs' records dispatches nothing and must run
         # live even while wakes stay dry.
-        running_ended=tuple(_sweep_running(root, compute, now, grace_s)),
+        running_ended=tuple(_sweep_running(root, compute, now, grace_s, github, bot_login)),
     )
 
 
@@ -1341,7 +1343,14 @@ def _kill_stamp(root: Path, run_id: str) -> Path:
     return run_dir(root, run_id) / "attempt-terminal-seen"
 
 
-def _sweep_running(root: Path, compute: Compute, now: float, grace_s: float) -> list[str]:
+def _sweep_running(
+    root: Path,
+    compute: Compute,
+    now: float,
+    grace_s: float,
+    github: Any = None,
+    bot_login: str = "",
+) -> list[str]:
     """End `running` records whose climb job died without a verdict.
 
     A climb that CRASHES contains its own ending (attempt.py); a climb that is
@@ -1427,6 +1436,8 @@ def _sweep_running(root: Path, compute: Compute, now: float, grace_s: float) -> 
                 ABORTED,
                 f"{note} — ended by the sweep (a killed climb leaves no exception to contain)",
                 now,
+                auth=getattr(github, "auth", None),
+                bot_login=bot_login,
             )
             # every ending produces a report — but never clobber one the
             # climb already wrote before it was killed
@@ -1497,6 +1508,8 @@ def _sweep_one(
     deferred: list[str],
     reaped: list[str],
     stuck: list[str],
+    github: Any = None,
+    bot_login: str = "",
 ) -> None:
     # Leases first: a LIVE wake in flight owns this run — even the stuck
     # verdict must wait for it (its session may be the one that succeeds).
@@ -1531,7 +1544,13 @@ def _sweep_one(
             from outerloop.attempt import finish_run
 
             finish_run(
-                root, record, STUCK, f"{record.wake_attempts} wake attempts without progress", now
+                root,
+                record,
+                STUCK,
+                f"{record.wake_attempts} wake attempts without progress",
+                now,
+                auth=getattr(github, "auth", None),
+                bot_login=bot_login,
             )
         stuck.append(record.run_id)
         return
