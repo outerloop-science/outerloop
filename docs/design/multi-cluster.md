@@ -35,18 +35,21 @@ inline evaluator measurement), `harness.py` (author and judge sessions) and
 **Tier 1, independent deployments.** Each cluster runs its own kernel on its
 own target. Two deployments on one target collide today: each allocates
 `agent-01` first from its own state root and pushes `agents/<agent-id>` and
-`feat/auto/<agent-id>` refs under that id, so sharing a target is tier 2. The
-only coordination is what GitHub already provides: a second kernel reads the
-same `research-log` branch, so its briefs carry the other fleet's reports.
-Nothing to build beyond portability, and this is the try-out.
+`feat/auto/<agent-id>` refs under that id, so sharing a target is tier 2.
+With targets kept apart there is nothing to coordinate: each fleet reads and
+writes its own target's `research-log` branch, and the two never see each
+other's reports. Nothing to build beyond portability, and this is the
+try-out.
 
 **Tier 2, one target from several clusters.** Several kernels climb one
 benchmark. What that needs, in order of how soon it bites:
 
-- A fleet name in every deployment (`OUTERLOOP_FLEET`, for example `torch`
-  or `empire`), carried on run ids, agent branches (`agents/<fleet>/agent-NN`,
-  as the research-lines note anticipated) and the board, so two fleets'
-  `agent-01` never collide.
+- Agent ids unique across fleets, so two fleets' `agent-01` never collide.
+  The cross-fleet section below picks slot ranges per deployment, which
+  keeps ids flat and branch names (`agents/agent-NN`) unchanged; a fleet
+  name (`OUTERLOOP_FLEET`, for example `torch` or `empire`) is still carried
+  on run ids, the board and the per-fleet status files, so a reader can
+  tell where a run lives.
 - Pacing per fleet. `max_active_attempts` and `runs_per_week` are per
   target in the contract; with N kernels they multiply by N. Either the
   contract declares a share per fleet, or each deployment sets its own
