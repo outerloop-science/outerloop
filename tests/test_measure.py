@@ -156,6 +156,35 @@ def test_late_result_files_are_waited_for(tmp_path, monkeypatch):
     assert submitted == []
 
 
+def test_late_stdout_is_waited_for_too(tmp_path, monkeypatch):
+    """The files can arrive in either order: an exit-code without its stdout is
+    not a readable result yet."""
+    from outerloop import measure as mod
+
+    m = _measurer(tmp_path, [], live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _dispatched(m, cand, job="102")
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 60.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    clock = [0.0]
+    slept: list[float] = []
+    ev = m.run_dir / f"eval-{m._slot(cand)}"
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 1:
+            (ev / "exit-code").write_text("0")  # exit-code first, stdout later
+        if len(slept) == 3:
+            (ev / "stdout").write_text(json.dumps({"metric": "r2", "value": 0.61}) + "\n")
+
+    monkeypatch.setattr(mod.time, "sleep", sleep)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    assert m.results(_measures()) == {"baseline": 0.50, "candidate": 0.61}
+    assert slept == [3.0, 3.0, 3.0]
+
+
 def test_no_result_after_the_settle_window_is_final(tmp_path, monkeypatch):
     from outerloop import measure as mod
 

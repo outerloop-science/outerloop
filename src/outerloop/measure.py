@@ -339,14 +339,23 @@ class DispatchedMeasurer:
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
 
+    def _readable(self, m: Measure) -> bool:
+        """exit-code and stdout are both visible, and a clean exit has output;
+        the two files can arrive in either order on a lagging filesystem."""
+        ev = self._ev(m)
+        code, out = ev / "exit-code", ev / "stdout"
+        if not (code.exists() and out.exists()):
+            return False
+        return code.read_text().strip() != "0" or out.stat().st_size > 0
+
     def _settled(self, m: Measure) -> bool:
         """Wait a little for a finished job's files. A shared filesystem can
         show the scheduler's terminal state before the job's exit-code and
         stdout reach the node reading them (Empire AI Alpha, 2026-09-15: a
-        measured improvement was read as "no result"). True once the files
-        are there; False after RESULT_SETTLE_S."""
+        measured improvement was read as "no result"). True once the result
+        is readable; False after RESULT_SETTLE_S."""
         deadline = time.monotonic() + RESULT_SETTLE_S
-        while not self._done(m):
+        while not self._readable(m):
             if time.monotonic() >= deadline:
                 return False
             time.sleep(RESULT_POLL_S)
@@ -458,6 +467,7 @@ class DispatchedMeasurer:
             raise MeasurementPending(tuple(pending))
         out: dict[str, float] = {}
         for m in measures:
+            self._settled(m)  # exit-code seen, stdout possibly still on its way
             try:
                 out[m.name] = read_eval_result(self.run_dir, self._slot(m), m.metric)
             except EvalError as exc:
