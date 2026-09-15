@@ -474,6 +474,99 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
     )
 
 
+def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatch, caplog):
+    """A failed PR body edit after the fast-forward is a log line; the parked
+    record still carries the bless decision."""
+    import logging
+    from typing import cast
+
+    from outerloop.attempt import publish
+    from outerloop.contract import load_contract
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import GitHubClient, Workspace
+    from outerloop.orchestrator import AttemptResult, RunConfig
+    from outerloop.progress import update_leader, write_progress
+
+    root, bare = review_run
+    ws = run_dir(root, "tsp-r1") / "ws"
+    contract_text = CONTRACT + "merge: auto\n"
+    (ws / ".outerloop.yaml").write_text(contract_text)
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract")
+    base = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"{base}:main")
+    write_progress(
+        ws,
+        update_leader(
+            {},
+            benchmark="tsp",
+            metric="mean_tour_length",
+            direction="min",
+            baseline=14.0,
+            candidate=12.0,
+            run_id="prior",
+            date="d",
+        ),
+        "org/pilot",
+    )
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior")
+    head = _git(ws, "rev-parse", "HEAD").strip()
+    _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
+    (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    workspace = Workspace(root=ws, url=str(bare))
+    snap = snapshot_tree(workspace, head)
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+        def append_pull_body(self, repo, number, addendum):
+            raise RuntimeError("PATCH failed")
+
+    github = GitHub(pr={"state": "open", "head": {"sha": head, "ref": PR_BRANCH}})
+    record = replace(load_record(root, "tsp-r1"), stage={"hypothesis": "OLD hypothesis"})
+    save_record(root, record, NOW)
+    with caplog.at_level(logging.WARNING):
+        outcome = publish(
+            result=AttemptResult(
+                outcome="improved",
+                baseline=14.0,
+                candidate=11.4,
+                submit_report="",
+                panel_rounds=1,
+                candidate_sha=snap.commit,
+                measured_paths=("src/pilot/solvers/tsp.py",),
+            ),
+            ws=workspace,
+            workspace=ws,
+            run_root=root,
+            run_dir=ws.parent,
+            run_id=record.run_id,
+            record=record,
+            config=RunConfig(
+                target=record.target, benchmark="tsp", agent_id=record.agent_id, bot_login=BOT
+            ),
+            contract=load_contract(contract_text, "org/pilot"),
+            github=cast(GitHubClient, github),
+            now=NOW,
+            secrets=(),
+            base_branch="main",
+            base_sha=base,
+            issue_number=0,
+            line_ref="",
+            date="2026-09-15",
+        )
+    assert outcome.outcome == "improved"
+    pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
+    latest = load_record(root, record.run_id)
+    assert latest.state == PARKED
+    assert latest.auto_blessed_head == pushed
+    assert latest.auto_bless_reason == ""
+    assert not github.body_addenda
+    assert "submit addendum failed" in caplog.text
+
+
 @pytest.mark.parametrize("candidate,expected", [(11.4, 11.4), (11.8, 12.0), (12.5, 12.0)])
 @pytest.mark.parametrize("unchanged", [False, True])
 @pytest.mark.parametrize("panel_skip", ["", "insufficient panel time"])

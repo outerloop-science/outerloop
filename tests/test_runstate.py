@@ -451,3 +451,13 @@ def test_heartbeat_stops_when_another_node_took_the_record(tmp_path):
     other = acquire_tick_lease(tmp_path, "alpha2:2", 200, 300)  # the winner heartbeats on
     release_tick_lease(other, "alpha2:2")
     assert (tmp_path / "TICK").read_text() == ""
+def test_legacy_bless_reason_defaults_empty(tmp_path):
+    record = RunRecord("legacy-bless", "org/repo", "task", "parked", auto_blessed_head="head")
+    save_record(tmp_path, record, 1)
+    path = run_dir(tmp_path, record.run_id) / "state.json"
+    raw = json.loads(path.read_text())
+    del raw["auto_bless_reason"]
+    path.write_text(json.dumps(raw))
+    latest = load_record(tmp_path, record.run_id)
+    assert latest.auto_blessed_head == "head"
+    assert latest.auto_bless_reason == ""

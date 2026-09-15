@@ -659,7 +659,8 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
     real_clone = Workspace.clone
 
     def fake_clone(url, dest, auth=None, dry_run=False):
-        return real_clone(str(bare), dest, auth=None, dry_run=dry_run)
+        # Preserve kernel auth: ending snapshots refuse unauthenticated workspaces.
+        return real_clone(str(bare), dest, auth=auth, dry_run=dry_run)
 
     monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
@@ -759,6 +760,10 @@ class FakeGitHub:
     def create_pull(self, repo, title, head, base, body, draft=False) -> str:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
         return f"https://github.com/{repo}/pull/1"
+
+    def append_pull_body(self, repo, number, addendum):
+        if self.prs:
+            self.prs[-1]["body"] += "\n\n" + addendum
 
     def find_open_pull_for_head(self, repo, head_branch, base):
         if not self.existing_pr:
@@ -3957,6 +3962,8 @@ def test_auto_publish_only_records_blessed_head(panel_ran):
 
     class Workspace:
         def git(self, *args):
+            if args == ("for-each-ref", "--format=%(refname)", "refs/remotes/origin/main"):
+                return "refs/remotes/origin/main"
             assert args in [
                 ("rev-parse", "HEAD"),
                 ("rev-parse", "--verify", "-q", "origin/main^{commit}"),
@@ -4003,7 +4010,8 @@ def _line_ws(tmp_path: Path, bare: Path):
     """A Workspace cloned from the test origin, checked out on main."""
     from outerloop.github import Workspace
 
-    ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=None)
+    # Line pushes require kernel auth, even with a local test remote.
+    ws = Workspace.clone(str(bare), tmp_path / "line-ws", auth=NoAuth())
     ws.git("checkout", "-q", "-B", "main", "origin/main")
     return ws
 
@@ -4310,9 +4318,36 @@ def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
         _git(target_repo, "rev-parse", "agents/agent-99")
 
 
-def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_repo_lines) -> None:
+def test_live_attempt_records_every_terminal_in_the_notebook(
+    tmp_path, target_repo_lines, monkeypatch
+) -> None:
     """End to end on the lines contract: a no-improvement run still lands the
     session's final tree on the agent's branch, message naming run + outcome."""
+    from outerloop import github as github_mod
+
+    auth = NoAuth()
+    pushes = []
+    headers = []
+    real_snapshot = climb_mod._push_line_snapshot
+    real_git = github_mod._run_git
+    in_snapshot = False
+
+    def git(args, env, timeout=None):
+        if in_snapshot and ("fetch" in args or "push" in args):
+            headers.append(any("Authorization: Basic " in v for v in env.values()))
+        return real_git(args, env, timeout)
+
+    def push(ws, *args, **kwargs):
+        nonlocal in_snapshot
+        pushes.append(ws.auth)
+        in_snapshot = True
+        try:
+            return real_snapshot(ws, *args, **kwargs)
+        finally:
+            in_snapshot = False
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", push)
+    monkeypatch.setattr(github_mod, "_run_git", git)
     github = FakeGitHub()
     queue = [13.876, 14.5]  # candidate worse: negative terminal, no PR
     with _queued_local(queue):
@@ -4322,10 +4357,12 @@ def test_live_attempt_records_every_terminal_in_the_notebook(tmp_path, target_re
             run_id="tsp-lines-1",
             harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "def solve(): return 1\n"}),
             github=github,  # type: ignore[arg-type]
-            bot_auth=NoAuth(),
+            bot_auth=auth,
             now=1_000_000.0,
             created="2026-08-06T00:00:00Z",
         )
+    assert pushes == [auth]
+    assert headers == [True, True]
     assert outcome.outcome == "no-improvement"
     assert github.prs == []
     assert (
@@ -4985,7 +5022,9 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     sibling = _git(other, "rev-parse", "HEAD").strip()
     # our run ends with its own tree
     (wsroot / "train.py").write_text("winner\n")
-    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    _push_line_snapshot(
+        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+    )
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
     assert head != sibling
     assert _git(bare, "rev-parse", f"{head}^").strip() == sibling  # parented on the moved remote
@@ -5042,7 +5081,9 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
 
     monkeypatch.setattr(attempt_mod.Workspace, "push", racing_push)
     (wsroot / "train.py").write_text("winner\n")
-    _push_line_snapshot(Workspace(root=wsroot), "agents/agent-01", "run-1", "improved")
+    _push_line_snapshot(
+        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+    )
     sibling = _git(other, "rev-parse", "HEAD").strip()
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
     assert len(pushes) == 2
@@ -5691,6 +5732,14 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
         def get_pull_request(self, repo, number):
             return {"state": "open", "head": {"sha": record.stage["base_sha"]}}
 
+    pushes = []
+    real_snapshot = climb_mod._push_line_snapshot
+
+    def push(*args, **kwargs):
+        pushes.append(1)
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", push)
     github = GitHub()
     outcome = resume_run(
         state,
@@ -5700,6 +5749,7 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
         bot_auth=NoAuth(),
         now=1_000_100.0,
     )
+    assert pushes == [1]
     ended = load_record(state, run_id)
     assert outcome.outcome == "negative-result"
     assert ended.state == "ended" and ended.ending == "negative-result"
@@ -5870,7 +5920,9 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
                 monkeypatch.setattr(
                     attempt,
                     "_rev",
-                    lambda ws, ref: "moved-base" if ref == "origin/main" else original_rev(ws, ref),
+                    lambda ws, ref, **kw: (
+                        "moved-base" if ref == "origin/main" else original_rev(ws, ref, **kw)
+                    ),
                 )
             return url
 
@@ -5898,3 +5950,324 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     record = load_record(tmp_path / "state", "tsp-auto")
     expected = "" if base_moved else _git(target, "rev-parse", github.prs[0]["head"]).strip()
     assert record.auto_blessed_head == expected
+
+
+@pytest.mark.parametrize("has_auth", [False, True])
+@pytest.mark.parametrize("ending", ["deadline", "stuck"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_tick_snapshot_uses_kernel_auth(
+    tmp_path, target_repo_lines, monkeypatch, caplog, has_auth, ending, dry_run
+):
+    from types import SimpleNamespace
+
+    from outerloop import github as github_mod
+    from outerloop.attempt import _checkout_line
+    from outerloop.github import Workspace
+    from outerloop.tick import MAX_WAKE_ATTEMPTS, sweep
+
+    state = tmp_path / "state"
+    record = RunRecord(
+        run_id="tick-ending",
+        task_title="tick deadline",
+        target="org/pilot",
+        benchmark="tsp",
+        agent_id="agent-07",
+        state="running" if ending == "deadline" else "parked",
+        wake_attempts=MAX_WAKE_ATTEMPTS,
+        created=1,
+        deadline=2,
+    )
+    save_record(state, record, 1)
+    ws = Workspace.clone(
+        str(target_repo_lines), state / "runs" / record.run_id / "ws", auth=NoAuth()
+    )
+    _checkout_line(ws, ws.root, record.agent_id, "main")
+    (ws.root / "AGENT_MEMORY.md").write_text("deadline memory\n")
+    calls = []
+    real_git = github_mod._run_git
+
+    def git(args, env, timeout=None):
+        if "fetch" in args or "push" in args:
+            calls.append(any("Authorization: Basic " in v for v in env.values()))
+        return real_git(args, env, timeout)
+
+    monkeypatch.setattr(github_mod, "_run_git", git)
+    caplog.set_level("INFO", logger="outerloop.attempt")
+    monkeypatch.setattr(climb_mod, "target_clone_url", lambda target: str(target_repo_lines))
+    github = SimpleNamespace(auth=NoAuth() if has_auth else None)
+    report = sweep(
+        state,
+        _fake_dispatch().compute,
+        SimpleNamespace(),
+        3,
+        github=github,
+        bot_login="test-bot",
+        dry_run=dry_run,
+    )
+    assert (report.running_ended if ending == "deadline" else report.stuck) == (record.run_id,)
+    if dry_run and ending == "stuck":
+        assert calls == []
+        assert load_record(state, record.run_id).state == "parked"
+        return
+    assert calls == ([True, True] if has_auth else [])
+    logs = [r.message for r in caplog.records if "line snapshot" in r.message]
+    assert len(logs) == 1
+    assert f"auth={has_auth}" in logs[0]
+    assert "run=tick-ending line=agents/agent-07" in logs[0]
+    assert "sealed=" in logs[0]
+    if has_auth:
+        assert (
+            _git(target_repo_lines, "show", "agents/agent-07:AGENT_MEMORY.md")
+            == "deadline memory\n"
+        )
+    else:
+        assert "snapshot skipped: no GitHub auth" in logs[0]
+
+
+@pytest.mark.parametrize("operation", ["fetch", "push", "record", "cleanup"])
+def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch, caplog, operation):
+    from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
+    from outerloop.github import GitError
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    (ws.root / "AGENT_MEMORY.md").write_text("keep this\n")
+    calls = []
+    seals = []
+    real_git = ws.git
+    real_snapshot = climb_mod.snapshot_tree
+    error = (
+        "denied https://user:private-token@github.com/org/repo Authorization: Basic secret-header"
+    )
+
+    def fail(*args):
+        calls.append(operation)
+        raise GitError(error)
+
+    def git(*args):
+        if operation == "record" and args[:2] == ("update-ref", LINE_HEAD_REF):
+            fail()
+        if operation == "cleanup" and args[:2] == ("update-ref", "-d"):
+            fail()
+        return real_git(*args)
+
+    def snapshot(*args, **kwargs):
+        seals.append(1)
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(ws, "git", git)
+    if operation in ("fetch", "push"):
+        monkeypatch.setattr(ws, "fetch_origin" if operation == "fetch" else "push", fail)
+    monkeypatch.setattr(climb_mod, "snapshot_tree", snapshot)
+    caplog.set_level("INFO", logger="outerloop.attempt")
+    _push_line_snapshot(ws, "agents/agent-07", "failure-run", "no-improvement", ("private-token",))
+    assert calls == [operation]
+    assert len(seals) == (0 if operation == "fetch" else 1)
+    logs = [r.message for r in caplog.records if "failed:" in r.message]
+    assert len(logs) == 1
+    assert (
+        f"line snapshot {operation} run=failure-run line=agents/agent-07 auth=True sealed="
+        in logs[0]
+    )
+    assert "GitError: denied" in logs[0]
+    assert "private-token" not in caplog.text and "secret-header" not in caplog.text
+    assert "user:" not in caplog.text and "moved line" not in caplog.text
+
+
+def test_publish_addendum_failure_never_fails_the_publish(tmp_path, monkeypatch, caplog):
+    import json
+    import logging
+
+    from outerloop.github import GitHubClient
+    from outerloop.runstate import PARKED
+
+    _seed_target(tmp_path, monkeypatch, CONTRACT + "\nmerge: auto\n")
+
+    class GitHub(FakeGitHub):
+        def append_pull_body(self, *args, **kwargs):
+            raise RuntimeError("PATCH failed")
+
+    github = GitHub()
+    with caplog.at_level(logging.WARNING), _queued_local([13.876, 13.1]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="tsp-addendum",
+            harness=ScriptedHarness(edits={"src/pilot/solvers/tsp.py": "p=1\n"}),
+            github=cast(GitHubClient, github),
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-09-13T00:00:00Z",
+            panel_lenses=_panel_lens(json.dumps({"findings": [], "notes": "clean"})),
+        )
+    assert outcome.outcome == "improved"
+    assert outcome.pr_url.endswith("/pull/1")
+    record = load_record(tmp_path / "state", "tsp-addendum")
+    assert record.state == PARKED
+    assert record.pr_url == outcome.pr_url
+    assert record.auto_blessed_head
+    assert "self-merge addendum failed" in caplog.text
+
+
+@pytest.mark.parametrize("base_moved", [False, True])
+def test_resumed_line_publish_bless_decision(tmp_path, monkeypatch, base_moved, caplog):
+    import json
+    from dataclasses import replace
+
+    from outerloop.github import GitHubClient
+    from outerloop.roles import author_spec
+    from outerloop.syscall import ensure_excluded
+
+    state, run_id = _write_parked_candidate(
+        tmp_path,
+        monkeypatch,
+        contract=CONTRACT_LINES + "\nmerge: auto\n",
+        agent_id="agent-03",
+        values={"baseline": 13.0, "candidate": 12.0},
+    )
+    record = load_record(state, run_id)
+    save_record(state, replace(record, stage={**record.stage, "submitted": True}), 1_000_050.0)
+    ws = state / "runs" / run_id / "ws"
+    ensure_excluded(ws)
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(ws, "push", "origin", "agents/agent-03")
+    _git(ws, "fetch", "origin")
+
+    class GitHub(FakeGitHub):
+        def create_pull(self, *args, **kwargs):
+            url = super().create_pull(*args, **kwargs)
+            if base_moved:
+                _git(
+                    ws, "update-ref", "refs/remotes/origin/main", str(record.stage["candidate_sha"])
+                )
+            return url
+
+    github = GitHub()
+    caplog.set_level("INFO")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=cast(GitHubClient, github),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        panel_lenses=_panel_lens(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "file": "src/pilot/solvers/tsp.py",
+                            "line": 1,
+                            "confidence": "high",
+                            "summary": "readability",
+                            "detail": "name the constant",
+                            "blocking": False,
+                        }
+                    ],
+                    "notes": "",
+                }
+            )
+        ),
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved"
+    pr = github.prs[0]
+    assert not pr["draft"]
+    pushed = _git(bare, "rev-parse", pr["head"]).strip()
+    latest = load_record(state, run_id)
+    assert latest.auto_blessed_head == ("" if base_moved else pushed)
+    expected_reason = (
+        f"base moved: origin/main {record.stage['candidate_sha']} "
+        f"!= measured {record.stage['base_sha']}"
+        if base_moved
+        else ""
+    )
+    assert latest.auto_bless_reason == expected_reason
+    line = (
+        f"Self-merge: not armed ({expected_reason})"
+        if base_moved
+        else f"Self-merge: armed at {pushed}"
+    )
+    assert line in pr["body"]
+    assert (
+        "self-merge decision: panel_rounds=1 panel_blocking_open=False panel_degraded=False"
+        in caplog.text
+    )
+    assert "contract.merge=auto base_branch=main" in caplog.text
+
+
+@pytest.mark.parametrize("ref", ["origin/main", "HEAD"])
+def test_bless_unreadable_reason(tmp_path, monkeypatch, caplog, ref):
+    from types import SimpleNamespace
+    from typing import Any
+
+    from outerloop.attempt import _bless_decision
+    from outerloop.github import Workspace
+
+    def revision(*args, **kwargs):
+        if ref == "origin/main":
+            raise RuntimeError("git failed secret-value")
+        return "base"
+
+    class BrokenHead:
+        def git(self, *args):
+            raise RuntimeError("git failed secret-value")
+
+    monkeypatch.setattr(climb_mod, "_rev", revision)
+    caplog.set_level("INFO")
+    head, reason = _bless_decision(
+        cast(Workspace, BrokenHead()),
+        SimpleNamespace(panel_rounds=1, panel_blocking_open=False, panel_degraded=False),
+        cast(Any, SimpleNamespace(merge="auto")),
+        "main",
+        "base",
+        ("secret-value",),
+    )
+    assert not head
+    assert reason.startswith(f"{ref} unreadable: RuntimeError: git failed")
+    assert "base moved" not in reason
+    assert "secret-value" not in reason + caplog.text
+
+
+def test_bless_absent_remote_is_distinct_from_git_failure(tmp_path):
+    from types import SimpleNamespace
+
+    from outerloop.attempt import _bless_decision, _rev
+    from outerloop.github import Workspace
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    result = SimpleNamespace(panel_rounds=1, panel_blocking_open=False, panel_degraded=False)
+    ws = Workspace(root=tmp_path)
+    assert _bless_decision(ws, result, SimpleNamespace(merge="auto"), "main", "base") == (
+        "",
+        "origin/main absent",
+    )
+    broken = Workspace(root=tmp_path / "not-a-repo")
+    assert _rev(broken, "origin/main") == ""
+    head, reason = _bless_decision(broken, result, SimpleNamespace(merge="auto"), "main", "base")
+    assert not head
+    assert reason.startswith("origin/main unreadable:")
+
+
+@pytest.mark.parametrize(
+    "rounds,blocking,degraded,merge,reason",
+    [
+        (0, False, False, "auto", "panel did not run"),
+        (1, True, False, "auto", "panel blocking or degraded"),
+        (1, False, True, "auto", "panel blocking or degraded"),
+        (1, False, False, "manual", "contract merge is manual"),
+    ],
+)
+def test_bless_guard_reasons(rounds, blocking, degraded, merge, reason):
+    from types import SimpleNamespace
+    from typing import Any
+
+    from outerloop.attempt import _bless_decision
+
+    result = SimpleNamespace(
+        panel_rounds=rounds, panel_blocking_open=blocking, panel_degraded=degraded
+    )
+    assert _bless_decision(
+        cast(Any, None), result, SimpleNamespace(merge=merge), "main", "base"
+    ) == ("", reason)

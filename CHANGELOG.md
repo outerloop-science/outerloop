@@ -25,12 +25,16 @@ tasks to finish.
 - `OUTERLOOP_TICK_HOST=login` (or `--tick-host login`) runs a niced foreground tick loop against Slurm, with one tick lease per state root.
 - `OUTERLOOP_QOS` sets the QOS for every submitted Slurm job.
 - `OUTERLOOP_APPTAINER_BIN` selects the container executable on compute nodes.
+- `<root>/HOLD_LAUNCHES` holds fresh kernel launches while existing runs, wake delivery, and the tick chain continue; remove the file to resume.
 
 ### Removed
 
 - The pre-rename names are gone. The `AUTORESEARCH_*` environment names are no longer read by the package, the `.env` reader, the chain or the deploy step. `~/.config/autoresearch/`, `.autoresearch.yaml`, the `.autoresearch` channel directory, the `~/.autoresearch` local root default and `~/autoresearch-images` are no longer looked for. The `autoresearch-resident` and `autoresearch-tick` job names are no longer recognized. The `harness_key` file, the `*_HARNESS_KEY_FILE` setting and the `climb_job_id` record field are gone. Before upgrading, rename the `.env` keys, the config directory and the image directory. Cancel a resident or chain still queued under an old job name (`scancel --name autoresearch-resident`, or `scancel --name autoresearch-tick`) before running `outerloop start`: the guard against two loops on one root knows only the current name. Old `autoresearch:` comment markers are still recognized.
 
 ### Fixed
+
+- Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
+- PRs under `merge: auto` say why self-merge is waiting, and the publish records and logs the bless decision.
 
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
 

@@ -1374,6 +1374,30 @@ def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     return pairs
 
 
+def _basic(token: str) -> str:
+    """The Basic credential git sends for an installation or PAT token."""
+    return base64.b64encode(f"x-access-token:{token}".encode()).decode()
+
+
+def _run_git_with_credential(
+    args: list[str], token: str | None, root: Path | None = None, timeout: float | None = None
+) -> str:
+    """_run_git with the token in the environment. An empty token is refused
+    before any network call (a provider that yields one is misconfigured,
+    and git would send a bad credential). A failure's message never carries
+    the token or its Basic form, whatever git echoed, and the original
+    exception is not chained (a traceback would print it whole)."""
+    if token == "":
+        raise GitError("the GitHub token is empty; no credentialed git call is made")
+    try:
+        return _run_git(args, _git_env(token, root), timeout=timeout)
+    except GitError as exc:
+        if not token:
+            raise
+        message = str(exc).replace(token, "[redacted]").replace(_basic(token), "[redacted]")
+        raise GitError(message) from None
+
+
 def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     """Environment for a git invocation: host global/system config never
     loads (a host-configured filter driver must not be selectable by a
@@ -1392,8 +1416,9 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     pairs = _filter_override_pairs(root)
     if token is not None:
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        pairs.append(("http.https://github.com/.extraheader", f"Authorization: Basic {basic}"))
+        pairs.append(
+            ("http.https://github.com/.extraheader", f"Authorization: Basic {_basic(token)}")
+        )
     env["GIT_CONFIG_COUNT"] = str(len(pairs))
     for i, (k, v) in enumerate(pairs):
         env[f"GIT_CONFIG_KEY_{i}"] = k
@@ -1447,9 +1472,10 @@ class Workspace:
             raise ValueError(f"{args[0]!r} is not a network git command")
         ensure_regular_git_dir(self.root)  # sanitizes the config first, too
         token = self.auth.token() if self.auth is not None else None
-        return _run_git(
+        return _run_git_with_credential(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args],
-            _git_env(token, self.root),
+            token,
+            self.root,
             timeout=NETWORK_GIT_TIMEOUT_S,
         )
 
@@ -1466,7 +1492,9 @@ class Workspace:
         dry_run: bool = False,
     ) -> Workspace:
         token = auth.token() if auth is not None else None
-        _run_git(["git", "clone", "--quiet", *SAFE_GIT_FLAGS, url, str(dest)], _git_env(token))
+        _run_git_with_credential(
+            ["git", "clone", "--quiet", *SAFE_GIT_FLAGS, url, str(dest)], token
+        )
         return cls(root=dest, auth=auth, dry_run=dry_run, url=url)
 
     def branch(self, name: str) -> None:

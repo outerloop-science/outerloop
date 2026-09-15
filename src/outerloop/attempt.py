@@ -216,24 +216,70 @@ def target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
+def _bless_decision(
+    ws: Workspace,
+    result: Any,
+    contract: Any,
+    base_branch: str,
+    base_sha: str,
+    secrets: tuple[str, ...] = (),
+    *,
+    panel_skip: str = "",
+) -> tuple[str, str]:
+    """Decide once; share the reason between the record, PR and log."""
+    head, reason, revision = "", "", "not read"
+    merge = getattr(contract, "merge", "manual")
+    if panel_skip or result.panel_rounds <= 0:
+        reason = "panel did not run"
+    elif result.panel_blocking_open or result.panel_degraded:
+        reason = "panel blocking or degraded"
+    elif merge != "auto":
+        reason = "contract merge is manual"
+    else:
+        ref = f"origin/{base_branch}"
+        try:
+            revision = _rev(ws, ref, strict=True)
+        except Exception as exc:
+            revision = f"{type(exc).__name__}: {exc}"
+            reason = f"{ref} unreadable: {revision}"
+        else:
+            if not revision:
+                reason = f"{ref} absent"
+            elif revision != base_sha:
+                reason = f"base moved: {ref} {revision} != measured {base_sha}"
+            else:
+                try:
+                    head = ws.git("rev-parse", "HEAD").strip()
+                    if not head:
+                        reason = "HEAD unreadable: empty revision"
+                except Exception as exc:
+                    reason = f"HEAD unreadable: {type(exc).__name__}: {exc}"
+    reason = redact(" ".join(reason.split()), secrets)[:480]
+    log.info(
+        "self-merge decision: panel_rounds=%s panel_blocking_open=%s panel_degraded=%s "
+        "contract.merge=%s base_branch=%s base_sha=%s rev=%s head=%s reason=%s",
+        result.panel_rounds,
+        result.panel_blocking_open,
+        result.panel_degraded,
+        merge,
+        base_branch,
+        base_sha,
+        redact(" ".join(revision.split()), secrets),
+        head,
+        reason,
+    )
+    return head, reason
+
+
 def _blessed_head(
     ws: Workspace, result: Any, contract: Any, base_branch: str, base_sha: str
 ) -> str:
-    """The pushed PR head the tick may later self-merge — only when this
-    publish was under merge:auto with a clean panel and a fresh base; "" otherwise.
-    An unreadable HEAD blesses nothing."""
-    if not (
-        result.panel_rounds > 0
-        and not (result.panel_blocking_open or result.panel_degraded)
-        and getattr(contract, "merge", "manual") == "auto"
-        and _rev(ws, f"origin/{base_branch}") == base_sha
-    ):
-        return ""
-    try:
-        return ws.git("rev-parse", "HEAD").strip()
-    except Exception as exc:
-        log.warning("could not read HEAD; not blessing self-merge: %s", exc)
-        return ""
+    """The head eligible for self-merge, or an empty string."""
+    return _bless_decision(ws, result, contract, base_branch, base_sha)[0]
+
+
+def _self_merge_line(head: str, reason: str) -> str:
+    return f"Self-merge: armed at {head}" if head else f"Self-merge: not armed ({reason})"
 
 
 def _arm_unless_base_moved(
@@ -1872,11 +1918,18 @@ def _restore_line_memory(ws: Workspace, parent: str, seen: str) -> None:
             ws.git("checkout", parent, "--", file)
 
 
-def _rev(ws: Workspace, ref: str) -> str:
-    """The commit `ref` names, or "" when it does not exist."""
+def _rev(ws: Workspace, ref: str, *, strict: bool = False) -> str:
+    """Resolve a commit; strict remote reads distinguish absent refs from git failures."""
     try:
+        if strict and ref.startswith("origin/"):
+            full_ref = f"refs/remotes/{ref}"
+            refs = ws.git("for-each-ref", "--format=%(refname)", full_ref).splitlines()
+            if full_ref not in refs:
+                return ""
         return ws.git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}").strip()
     except Exception:
+        if strict:
+            raise
         return ""
 
 
@@ -1914,6 +1967,26 @@ def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
     return head
 
 
+def _log_line_snapshot(
+    operation: str,
+    run_id: str,
+    line_ref: str,
+    auth: bool,
+    sealed: str,
+    detail: str,
+    secrets: tuple[str, ...],
+) -> None:
+    message = (
+        f"line snapshot {operation} run={run_id} line={line_ref} "
+        f"auth={auth} sealed={sealed}: {detail}"
+    )
+    message = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s@]+@", r"\1[redacted]@", message)
+    message = re.sub(r"(?i)authorization[^\r\n]*", "Authorization: [redacted]", message)
+    routine = ("snapshot pushed", "re-sealing on the moved line", "snapshot skipped: dry run")
+    level = logging.INFO if detail.startswith(routine) else logging.WARNING
+    log.log(level, "%s", redact(message, secrets).replace("\n", " ").replace("\r", " "))
+
+
 def _push_line_snapshot(
     ws: Workspace,
     line_ref: str,
@@ -1924,53 +1997,53 @@ def _push_line_snapshot(
 ) -> None:
     """Publish the session's final tree to the agent's line as a sealed
     snapshot commit — every terminal path, any outcome
-    (docs/design/research-lines.md). The seal parents on the LOCAL line ref
-    and advances it, so sequential terminals within one run chain as
-    fast-forwards; one slot never runs twice concurrently, so the remote
-    cannot have moved under us. Best-effort throughout: the notebook never
-    changes a run's outcome. An unchanged tree is not pushed (the run-start
-    push already holds it)."""
+    (docs/design/research-lines.md). The seal parents on the remote head
+    when the local line ref is an ancestor of it (a park frees the slot, so
+    a newer run on the same line can push while this one is parked), else
+    on the local ref. Pushes with the kernel's auth or not at all, and
+    retries only a push the remote refused as a moved line. Best-effort
+    throughout: the notebook never changes a run's outcome."""
     if not line_ref:
         return
+    sealed = "-"
+    operation = "prepare"
 
-    def _seal_and_push() -> None:
-        # raises if the session altered .git (every ws.git call checks) —
-        # _best_effort turns that into a logged skip
+    def report(detail: str) -> None:
+        _log_line_snapshot(
+            operation, run_id, line_ref, ws.auth is not None, sealed, detail, secrets
+        )
+
+    if ws.auth is None or ws.dry_run:
+        operation = "skip"
+        report(
+            "snapshot skipped: no GitHub auth" if ws.auth is None else "snapshot skipped: dry run"
+        )
+        return
+    try:
         branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
-        seen = ws.git("rev-parse", "HEAD").strip()  # what the session's tree was checked out from
-        local = _line_head(ws, line_ref, branch)
-        last_exc: Exception | None = None
-        # the line commit this workspace's untouched files currently match:
-        # the local ref at first, then each remote head reconciled into it
-        # (so a retry does not mistake copied-in files for this run's edits)
-        fork = local
-        for _ in range(3):
+        seen = ws.git("rev-parse", "HEAD").strip()
+        # Track untouched files against each reconciled head across retries.
+        fork = _line_head(ws, line_ref, branch)
+        for attempt in range(3):
             parent = fork
-            # A park frees the slot, so a newer run on the same line can end
-            # (and push) while this one is parked: the remote line then sits
-            # past our local ref, and a seal parented on the stale ref would be
-            # refused as a non-fast-forward (gpt-speedrun, 2026-09-03: agent-01's
-            # winning run left no snapshot this way, and its line fell behind
-            # main). Parent on the remote head whenever our ref is an ancestor
-            # of it, keeping the files that head added since; offline, seal on
-            # the local ref as before.
-            try:
-                ws.fetch_origin()
-                remote = ws.git("rev-parse", f"refs/remotes/origin/{line_ref}").strip()
-                if remote != fork:
-                    ws.git("merge-base", "--is-ancestor", fork, remote)  # raises when not
-                    _reconcile_with_remote(ws, fork, remote)
-                    fork = parent = remote
-            except Exception as exc:
-                log.info("line %s: sealing on the local ref (%s)", line_ref, type(exc).__name__)
+            operation = "fetch"
+            ws.fetch_origin()
+            operation = "reconcile"
+            remote = ws.git(
+                "for-each-ref", "--format=%(objectname)", f"refs/remotes/origin/{line_ref}"
+            ).strip()
+            if remote and remote != fork and not _is_ancestor(ws, remote, fork):
+                ws.git("merge-base", "--is-ancestor", fork, remote)
+                _reconcile_with_remote(ws, fork, remote)
+                fork = parent = remote
+            operation = "seal"
             _restore_line_memory(ws, parent, seen=seen)
             memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
             snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
             try:
-                # seal only when the tree moved past the parent; the PUSH runs
-                # either way — a session that COMMITTED its work advanced the
-                # local ref without dirtying the tree, and that commit must
-                # still reach the remote (an already-current ref push is a no-op)
+                # seal only when the tree moved past the parent; the push runs
+                # either way, since a session that committed its work advanced
+                # the local ref without dirtying the tree
                 sealed = parent
                 if snap.tree != ws.git("rev-parse", f"{parent}^{{tree}}").strip():
                     sealed = ws.git(
@@ -1983,25 +2056,29 @@ def _push_line_snapshot(
                         f"line snapshot: {run_id} ({outcome})",
                     ).strip()
                 ws.git("update-ref", f"refs/heads/{line_ref}", sealed)
+                operation = "push"
                 try:
                     ws.push(line_ref)
-                    ws.git("update-ref", LINE_HEAD_REF, sealed)  # the record follows the push
-                    return
-                except Exception as exc:
-                    # another run pushed between our fetch and this push:
-                    # re-read the line and seal again on its new head
-                    last_exc = exc
-                    log.info(
-                        "line %s: push refused, re-sealing on the moved line (%s)",
-                        line_ref,
-                        type(exc).__name__,
+                except GitError as exc:
+                    moved = re.search(
+                        r"\[rejected\].*\((?:non-fast-forward|fetch first)\)", str(exc)
                     )
+                    if not moved or attempt == 2:
+                        raise
+                    report(f"re-sealing on the moved line: {type(exc).__name__}: {exc}")
+                    continue
+                operation = "record"
+                ws.git("update-ref", LINE_HEAD_REF, sealed)
+                report("snapshot pushed")
+                return
             finally:
-                drop_snapshot(ws, snap)
-        assert last_exc is not None
-        raise last_exc
-
-    _best_effort(f"line push ({outcome})", _seal_and_push, secrets)
+                try:
+                    ws.git("update-ref", "-d", snap.ref)
+                except Exception:
+                    operation = "cleanup"
+                    raise
+    except Exception as exc:
+        report(f"failed: {type(exc).__name__}: {exc}")
 
 
 def _reconcile_with_remote(ws: Workspace, old: str, new: str) -> None:
@@ -2226,7 +2303,13 @@ def _is_git_tamper(exc: GitError) -> bool:
 
 
 def _end_refused_wake(
-    run_root: Path, record: RunRecord, exc: Exception, now: float, secrets: tuple[str, ...]
+    run_root: Path,
+    record: RunRecord,
+    exc: Exception,
+    now: float,
+    secrets: tuple[str, ...],
+    auth: TokenProvider | None = None,
+    snapshot_attempted: bool = False,
 ) -> AttemptOutcome:
     """End a parked run whose workspace the wake refused (a session altered
     .git): ABORTED with the tampering as the note. The candidate snapshot's
@@ -2237,7 +2320,20 @@ def _end_refused_wake(
     alive only within a repository nothing will read again."""
     note = redact(str(exc), secrets)[:480]
     log.warning("wake refused for %s: %s", record.run_id, note)
-    _best_effort("ending record", lambda: finish_run(run_root, record, ABORTED, note, now), secrets)
+    _best_effort(
+        "ending record",
+        lambda: finish_run(
+            run_root,
+            record,
+            ABORTED,
+            note,
+            now,
+            auth=auth,
+            secrets=secrets,
+            snapshot_attempted=snapshot_attempted,
+        ),
+        secrets,
+    )
     return AttemptOutcome(run_id=record.run_id, outcome="attempt-error")
 
 
@@ -2320,7 +2416,7 @@ def resume_run(
     try:
         ensure_regular_git_dir(workspace)
     except GitError as exc:
-        return _end_refused_wake(run_root, record, exc, now, secrets)
+        return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     # Re-establish the merge-artifact exclude on the wake too: the workspace
     # persisted across the park, but a session could have removed the exclude,
     # and this wake's changed_paths / seal run `git add -A`. Idempotent.
@@ -2585,9 +2681,10 @@ def resume_run(
             judged=judged,
         )
 
-    if result.outcome == "improved" or (
+    snapshot_attempted = result.outcome == "improved" or (
         submitted_park and result.baseline is not None and result.candidate is not None
-    ):
+    )
+    if snapshot_attempted:
         baseline, candidate = result.baseline, result.candidate
         assert baseline is not None and candidate is not None
         _push_line_snapshot(
@@ -2627,7 +2724,9 @@ def resume_run(
                 if isinstance(exc, GitError) and _is_git_tamper(exc):
                     # tamper during the panel is not a panel error to draft
                     # around — end as a refused wake.
-                    return _end_refused_wake(run_root, record, exc, now, secrets)
+                    return _end_refused_wake(
+                        run_root, record, exc, now, secrets, ws.auth, snapshot_attempted=True
+                    )
                 log.warning(
                     "wake panel errored for %s (%s); opening a DRAFT",
                     run_id,
@@ -2711,16 +2810,23 @@ def resume_run(
         result = dc_replace(result, submit_report=str(stage.get("report") or "no report was given"))
         report_path = run_dir / "report.md"
         report_path.write_text(result.report(config, redact_secrets=secrets))
-        _push_line_snapshot(
-            ws,
-            _line_ref_for(bench, config.agent_id),
-            run_id,
-            NEGATIVE_RESULT,
-            secrets,
-            bot_login=config.bot_login,
-        )
+        if not snapshot_attempted:
+            _push_line_snapshot(
+                ws,
+                _line_ref_for(bench, config.agent_id),
+                run_id,
+                NEGATIVE_RESULT,
+                secrets,
+                bot_login=config.bot_login,
+            )
         finish_run(
-            run_root, record, NEGATIVE_RESULT, redact(result.note or result.outcome, secrets), now
+            run_root,
+            record,
+            NEGATIVE_RESULT,
+            redact(result.note or result.outcome, secrets),
+            now,
+            snapshot_attempted=True,
+            secrets=secrets,
         )
         _post_issue_finished(
             github,
@@ -2819,6 +2925,7 @@ def resume_run(
         issue_number=issue_number,
         line_ref=_line_ref_for(bench, config.agent_id),
         date=_utc_date(now),
+        snapshot_attempted=snapshot_attempted,
     )
     saved = load_record(run_root, run_id)
     if saved.state != PARKED or saved.stage.get("candidate_ref") != candidate_ref:
@@ -3099,6 +3206,7 @@ def _finish_attempt(
     issue_number: int,
     line_ref: str,
     date: str,
+    snapshot_attempted: bool = False,
 ) -> AttemptOutcome:
     """Finish an unsubmitted stop, or publish a credited sealed tree."""
     latest = load_record(run_root, run_id)
@@ -3127,10 +3235,14 @@ def _finish_attempt(
             issue_number=issue_number,
             line_ref=line_ref,
             date=date,
+            snapshot_attempted=snapshot_attempted,
         )
     report_path = run_dir / "report.md"
     report_path.write_text(result.report(config, redact_secrets=secrets))
-    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
+    if not snapshot_attempted:
+        _push_line_snapshot(
+            ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
+        )
     if record.pr_url:
         final = dc_replace(_clear_stage(record, run_root), state=PARKED)
         _best_effort("final record", lambda: save_record(run_root, final, now), secrets)
@@ -3143,6 +3255,8 @@ def _finish_attempt(
                 _ENDINGS_BY_OUTCOME[result.outcome],
                 redact(result.note, secrets),
                 now,
+                snapshot_attempted=True,
+                secrets=secrets,
             ),
             secrets,
         )
@@ -3266,6 +3380,7 @@ def publish(
     issue_number: int,
     line_ref: str,
     date: str,
+    snapshot_attempted: bool = False,
 ) -> AttemptOutcome:
     """Publish a credited sealed tree: open a PR or fast-forward its head."""
     latest = load_record(run_root, run_id)
@@ -3296,7 +3411,10 @@ def publish(
     # memory (it is excluded from measurable seals by design). The label is
     # the GATE outcome, correct at this moment; a publish failure appends a
     # publish-error snapshot at the tail.
-    _push_line_snapshot(ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login)
+    if not snapshot_attempted:
+        _push_line_snapshot(
+            ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
+        )
 
     record = dc_replace(
         record, stage={**record.stage, "base_sha": base_sha, "base_branch": base_branch}
@@ -3514,22 +3632,28 @@ def publish(
         github.update_candidate_row(
             record.target, number, result.candidate, digits=bench.display_digits
         )
-        github.append_pull_body(
-            record.target,
-            number,
-            f"---\n**Edit ({date}, submit):** {note}\n\n"
-            f"{redact(result.submit_report or 'no report was given', secrets)}",
+        blessed_head, bless_reason = _bless_decision(
+            ws, result, contract, base_branch, base_sha, secrets, panel_skip=panel_skip
+        )
+        # a failed body edit is a log line; the record below holds the decision
+        _best_effort(
+            "submit addendum",
+            lambda: github.append_pull_body(
+                record.target,
+                number,
+                f"---\n**Edit ({date}, submit):** {note}\n\n"
+                f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
+                f"{_self_merge_line(blessed_head, bless_reason)}",
+            ),
+            secrets,
         )
         save_record(
             run_root,
             dc_replace(
                 _clear_stage(record, run_root),
                 state=PARKED,
-                auto_blessed_head=(
-                    _blessed_head(ws, result, contract, base_branch, base_sha)
-                    if not panel_skip
-                    else ""
-                ),
+                auto_blessed_head=blessed_head,
+                auto_bless_reason=bless_reason,
                 resume_session_id=result.session.session_id
                 if result.session
                 else record.resume_session_id,
@@ -3654,20 +3778,39 @@ def publish(
                 secrets,
                 merge_mode=getattr(contract, "merge", "manual"),
             )
+        blessed_head, bless_reason = _bless_decision(
+            ws, result, contract, base_branch, base_sha, secrets
+        )
+        if pr_number.isdigit():
+            # the PR exists by now; a failed body edit is a log line, not an
+            # aborted run
+            _best_effort(
+                "self-merge addendum",
+                lambda: github.append_pull_body(
+                    config.target,
+                    int(pr_number),
+                    f"---\n**Edit ({date}, publish):**\n\n"
+                    f"{_self_merge_line(blessed_head, bless_reason)}",
+                ),
+                secrets,
+            )
         final = RunRecord(
             **{
                 **record.__dict__,
                 "state": PARKED,
                 "pr_url": pr_url,
                 "stage": {**record.stage, "review_topup": True},
-                "auto_blessed_head": _blessed_head(ws, result, contract, base_branch, base_sha),
+                "auto_blessed_head": blessed_head,
+                "auto_bless_reason": bless_reason,
                 "resume_session_id": result.session.session_id if result.session else "",
                 "ending_note": pr_url,
             }
         )
     except Exception as exc:
         if isinstance(exc, GitError) and _is_git_tamper(exc):
-            return _end_refused_wake(run_root, record, exc, now, secrets)
+            return _end_refused_wake(
+                run_root, record, exc, now, secrets, ws.auth, snapshot_attempted=True
+            )
         log.warning(
             "publish failed for %s: %s",
             run_id,
@@ -3695,7 +3838,15 @@ def publish(
     if not _best_effort(
         "final record",
         lambda: (
-            finish_run(run_root, final, final.ending, final.ending_note, now)
+            finish_run(
+                run_root,
+                final,
+                final.ending,
+                final.ending_note,
+                now,
+                snapshot_attempted=True,
+                secrets=secrets,
+            )
             if final.state == ENDED
             else save_record(run_root, final, now)
         ),
@@ -3732,8 +3883,8 @@ def publish(
         )
     if outcome_name != result.outcome:
         # the publish failed after the gate credited the tree: the improved
-        # snapshot above stands (the measurement was real); append the
-        # publish-error marker so the notebook records how the run ended
+        # snapshot above stands (the measurement was real); a second seal
+        # records how the run ended
         _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets, bot_login=config.bot_login)
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return AttemptOutcome(
@@ -4197,7 +4348,17 @@ def live_attempt(
         report_path = run_dir / "report.md"
         _best_effort(
             "ending record",
-            lambda: finish_run(run_root, failed, failed.ending, failed.ending_note, now),
+            lambda: finish_run(
+                run_root,
+                failed,
+                failed.ending,
+                failed.ending_note,
+                now,
+                auth=bot_auth,
+                snapshot_attempted=bool(salvage),
+                secrets=secrets,
+                bot_login=config.bot_login,
+            ),
             secrets,
         )
         wrote = _best_effort(
@@ -4613,6 +4774,7 @@ def main() -> int:
                 exc,
                 time.time(),
                 wake_secrets,
+                bot_auth,
             )
         finally:
             # This wake job HOLDS the run's lease (the sweep transferred it on
@@ -4780,8 +4942,17 @@ def finish_run(
     note: str,
     now: float,
     github: GitHubClient | None = None,
+    *,
+    auth: TokenProvider | None = None,
+    snapshot_attempted: bool = False,
+    secrets: tuple[str, ...] = (),
+    bot_login: str = "",
 ) -> None:
-    """Persist the terminal, retain its report, seal its notebook and cancel jobs."""
+    """Persist the terminal, retain its report, seal its notebook and cancel jobs.
+
+    A caller that already captured the session tree owns its snapshot attempt.
+    Auth is separate from the client so existing issue-comment ownership stays intact.
+    """
     from outerloop.compute import compute_from_env
     from outerloop.tick import cancel_ended_launches
 
@@ -4800,30 +4971,45 @@ def finish_run(
             final, stage={**final.stage, "launch_afterany": "afterany:" + ":".join(sorted(jobs))}
         )
     save_record(run_root, final, now)
-    ws = Workspace(
-        root=directory / "ws",
-        auth=getattr(github, "auth", None),
-        url=target_clone_url(record.target),
-    )
     ref = str(record.stage.get("candidate_ref") or "")
-    if ref:
+    if snapshot_attempted and not ref:
+        ws = None
+    else:
+        ws = Workspace(
+            root=directory / "ws",
+            auth=auth if auth is not None else getattr(github, "auth", None),
+            url=target_clone_url(record.target),
+        )
+    if ref and ws is not None:
         _best_effort(
             f"release ending snapshot for {record.run_id}",
             lambda: drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref)),
+            secrets,
         )
-    if ws.root.is_dir():
+    if not snapshot_attempted and ws is not None and ws.root.is_dir():
+        line_ref = f"agents/{record.agent_id}"
         try:
             contract = load_contract(
                 contract_at(ws, str(record.stage.get("base_sha") or "HEAD")), record.target
             )
             bench = _benchmark(contract, record.benchmark)
-            _push_line_snapshot(ws, _line_ref_for(bench, record.agent_id), record.run_id, ending)
+            line_ref = _line_ref_for(bench, record.agent_id)
+            _push_line_snapshot(ws, line_ref, record.run_id, ending, secrets, bot_login=bot_login)
         except Exception as exc:
-            log.warning("seal ending notebook for %s: %s", record.run_id, exc)
+            _log_line_snapshot(
+                "prepare",
+                record.run_id,
+                line_ref,
+                ws.auth is not None,
+                "-",
+                f"failed: {type(exc).__name__}: {exc}",
+                secrets,
+            )
     if jobs:
         _best_effort(
             "cancel ended launches",
             lambda: cancel_ended_launches(run_root, compute_from_env(), now),
+            secrets,
         )
     if github and record.issue_number:
         _best_effort(
@@ -4831,6 +5017,7 @@ def finish_run(
             lambda: github.comment(
                 record.target, record.issue_number, _ending_comment(record, ending)
             ),
+            secrets,
         )
 
 
