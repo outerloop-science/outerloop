@@ -1,0 +1,461 @@
+# Outerloop on several clusters
+
+Status: design note, 2026-09-15, for the owner to read before anything is
+built. The question: try Outerloop on a second cluster while the 0.2.0
+release candidate runs on both fleets (Empire AI Alpha, NERSC Perlmutter,
+possibly ALCF Polaris), and say what
+multi-cluster coordination would take later. The roadmap's cross-cluster
+section names the tiers; this note fills them in against the code as of
+main `697b0b8` and against each cluster's public documentation.
+
+## What a deployment is today
+
+One deployment is one state root on a shared filesystem, one resident tick
+(a Slurm job that loops and keeps one successor queued behind
+`afterany:self,singleton`), one compute backend (`SlurmCompute` or
+`LocalCompute`), one operator config under `~/.config/outerloop/`, one bot
+identity, and one target. Everything it shares with the world goes through
+GitHub: the contract, issues and their claim markers, PRs, and the target's
+`research-log` branch (ledger, board, reports, the siblings' `status.json`,
+research lines). Job state never leaves the cluster.
+
+The scheduler shows in `compute.py` (`SlurmCompute` calls `sbatch`,
+`sacct`, `squeue`, `sinfo`, `scancel`; `JobSpec.to_argv` writes `--time`,
+`--mem`, `--gpus-per-node`, `--nice`, `--dependency`, `--begin`, `--array`;
+backend selection is Slurm unless `OUTERLOOP_COMPUTE=local`), in
+`scripts/tick_chain.sbatch`, `scripts/tick_resident.sh` and
+`scripts/requeue_moved_successors.sh` (`singleton`, `afterany:self`,
+`--begin`, `squeue`, `scontrol`, `scancel`), in `cli.py` (`start` picks Slurm
+when `sbatch` is on PATH and forces `OUTERLOOP_COMPUTE=local` otherwise), and
+in a few reads in `tick.py`. The container runtime shows in four modules, at
+several call sites each: `dispatch.py` (launched jobs), `orchestrator.py`
+(the inline evaluator measurement), `harness.py` (one builder per contained
+backend) and `image.py` (the image probe), all building `apptainer exec
+--containall --cleanenv ...` by hand.
+
+## The three tiers
+
+**Tier 1, independent deployments.** Each cluster runs its own kernel on its
+own target. Two deployments on one target collide today: each allocates
+`agent-01` first from its own state root and pushes `agents/<agent-id>` and
+`feat/auto/<agent-id>` refs under that id, so sharing a target is tier 2.
+With targets kept apart there is nothing to coordinate: each fleet reads and
+writes its own target's `research-log` branch, and the two never see each
+other's reports. Nothing to build beyond portability, and this is the
+try-out.
+
+**Tier 2, one target from several clusters.** Several kernels climb one
+benchmark. What that needs, in order of how soon it bites:
+
+- Agent ids unique across fleets, so two fleets' `agent-01` never collide.
+  Slot ranges per deployment (`OUTERLOOP_AGENT_SLOTS=05-08`) keep ids flat
+  and branch names (`agents/agent-NN`) unchanged. The range must bind every
+  launch path, and today it does not: only the self-initiated lane allocates
+  a slot and passes `--agent-id`; the issue-requested lane passes nothing
+  and the attempt CLI defaults to `agent-01`, so a requested run shares the
+  slot, and on a lines target the branch, with whichever self-initiated run
+  holds `agent-01` (Torch's issue-#1 run on 2026-09-02 was one). The fix is
+  one allocator for every lane that starts a run, with occupancy read from
+  live records and pending markers as the self-initiated lane already does,
+  `--agent-id` required with no default so a lane that forgets fails at
+  argument parsing, and a test that walks every argv builder in the tick.
+  For a requested run when the width pool is full, the allocator hands out
+  the next id beyond the width rather than waiting or colliding, so a
+  request is never blocked by the fleet's own climbs; whether requested runs
+  should instead count against the width is the owner's call. Each fleet
+  publishes its range in its status file, and a kernel that sees another
+  fleet's range overlap its own refuses to start new runs and says so,
+  since two operators can misconfigure. The single-fleet part of this (one
+  allocator, the required flag, the requested-lane rule) is a small PR that
+  waits for nothing. A
+  fleet name (`OUTERLOOP_FLEET`) rides on run ids, the board and the status
+  files, so a reader can tell where a run lives; the board gains that
+  attribution.
+- Pacing per fleet. `max_active_attempts` and `runs_per_week` are read from
+  the contract alone, and a deployment-side lower value does not preserve
+  the target's ceiling: a contract allowance of ten with two fleets set to
+  eight permits sixteen. The contract therefore declares the shares
+  (`budgets.fleets: {torch: {max_active_attempts: 2, runs_per_week: 5},
+  empire: {...}}`), each kernel enforces its own share, and the target's
+  owner keeps one place that bounds total spend. New work either way.
+- Claims. PR merges go through GitHub and the climb board batch is pushed
+  with an expected-head guard, so those are safe across kernels; the
+  ledger's report archival and the status file go through plain `put_file`
+  today and can race between fleets, which the one guarded commit per pass
+  below also fixes. Issue claims are not safe, for two reasons. `pick_issue` counts only claim markers written under
+  the bot's own login, so two fleets with different bot identities never see
+  each other's claims at all; and even under one identity the claim is a
+  read-then-post with a window in which both kernels read an issue as
+  unclaimed. So either every fleet of a target runs under one bot identity,
+  or claims move off comments to something identity-independent and atomic:
+  a `refs/claims/<issue>` ref on `research-log` created with the refs API's
+  create-if-absent, which the loser's request fails; the existing
+  expected-head helper updates branch heads and does not cover this, and
+  crash and release semantics for the ref are new work.
+- The sibling view per fleet. Each kernel writes `status/<fleet>.json` in
+  the shared tree, readers merge, and every entry names its fleet (today's
+  entries already carry the run id and the agent id; what is missing is the
+  fleet, and a file each kernel can write without clobbering the others).
+  Self-initiated direction picking reads this view, which another fleet
+  refreshes at its own cadence, so duplicate hypotheses stay possible in the
+  window between two passes; that is the gap the plan-writing planner
+  addresses, not a fleet-specific one.
+- Messages across fleets: the section "Cross-fleet messages on one target"
+  below.
+
+**Tier 3, one kernel driving remote compute.** Still a non-goal: it needs a
+file transport and cross-scheduler dependencies for no gain over tier 2.
+
+## The clusters
+
+Facts from public documentation as of this note; "confirm" marks what the
+documentation does not say and a first login must answer.
+
+| | Torch (today) | Empire AI Alpha | NERSC Perlmutter | ALCF Polaris |
+| --- | --- | --- | --- | --- |
+| Scheduler | Slurm | Slurm | Slurm | PBS Pro |
+| Login | `login.torch.hpc.nyu.edu`, 2FA | `alpha.empire-ai.org` (2FA: confirm) | NERSC MFA | ALCF MFA |
+| Accounts | `torch_pr_36_*` | `ny_mren1_mars` (QOS `priority` 1 day, `standard` 2 days, `long` and `normal` 7 days, `test` 2 hours); the `nyu` partition needs the `nyu` account and a GPU | `-A m<project>` | project allocation |
+| GPUs | H200, L40S | `alpha`: 18 nodes of 8×H100 80GB, 6 of 8×H200, 4 of 8×RTX Pro 6000; `grace`: 60 ARM nodes without GPUs | 4×A100 per GPU node | 4×A100 per node |
+| CPU partition for the tick | `cpu_short` (6h) | `cpu` is one node (96 cores) with a multi-day backlog; CPU-only jobs are accepted on `alpha` but wait days except under `priority` | login-node pool via `scrontab` (`cron` QOS; `workflow` QOS for long jobs) | confirm; login nodes run PBS clients |
+| Containers | Apptainer on host | Apptainer 1.1.9 on PATH, no module needed | Shifter and podman-hpc; no Apptainer | Apptainer, compute nodes only |
+| Egress | outbound HTTPS from login and compute nodes | login node reaches GitHub and both model APIs; compute nodes confirm in the first job | login yes; compute nodes confirm | proxy only (`http_proxy`/`https_proxy` to `proxy.alcf.anl.gov:3128`) |
+| Storage | scratch, 60-day purge, 5M-inode quota | home on a 17 PB NFS with no quota shown; `/mnt/lustre/nyu/<user>` scratch, writable | `$SCRATCH` purged; `$CFS` project space | project filesystems (`-l filesystems=`) |
+| Long-running login processes | login nodes are ephemeral pods; forbidden | login node has 192 cores and 1 TB; no policy published; ask | cgroup-limited (56 GB); `scrontab` is the sanctioned way | confirm |
+
+## What each cluster asks of the kernel
+
+**Empire AI Alpha.** Probed on 2026-09-15 over the owner's session.
+Slurm and Apptainer, the two things the kernel assumes, are there, and the
+login node reaches GitHub and both model APIs. Two things it does not have.
+Python is 3.9 (a 3.10 module exists), so `uv` with a managed 3.12 was
+installed under the home directory; that is enough. And there is no place a
+resident tick can live: the one CPU node carries a multi-day backlog, and a
+CPU-only job on the GPU partition waits days under every QOS except
+`priority`, whose one-day walltime would requeue a resident every day into
+the same wait. So on Alpha the tick is a loop on the login node, which needs
+the tick-host build below and the operators' word that a long-lived process
+there is allowed. Sessions and launches take the `priority` QOS (a two-core
+job in about two and a half hours, one GPU in about five and a half, at the
+time of the probe); the kernel has no QOS setting today (`JobSpec.qos`
+exists, nothing sets it), so `OUTERLOOP_QOS` joins the placement settings.
+The `.env` also names the GPU lane by hand, `OUTERLOOP_GPU_PARTITION=alpha`
+and the account, because `outerloop init` asks only for the CPU placement.
+GPU jobs use `--gpus-per-node`, which is what `JobSpec` already writes.
+
+**NERSC Perlmutter.** Slurm, so `SlurmCompute` and the chain scripts carry
+over, and `scrontab` is a better home for the tick than a job chain: it
+runs on the login-node pool under the `cron` QOS, recurs on a schedule, and
+NERSC itself recommends `--dependency=singleton` for it, which is exactly
+our chain's guard. Two builds: a container-runtime seam, since the kernel
+hard-codes `apptainer exec` in four places and Perlmutter offers Shifter and
+podman-hpc instead (one `ContainerRuntime` with an apptainer and a shifter
+implementation behind all four sites; the image needs an OCI publication
+next to the `.sif`); and
+a `scrontab` mode for `outerloop start`. Whether compute nodes reach GitHub
+and the model APIs directly must be confirmed; if not, the same proxy
+pass-through Polaris needs applies here.
+
+**ALCF Polaris.** The largest build, and last: a `PbsCompute` behind the
+`Compute` protocol (`qsub`/`qstat`/`qdel`; `-W depend=afterany:<id>`,
+`-J` arrays, `-a` for a deferred start, `-l select=1:ncpus=..:ngpus=..`,
+`-l walltime=`, `-q`, `-A`, `-N`; the exact ALCF conventions to confirm on
+the cluster since its documentation refuses automated reads), a
+replacement for `singleton` (PBS has none; the kernel's own lease in the
+state root can guard the resident instead), and proxy variables passed into
+every session and job, which today's `--cleanenv` scrubs. Apptainer runs
+only on compute nodes there, which suits author sessions (they are jobs)
+and does not affect the tick (which uses no container).
+
+**Common to all three: where the tick lives.** Torch's answer (a six-hour
+resident job on a cheap CPU partition, chained by `singleton`) is the only
+one the code knows. The alternatives are a `scrontab` entry (NERSC), a loop
+process on a login node where policy allows it (the `tick --loop` that local
+mode already runs, but with `SlurmCompute`), or a resident on a GPU
+partition when nothing else exists (wasteful; a last resort). Two things the
+kernel lacks for any of them: the tick host must be chosen separately from
+the compute backend (today the local `start` forces `OUTERLOOP_COMPUTE=local`
+along with the loop), and residents that `singleton` no longer serializes
+need a tick-level lease in the state root (the existing lease guards one
+run's wake, and tick coalescing is a timer, not mutual exclusion). So:
+`OUTERLOOP_TICK_HOST=resident|scrontab|login` in `outerloop start`, with
+`resident` the default that exists today, plus a tick lease. Empire AI needs
+the login host: the probe showed no partition a resident could live on.
+
+## The try-out: Empire AI Alpha, tier 1
+
+1. Access and probe: done on 2026-09-15 over a multiplexed SSH master from
+   the owner's session (`Host empire` in the SSH config, `ControlPersist
+   12h`); the table above carries the answers. Still open on the machine:
+   whether a long-lived process may sit on the login node (ask the
+   operators), model-API reach from a contained compute job, GPU visibility
+   under `--nv`, and the shared filesystem's atomic-rename, `O_EXCL` and
+   `flock` behavior across nodes; the first one-minute job under `priority`
+   answers the last three.
+2. Build first: `OUTERLOOP_TICK_HOST=login` (the `tick --loop` local mode
+   already runs, with `SlurmCompute` instead of the forced local backend, a
+   tick lease in the state root against a second loop, and a per-cadence
+   pull of the checkout in place of the resident's deploy step) and
+   `OUTERLOOP_QOS` threaded into every job the kernel submits. One small
+   PR, before the first tick on Alpha.
+3. Install. A source checkout on Alpha (`git clone` and `uv sync`, as on
+   Torch): in Slurm mode `outerloop start` submits `scripts/tick_chain.sbatch`
+   from the checkout and refuses a bare PyPI install (shipping the chain
+   script inside the wheel is a queued item). `outerloop init` writes
+   `~/.config/outerloop/.env` with the account, the partition and the App
+   file; the GPU lane, the QOS and the tick host are added by hand. The App:
+   the owner decided to keep one App per target's fleets (decision 2), so
+   the `outerloop-science` App file and key are copied over the two SSH
+   masters; the bot login on PRs stays the same.
+4. Target. Tier 1 wants a target the Torch fleet is not climbing. A copy
+   of `quickstart-trial` proves the plumbing in an afternoon (small GPU
+   task, cheap evals); a real benchmark follows once a tick cycle, one
+   climb with a launch, a sleep and a wake, a published report and a ledger
+   row have all been seen on Alpha.
+5. Operate. Alpha is operated over the same SSH master as the probe; the
+   owner opens it once per twelve hours of use. The kernel's own evidence
+   (tick log, run directories, the board) is what "seen working" means.
+
+## Empire AI Beta, as probed
+
+The owner pointed at the second Empire AI cluster on 2026-09-15
+(`beta.empireai.edu`; `Host empire-beta` in the SSH config, the same
+master-socket pattern as Alpha). Probed the same day from its login node:
+
+- **One partition, whole-node jobs.** `beta` is 72 nodes of 4×B200 80GB
+  (288 GPUs, `TIMELIMIT infinite`); the QOS decide everything. Our
+  association (`ny_mren1_mars`) has `test` (2 h), `interactive` (2 h, one
+  job), `standard` (2 days, default), `long` (7 days), `priority` (1 day,
+  priority 1000) and `normal`. Every one of those but `normal` carries
+  `MinTRES gres/gpu=4`: a job below four GPUs is refused (`QOSMinGRES`),
+  including a two-core CPU job and a one-GPU job. `normal` has no minimum
+  and priority 0; a two-core job under it is estimated three and a half
+  days out. Billing is 2 SU per GPU-hour times the QOS factor (`priority`
+  4×). Estimates at probe time for a four-GPU job: `priority` about 3.5 h,
+  `standard` about 30 h; 91 pending (36 `priority`, 53 `standard`), 47
+  running, all with GPUs.
+- **Containers are pyxis and enroot, not Apptainer.** `srun --container-image`
+  and `--container-mounts` are the interface; `/usr/bin/enroot` is present;
+  no Apptainer binary or module on the login node. Beta is therefore the
+  second consumer of the container seam the NERSC section asks for, and it
+  wants an OCI form of the agent image (enroot imports `docker://`).
+- **The login node is shared with nobody's scheduler.** 144 cores, 478 GB,
+  load about 9, no CPU or memory quota on the user slice, user processes
+  running for days: a login-host loop is within observed practice, as on
+  Alpha. Slurm's binaries live under `/cm/local/apps/slurm/current/bin` and
+  are on PATH only in a login shell, so the loop must start from one (tmux).
+- **The home is Alpha's home.** `/mnt/home` is the same NFS export on both
+  clusters: `~/outerloop`, `~/.config/outerloop/` (App file, keys, `.env`)
+  and the uv install written for Alpha are already visible on Beta. No user
+  scratch exists yet (`/ddn/lustre` holds validation runs; `/projects/nyu`
+  is empty and root-owned); the state root would have to sit on the home
+  NFS until the operators hand out project space. Egress from the login
+  node reaches GitHub and both model APIs.
+
+What this means for the kernel and the order of work:
+
+1. **Per-deployment settings in a shared home.** Two deployments reading
+   one `~/.config/outerloop/.env` cannot both be right (root, partition,
+   QOS, container path all differ). `start` and `tick_deploy.sh` need an
+   explicit env-file setting (`OUTERLOOP_ENV_FILE`, or a per-host file the
+   default resolves to) before Beta gets a loop. Small; independent.
+2. **Job shape.** With four GPUs the floor for every job, Outerloop's small
+   jobs (a five-minute eval, a one-hour session) each spend a node. Beta is
+   economical only when an attempt bundles its session and its evaluations
+   into one allocation, or when the benchmark itself uses the four GPUs.
+   That is the "sessions ride GPU allocations" item from the Alpha section,
+   now with a number attached; until it exists, Beta launches only work
+   whose benchmark is four-GPU sized.
+3. **Container seam first.** The pyxis path is the same code change NERSC
+   needs; Beta makes it the next backend seam after the login-host loop.
+4. **Order.** Alpha stays the tier-1 try-out. Beta is the natural tier-2
+   partner (same institution, same home, same App, a second fleet on a
+   shared target) once 1 and 3 exist, and the place to test slot ranges
+   and the shared mail. Ask the operators for project scratch and for the
+   login-node policy in the same message as Alpha's.
+
+## Cross-fleet messages on one target
+
+The owner asked (2026-09-15) whether `message --to agent-NN` could reach a
+sibling on another cluster, and set the shape: local files stay the store,
+and the kernel replicates them asynchronously to a shared medium. A second
+reader (codex) reviewed the first draft against the code; its findings are
+folded in here.
+
+**Local files stay authoritative.** Every kernel keeps writing what it needs
+to run its own runs into its own state root: records, leases, inboxes,
+outboxes, ledgers. None of that waits on the network.
+
+**One sync.** The tick's board pass already turns local state into files on
+`research-log` and every attempt fetches that branch back. The sync
+generalizes it: each fleet has an outgoing tree under its state root
+(`shared/<fleet>/`) that the pass pushes, and an incoming tree that the pass
+pulls and ingests (mail into the inboxes of the runs this kernel hosts,
+forum posts into the brief's context, other fleets' status into the sibling
+view). Mail, forum and status are directories the sync knows, not
+mechanisms of their own. Today the pass is not one commit: the ledger batch
+is pushed with the expected-head guard, while the status file and report
+archival each go through `put_file` on their own; folding them into one
+guarded commit per pass is part of this build. The medium behind the sync is
+a backend, `research-log` now; a bucket later is a per-directory choice (the
+forum stays on GitHub as research content; mail may move if latency asks).
+
+**Mail is immutable; receivers keep cursors.** A message to an agent on
+another fleet is written to `shared/<fleet>/mail/<recipient agent>/<sender
+run>/<counter>.json`, the inbox envelope as-is. The address is the agent id,
+as it is for local delivery and for `--to self`: the agent is the durable
+party (one memory thread per agent across sleeps and runs), so a message
+reaches whatever run of that agent is live when it arrives. The envelope
+also records the run the sender saw in the merged view, and when the
+receiver delivers to a later run of the same agent the rendered message
+carries a line saying it was sent before this run started, so the author
+can weigh it as context. The receiver keeps a cursor per sender run beside
+its inbox, the way it keeps a position per GitHub collection, appends every
+file past the cursor through the same `append`, and advances the cursor
+after the append. When no run of that agent is live, the mail is held in
+the medium until one appears; the owner's call, recorded below, is whether
+local delivery adopts the same rule (today a local recipient with no live
+run is refused at once) so that there is one rule. Nothing is deleted from
+the medium: the kernel has no delete primitive on the branch, a deleted file
+stays in history anyway, and a receiver deleting the sender's file would race
+the sender republishing it. The sender prunes its own outgoing files after
+they are acknowledged and a retention window has passed, in its own commit.
+
+**Acknowledgments carry the caps.** Each fleet's status file publishes, per
+sender run, the cursor its receivers have reached. The sender's kernel reads
+it, so in-flight is counter minus acknowledged, and the per-pair cap of four
+applies to in-flight mail (unacknowledged transport), which is a different
+quantity from the local cap, which reads the recipient's `inbox_seq`. A
+message unacknowledged past an expiry window (an agent with no live run in
+that time, a fleet that went away, a slot no fleet owns) is bounced by the
+sender's own kernel as a context-only note to its author; no other kernel
+need act.
+
+**Groups.** `--to all`, or a search line, is expanded by the sender's kernel
+into explicit recipient agent ids at send time and the list is persisted in
+the delivery journal, one file per recipient, so a retry after a crash
+reuses the same list instead of recomputing "all" against a changed fleet.
+
+**Local delivery stays direct.** `deliver_messages` already resolves
+recipients in its own state root; a local recipient gets the envelope
+appended straight into its inbox and that path survives any outage. Only a
+recipient the merged view places on another fleet takes the mail path.
+
+**Crash windows, each with a test.** Sender: local write of the outgoing
+file, then push at the next pass (the file is durable, the push retries).
+Receiver: pull, append, cursor advance (a crash after append re-appends on
+the next pass and `append` dedupes within that inbox by the global key
+`agent-msg:<sender run>:<n>`; a crash before append re-reads). Medium: two
+fleets committing at once (the expected-head retry; with several fleets the
+pass may need a bounded retry loop within a tick so a fleet is not starved
+until its next cadence). Ids: an overlap of slot ranges could make two
+distinct messages share a key; the overlap check above is what prevents it.
+
+**Forum.** A forum post is publication, not delivery: anything a run that
+starts next week should read cannot live in inboxes. Posts go to
+`shared/<fleet>/forum/<topic>/<message_id>.json`, every fleet pulls the
+whole `forum/` tree, the brief inlines the newest posts as it inlines
+reports, a `reports`-style verb browses them, nothing wakes. Retention: posts
+older than a window are compacted into a digest, the way reports distill
+into lessons, so the tree and the fetch stay bounded.
+
+**Latency, honestly.** One to two cadences when both fleets and GitHub are
+healthy. A recipient that started after the sender's kernel last pulled the
+view is not in it yet and the message is refused with a note saying to try
+again next leg. Conflicts, outages and a recipient parked on long jobs all
+stretch it; arrival in the inbox is not the agent reading it.
+
+**Load and ceilings.** A commit through the API costs one blob request per
+file plus a tree, a commit and a ref update; a pass with a handful of files
+is a dozen requests, against an App budget of five thousand an hour.
+Attempts fetch `research-log` in full at every wake today, so history growth
+from mail and forum is paid by every wake: a shallow or blob-filtered fetch
+for that branch is a work item before the volume exists. The ceilings, in
+order: commit contention with many fleets (the bounded retry above);
+cadence latency; GitHub as the one medium for cross-fleet traffic (an
+outage delays it while local delivery and every job continue).
+
+**Persistence.** The same sync can replicate a run's durable artifacts
+(report, transcripts, launch ledger, inbox history) to an artifact store, a
+bucket, for backup and cross-cluster forensics. It never replicates records
+and leases: they churn every tick and a stale copy elsewhere is a hazard. A
+deployment with no shared filesystem at all replaces the filesystem
+primitives themselves through the storage interface lifecycle.md names
+(put, list, get, conditional put; the parked cloud note on PR #348 gives it
+an object-store implementation); that is outside this note.
+
+**What a GitHub outage does today, for the record.** Launched jobs and the
+wakes that carry their results continue; a wake whose origin fetch fails
+logs it and resumes on the local clone; the outbox holds public posts. But a
+failed contract fetch idles the launch lanes for that tick, and a publish
+that raises (a network failure included) ends the run as `aborted` with
+`publish-error`, the branch left on the remote. Runs mid-submit during an
+outage are therefore at risk now, before any of this design. A GitHub outage
+latch mirroring the model-API latch (classify the failure, re-park, retry,
+spend no attempt) is a small hardening PR and comes first.
+
+**Build.** The slot-range setting and its overlap check on every launch
+path; contract fleet shares; per-fleet status with run ids and
+acknowledgment cursors, merged on read; one guarded commit per pass; the
+outgoing and incoming trees with push and pull; receiver cursors; the remote
+branch in `deliver_messages` with agent addressing, the held state and
+persisted group expansion; expiry bounces; sender-side pruning; the forum verb and digest;
+a shallow fetch of `research-log` for attempts; a tick lease for
+non-singleton tick hosts; the GitHub outage latch. Tests for each crash
+window above. It waits for a second fleet to share a target, which in turn
+waits for the Empire AI tier-1 try-out, except the outage latch, which
+waits for nothing.
+
+## Decisions for the owner
+
+Settled on 2026-09-15: local files stay authoritative, local delivery stays
+direct, and one generic sync replicates the shared tree to `research-log`
+for cross-fleet mail, forum and status, with the medium swappable per
+directory later. Still the owner's:
+
+1. **Tick host.** Accept `OUTERLOOP_TICK_HOST=resident|scrontab|login` with
+   a tick lease, `resident` staying the default? Empire AI needs `login`
+   now: the probe found no partition a resident could live on.
+2. **Bot identity.** One App for every fleet of a target is now the
+   recommendation, because claim markers count only under the bot's own
+   login; per-deployment Apps need identity-independent claims first.
+3. **Order.** Empire AI first (one small PR: the login tick host and the
+   QOS setting), NERSC second (container seam and `scrontab`), ALCF last
+   (PBS backend).
+4. **Pacing.** Contract-declared fleet shares whose sum is the target's
+   ceiling, enforced per kernel; the earlier "each deployment sets a lower
+   value" does not hold the ceiling.
+5. **Addressing.** Slot ranges with the overlap check (recommended) or
+   fleet-prefixed ids.
+6. **Mail semantics.** Addressed to the agent id (settled 2026-09-15);
+   immutable files, receiver cursors, acknowledgments in the status file,
+   in-flight cap of four, mail held while the agent has no live run, expiry
+   bounce by the sender's kernel, sender-side pruning after a retention
+   window (recommended); the windows are numbers to pick. Whether local
+   delivery also holds instead of refusing when the agent has no live run,
+   so both paths share one rule (recommended).
+7. **Forum placement and retention.** Permanently on GitHub as research
+   content, compacted into digests after a window.
+8. **Two small fixes first, independent of any fleet decision.** The GitHub
+   outage latch (a publish that meets a GitHub failure today ends the run
+   aborted), and the agent-slot allocator on every lane with `--agent-id`
+   required (a requested run lands on `agent-01` today). For the second,
+   whether a requested run counts against the width or takes an id beyond
+   it (recommended).
+
+9. **Empire AI Beta.** Decided (2026-09-15): Beta hosts four-GPU-sized
+   experiments; allocation bundling for small jobs is not built. Order as
+   above (Alpha first; Beta after the per-deployment env file and the pyxis
+   seam). Still open: where author sessions and wake jobs run on Beta, since
+   the four-GPU floor applies to them too. Recommended: on the login host,
+   as a hybrid compute where sessions and wakes run locally next to the loop
+   and only evaluations and launches go to Slurm; the alternatives are a
+   session inside its experiment's allocation (a change to the sleep and
+   wake substrate) or four-GPU session jobs (idle GPUs while the model
+   thinks).
+
+## Sources
+
+- Empire AI Alpha: University at Buffalo CCR guide, https://docs.ccr.buffalo.edu/en/latest/howto/empireai/ ; Mount Sinai Minerva guide, https://labs.icahn.mssm.edu/minervalab/documentation-new-york-states-empire-ai/ ; Cornell call for proposals, https://ai.cornell.edu/empire-ai-cornell-call-for-compute-resource-proposals
+- NERSC: scrontab, https://docs.nersc.gov/jobs/workflow/scrontab/ ; containers, https://docs.nersc.gov/development/containers/ ; running jobs, https://docs.nersc.gov/systems/perlmutter/running-jobs/ ; resource usage policies, https://docs.nersc.gov/policies/resource-usage/
+- ALCF Polaris (indexed titles only; the pages refuse automated reads): containers, https://docs.alcf.anl.gov/polaris/containers/containers/ ; running jobs, https://docs.alcf.anl.gov/polaris/running-jobs/ ; PBS qsub options, https://docs.alcf.anl.gov/running-jobs/not_in_nav/pbs-qsub-options-table/
