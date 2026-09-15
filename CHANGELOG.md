@@ -20,6 +20,12 @@ launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GP
 overrides GPU detection; `0` disables allocation. Submissions still wait for all
 tasks to finish.
 
+### Added
+
+- `OUTERLOOP_TICK_HOST=login` (or `--tick-host login`) runs a niced foreground tick loop against Slurm, with one tick lease per state root.
+- `OUTERLOOP_QOS` sets the QOS for every submitted Slurm job.
+- `OUTERLOOP_APPTAINER_BIN` selects the container executable on compute nodes.
+
 ### Removed
 
 - The pre-rename names are gone. The `AUTORESEARCH_*` environment names are no longer read by the package, the `.env` reader, the chain or the deploy step. `~/.config/autoresearch/`, `.autoresearch.yaml`, the `.autoresearch` channel directory, the `~/.autoresearch` local root default and `~/autoresearch-images` are no longer looked for. The `autoresearch-resident` and `autoresearch-tick` job names are no longer recognized. The `harness_key` file, the `*_HARNESS_KEY_FILE` setting and the `climb_job_id` record field are gone. Before upgrading, rename the `.env` keys, the config directory and the image directory. Cancel a resident or chain still queued under an old job name (`scancel --name autoresearch-resident`, or `scancel --name autoresearch-tick`) before running `outerloop start`: the guard against two loops on one root knows only the current name. Old `autoresearch:` comment markers are still recognized.

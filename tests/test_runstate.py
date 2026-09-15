@@ -355,3 +355,71 @@ def test_migration_drops_the_follow_up_job_fields(tmp_path):
     after = json.loads(path.read_text())
     assert "followup_job_id" not in after and "followup_stage" not in after
     assert load_record(tmp_path, "legacy2").state == "parked"
+
+
+def test_tick_lease_fences_live_holder_and_recovers_crash(tmp_path, caplog):
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    lease = acquire_tick_lease(tmp_path, "alpha1:1", 100, 300)
+    try:
+        # Even an overdue heartbeat cannot displace a running tick.
+        with pytest.raises(RuntimeError, match="alpha1:1"):
+            acquire_tick_lease(tmp_path, "alpha2:2", 1000, 300)
+        acquire_tick_lease(tmp_path, "alpha1:1", 1000, 300, lease)
+    finally:
+        lease.close()  # a crash drops the lock but leaves the heartbeat
+    with pytest.raises(RuntimeError, match="alpha1:1"):
+        acquire_tick_lease(tmp_path, "alpha2:2", 1200, 300)
+    successor = acquire_tick_lease(tmp_path, "alpha2:2", 1301, 300)
+    assert "taking over the tick lease left by alpha1:1" in caplog.text
+    release_tick_lease(successor)
+    immediate = acquire_tick_lease(tmp_path, "alpha3:3", 1301, 300)
+    release_tick_lease(immediate)
+    assert (tmp_path / "TICK").read_text() == ""
+
+
+def test_tick_lease_excludes_another_process(tmp_path):
+    import subprocess
+    import sys
+
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    code = """
+import sys
+from pathlib import Path
+from outerloop.runstate import acquire_tick_lease
+lease = acquire_tick_lease(Path(sys.argv[1]), 'login:123', 100, 300)
+print('held', flush=True)
+sys.stdin.read()
+"""
+    with subprocess.Popen(
+        [sys.executable, "-c", code, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as child:
+        assert child.stdout is not None and child.stdout.readline().strip() == "held"
+        try:
+            with pytest.raises(RuntimeError, match="login:123"):
+                acquire_tick_lease(tmp_path, "resident:456", 1000, 300)
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+    lease = acquire_tick_lease(tmp_path, "resident:456", 1000, 300)
+    release_tick_lease(lease)
+
+
+def test_tick_lease_same_host_takes_over_a_dead_holder(tmp_path, caplog):
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease, tick_lease_holder
+
+    lease = acquire_tick_lease(tmp_path, "alpha1:1", 100, 300)
+    assert tick_lease_holder(tmp_path, 100, 300, "alpha1") == "alpha1:1"  # live: the lock says so
+    lease.close()  # a crash: the lock drops, the heartbeat stays fresh
+    assert tick_lease_holder(tmp_path, 150, 300, "alpha2") == "alpha1:1"
+    assert tick_lease_holder(tmp_path, 150, 300, "alpha1") == ""
+    with pytest.raises(RuntimeError, match="alpha1:1"):
+        acquire_tick_lease(tmp_path, "alpha2:2", 150, 300)
+    successor = acquire_tick_lease(tmp_path, "alpha1:9", 150, 300)
+    assert "taking over the tick lease left by alpha1:1" in caplog.text
+    release_tick_lease(successor)
+    assert tick_lease_holder(tmp_path, 151, 300, "alpha2") == ""

@@ -273,6 +273,7 @@ class DispatchedMeasurer:
     baseline_cache: Path | None = None
     # the target's kernel-warmed seed cache, copied into each job (evalcache)
     seed_cache: Path | None = None
+    qos: str = ""
 
     def _placement(self, m: Measure) -> tuple[str, str]:
         if m.gpus <= 0 or not self.compute.has_lanes:
@@ -362,6 +363,7 @@ class DispatchedMeasurer:
             script,
             job_name=self._job_name(m),
             account=account,
+            qos=self.qos,
             partition=partition,
             eval_minutes=self.eval_minutes,
             gpus=m.gpus,
@@ -486,6 +488,7 @@ class DispatchSettings:
     gpu_account: str = ""
     # the target's seed cache (evalcache.seed_dir), copied into every job
     seed_cache: Path | None = None
+    qos: str = ""
 
     def placement(self, gpus: int) -> tuple[str, str]:
         """(account, partition) for a job needing `gpus` GPUs. Raises when a
@@ -515,6 +518,7 @@ class DispatchSettings:
             repo_root=repo_root,
             image=self.image,
             account=self.account,
+            qos=self.qos,
             partition=self.partition,
             eval_minutes=eval_minutes,
             run_tag=run_tag,

@@ -321,7 +321,7 @@ that can reach GitHub and your LLM provider works.
   you start it again. On a headless machine start it under `nohup` or in a
   tmux window, or as a user service.
 
-**Updates.** A Slurm deployment runs from a checkout, and
+**Updates.** A resident Slurm deployment runs from a checkout, and
 `OUTERLOOP_AUTO_UPDATE` in `.env` says whether the deploy step moves it. `off`,
 the default, leaves the checkout alone: you upgrade when you choose, and the
 loop keeps running the code you validated. `release` moves it to the newest
@@ -333,6 +333,41 @@ back to the last commit whose environment was installed. The local loop runs
 the installed package, which has no such policy: run `outerloop upgrade` to move
 it to the newest release (add `--pre` to track pre-releases), then start it
 again. That is `pip install --upgrade outerloop-science` under one verb.
+
+#### Login-node loop
+
+Use this when no Slurm partition can start a resident tick within your cadence
+and the site permits a long-lived process on the login node. In
+`~/.config/outerloop/.env`, set:
+
+```bash
+OUTERLOOP_TICK_HOST=login
+OUTERLOOP_QOS=priority
+OUTERLOOP_APPTAINER_BIN=/cm/local/apps/apptainer/current/bin/apptainer
+```
+
+Run `outerloop start` from your checkout with the usual shared `OUTERLOOP_ROOT`.
+`--tick-host login` overrides the environment, which overrides `.env`.
+`resident` is the default on Slurm; local compute still runs locally.
+The login loop requires `sbatch` on PATH, runs in the foreground at nice +10,
+and submits compute to Slurm. QOS applies to all submitted jobs; the Apptainer
+path is used on compute nodes. The tick only checks the image file exists and
+does not run Apptainer on the login node. Empty QOS uses Slurm's default;
+an empty binary setting uses `apptainer`.
+
+Only one loop may own a state root. `outerloop start` refuses a login loop
+while a resident chain is queued or running, and refuses a resident chain
+while a login loop holds the root's `TICK` lease. The lease names its holder
+as `host:pid` and heartbeats each tick; a file lock refuses a second loop
+while the owner runs. After a crash the next start on the same host takes the
+lease at once, and a start from another host once the heartbeat is three
+cadences old (file locks may not reach across nodes). Ctrl-C or SIGTERM
+releases it. Use tmux or a user service if the process should survive your
+terminal.
+
+The login loop does **not auto-update**, even with `OUTERLOOP_AUTO_UPDATE=main`.
+To restart or upgrade: stop the process, run `git pull`, run `uv sync`, then
+run `outerloop start` again. Settings from `.env` are exported only at launch.
 
 ### Upgrading
 

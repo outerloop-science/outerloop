@@ -294,3 +294,21 @@ def test_progress_draws_a_bar_on_a_terminal(monkeypatch: Any, capsys: Any) -> No
     bar.finish(4 << 20)
     out = capsys.readouterr().out
     assert "[" in out and "50%" in out and "100%" in out and "ETA" in out
+
+
+def test_configured_apptainer_probe(monkeypatch):
+    monkeypatch.setattr(img.sys, "platform", "linux")
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
+    monkeypatch.setattr(
+        img.shutil, "which", lambda name: name if name == "/apps/apptainer" else None
+    )
+    seen = []
+
+    def runner(argv, **kw):
+        seen.append(argv)
+        return _Proc(0)
+
+    assert img.containment_check(runner=runner) == ""
+    assert seen[0][0] == "/apps/apptainer"
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "")
+    assert img.apptainer_from_env() == "apptainer"

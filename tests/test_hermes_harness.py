@@ -311,6 +311,7 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     repo.mkdir()
     ws = tmp_path / "runs" / "r1" / "ws"
     ws.mkdir(parents=True)
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
     h = HermesHarness(
         api_key="sk-h",
         repo_dir=repo,
@@ -320,7 +321,7 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     result = h.run("brief", ws)
     assert result.is_error  # the fake Popen stopped the run
     cmd = captured["command"]
-    assert cmd[0] == "apptainer" and "--containall" in cmd and "--cleanenv" in cmd
+    assert cmd[0] == "/apps/apptainer" and "--containall" in cmd and "--cleanenv" in cmd
     assert f"{ws.resolve()}:{ws.resolve()}" in cmd
     assert f"{repo.resolve()}:{repo.resolve()}:ro" in cmd
     home = (ws.parent / f"{ws.name}-home").resolve()

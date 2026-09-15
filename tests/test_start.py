@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import sys
 from pathlib import Path
@@ -794,3 +795,147 @@ def test_installed_version_is_unknown_when_the_lookup_says_nothing(
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     assert cli._installed_version(sys.executable) == "unknown"
+
+
+@pytest.mark.parametrize(
+    "flag,env,file,mode",
+    [
+        ("", {}, {"OUTERLOOP_TICK_HOST": "login"}, "login"),
+        ("", {"OUTERLOOP_TICK_HOST": "login"}, {"OUTERLOOP_TICK_HOST": "resident"}, "login"),
+        ("login", {"OUTERLOOP_TICK_HOST": "resident"}, {}, "login"),
+        ("resident", {"OUTERLOOP_TICK_HOST": "login"}, {}, "slurm"),
+        ("login", {"OUTERLOOP_COMPUTE": "local"}, {}, "local"),
+    ],
+)
+def test_tick_host_precedence(tmp_path, flag, env, file, mode):
+    p = plan(tmp_path, root="/r", tick_host=flag, environ=env, from_file=file)
+    assert p.mode == mode
+    if mode == "login":
+        assert p.command() == [sys.executable, "-m", "outerloop.tick", "--root", "/r", "--loop"]
+
+
+def test_login_requires_sbatch(tmp_path):
+    with pytest.raises(StartError, match="sbatch on PATH"):
+        plan(tmp_path, root="/r", tick_host="login", sbatch_on_path=False)
+
+
+def test_login_exec_exports_slurm_settings(clean_env, monkeypatch):
+    from outerloop.compute import SlurmCompute, compute_from_env
+
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(cli, "_resident_jobs", lambda: [])
+    niced: list[int] = []
+    monkeypatch.setattr(cli.os, "nice", niced.append)
+    settings = {key: "" for key in TICK_ENV_KEYS}
+    settings.update(OUTERLOOP_QOS="priority", OUTERLOOP_APPTAINER_BIN="/apps/apptainer")
+    settings.update(
+        OUTERLOOP_TICK_HOST="login", OUTERLOOP_ACCOUNT="acct", OUTERLOOP_PARTITION="cpu"
+    )
+    monkeypatch.setattr(
+        cli, "ENV_FILE", env_file(clean_env, "\n".join(f"{k}={v}" for k, v in settings.items()))
+    )
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "_exec", lambda cmd, env: seen.update(cmd=cmd, env=env) or 0)
+    assert main(["start", "--root", str(clean_env / "state")]) == 0
+    env = seen["env"]
+    assert set(TICK_ENV_KEYS) <= env.keys()
+    assert all(env[key] == value for key, value in settings.items() if key != "OUTERLOOP_BOT_LOGIN")
+    assert env["OUTERLOOP_COMPUTE"] == "slurm"
+    with monkeypatch.context() as m:
+        m.setenv("OUTERLOOP_COMPUTE", env["OUTERLOOP_COMPUTE"])
+        assert isinstance(compute_from_env(), SlurmCompute)
+    assert "OUTERLOOP_RESIDENT" not in env
+    assert niced == [10]
+
+
+@pytest.mark.parametrize("block", ["lease", "resident", "scheduler"])
+def test_login_refuses_other_owner(clean_env, monkeypatch, capsys, block):
+    import time
+
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(
+        cli,
+        "_resident_jobs",
+        lambda: ["777"] if block == "resident" else None if block == "scheduler" else [],
+    )
+    monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must refuse"))
+    root = clean_env / "state"
+    lease = acquire_tick_lease(root, "alpha1:123", time.time(), 5400) if block == "lease" else None
+    try:
+        assert main(["start", "--tick-host", "login", "--root", str(root)]) == 2
+        assert {"lease": "alpha1:123", "resident": "777", "scheduler": "squeue failed"}[
+            block
+        ] in capsys.readouterr().err
+    finally:
+        if lease is not None:
+            release_tick_lease(lease)
+
+
+def test_resident_qos_from_file_and_environment(tmp_path):
+    p = plan(tmp_path, root="/r", from_file={"OUTERLOOP_QOS": "priority"})
+    assert "--qos=priority" in p.command()
+    assert p.export_env()["OUTERLOOP_QOS"] == "priority"
+    p = plan(
+        tmp_path, root="/r", from_file={"OUTERLOOP_QOS": "priority"}, environ={"OUTERLOOP_QOS": ""}
+    )
+    assert not any(arg.startswith("--qos") for arg in p.command())
+
+
+def test_login_dry_run_prints_exec_without_starting(clean_env, monkeypatch, capsys):
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(cli, "_resident_jobs", lambda: pytest.fail("dry run must not query Slurm"))
+    monkeypatch.setattr(cli.os, "nice", lambda value: pytest.fail("dry run must not nice"))
+    assert main(["start", "--tick-host", "login", "--root", "/shared/state", "--dry-run"]) == 0
+    assert capsys.readouterr().out.strip() == shlex.join(
+        [sys.executable, "-m", "outerloop.tick", "--root", "/shared/state", "--loop"]
+    )
+
+
+def test_login_uses_foreground_root_and_home_defaults(tmp_path):
+    p = plan(
+        tmp_path,
+        tick_host="login",
+        cwd=tmp_path,
+        environ={"HOME": str(tmp_path), "OUTERLOOP_RESIDENT_MINUTES": "unused"},
+        from_file={"OUTERLOOP_ACCOUNT": "a", "OUTERLOOP_PARTITION": "p"},
+    )
+    assert p.root == tmp_path / ".outerloop"
+    assert p.home == p.root / "home"
+    assert p.account == "a" and p.partition == "p"
+
+
+def test_resident_start_refuses_a_live_login_loop(clean_env, monkeypatch, capsys):
+    import time
+
+    from outerloop.runstate import acquire_tick_lease, release_tick_lease
+
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(cli, "_resident_jobs", lambda: pytest.fail("the lease is checked first"))
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("must not submit"))
+    root = clean_env / "state"
+    lease = acquire_tick_lease(root, "alpha1:123", time.time(), 5400)
+    try:
+        assert main(["start", "--root", str(root)]) == 2
+        assert "alpha1:123" in capsys.readouterr().err
+    finally:
+        release_tick_lease(lease)
+
+
+def test_resident_tick_takes_no_root_lease(tmp_path, monkeypatch):
+    import sys
+
+    from outerloop import tick as mod
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
+    monkeypatch.delenv("OUTERLOOP_TICK_HOST", raising=False)
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path)])
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    monkeypatch.setattr(mod, "tick", lambda *a, **k: mod.TickReport())
+    assert mod.main() == 0
+    assert not (tmp_path / "TICK").exists()

@@ -3,6 +3,7 @@
 With `sbatch` on PATH it submits the resident tick
 (docs/design/resident-tick.md) and returns; without it, or with
 OUTERLOOP_COMPUTE=local, it runs the local loop in the foreground.
+OUTERLOOP_TICK_HOST=login runs the foreground loop against Slurm.
 Settings come from flags, then the process environment, then
 ~/.config/outerloop/.env, read once here at launch. The running chain
 never takes identity or placement from that file (tick_deploy.sh reads an
@@ -37,6 +38,7 @@ ENV_FILE = paths.ENV_FILE
 # What start itself decides from: mode, placement, root, cadence, walltime.
 START_KEYS = (
     "OUTERLOOP_COMPUTE",
+    "OUTERLOOP_TICK_HOST",
     "OUTERLOOP_ROOT",
     "OUTERLOOP_ACCOUNT",
     "OUTERLOOP_PARTITION",
@@ -63,6 +65,8 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_BOT_ALIASES",
     "OUTERLOOP_GPU_PARTITION",
     "OUTERLOOP_GPU_ACCOUNT",
+    "OUTERLOOP_QOS",
+    "OUTERLOOP_APPTAINER_BIN",
     "OUTERLOOP_IMAGE",
     "OUTERLOOP_PANEL",
     "OUTERLOOP_PANEL_KEY_FILE",
@@ -113,7 +117,7 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
 
 @dataclass(frozen=True)
 class StartPlan:
-    mode: str  # "slurm" | "local"
+    mode: str  # "slurm" (resident) | "local" | "login"
     root: Path
     home: Path = Path(".")
     account: str = ""
@@ -121,6 +125,7 @@ class StartPlan:
     cadence_min: str = ""
     resident_minutes: int = DEFAULT_RESIDENT_MINUTES
     pat_file: str = ""
+    qos: str = ""
 
     def export_env(self) -> dict[str, str]:
         """The knobs the resident job needs. They ride the inherited environment
@@ -134,6 +139,8 @@ class StartPlan:
             "OUTERLOOP_ROOT": str(self.root),
             "OUTERLOOP_RESIDENT_MINUTES": str(self.resident_minutes),  # successors reuse it
         }
+        if self.qos:
+            env["OUTERLOOP_QOS"] = self.qos
         if self.account:
             env["OUTERLOOP_ACCOUNT"] = self.account
         if self.partition:
@@ -145,7 +152,7 @@ class StartPlan:
         return env
 
     def command(self) -> list[str]:
-        if self.mode == "local":
+        if self.mode in ("local", "login"):
             return [sys.executable, "-m", "outerloop.tick", "--root", str(self.root), "--loop"]
         argv = [
             "sbatch",
@@ -158,6 +165,8 @@ class StartPlan:
             argv.append(f"--account={self.account}")
         if self.partition:  # unset lets Slurm choose its default partition
             argv.append(f"--partition={self.partition}")
+        if self.qos:
+            argv.append(f"--qos={self.qos}")
         # --export=ALL carries export_env() from the inherited environment; a
         # comma-joined K=V list here would break on any value containing a comma.
         argv += ["--export=ALL", str(self.home / "scripts" / "tick_chain.sbatch")]
@@ -174,10 +183,10 @@ def _setting(key: str, flag: str, environ: dict[str, str], from_file: dict[str, 
 
 
 def _home(environ: dict[str, str], cwd: Path, *, local: bool, root: Path) -> Path:
-    """The directory the loop runs from. On Slurm it must be a source
+    """The directory the loop runs from. A resident needs a source
     checkout (OUTERLOOP_HOME, else the current directory): the chain
     deploys from it and every job runs from a flight snapshot of its HEAD.
-    The local loop has no deploy step and runs the installed package, so it
+    A foreground loop has no deploy step and can run the installed package, so it
     uses a checkout when one is at hand and otherwise a `home` directory
     under the state root, where flights and logs land."""
     named = environ.get("OUTERLOOP_HOME")
@@ -202,9 +211,17 @@ def plan_start(
     from_file: dict[str, str],
     sbatch_on_path: bool,
     cwd: Path,
+    tick_host: str = "",
 ) -> StartPlan:
     compute = _setting("OUTERLOOP_COMPUTE", "local" if local else "", environ, from_file)
     mode = "local" if compute.strip().lower() == "local" or not sbatch_on_path else "slurm"
+    host = _setting("OUTERLOOP_TICK_HOST", tick_host, environ, from_file).strip().lower()
+    if host not in ("", "resident", "login"):
+        raise StartError("OUTERLOOP_TICK_HOST must be resident or login")
+    if host == "login" and compute.strip().lower() != "local":
+        if not sbatch_on_path:
+            raise StartError("login tick host needs sbatch on PATH")
+        mode = "login"
     root_s = _setting("OUTERLOOP_ROOT", root, environ, from_file)
     cadence = _setting("OUTERLOOP_CADENCE_MIN", "", environ, from_file)
     if cadence:
@@ -219,11 +236,11 @@ def plan_start(
                 f"OUTERLOOP_CADENCE_MIN must be a positive number of minutes, got {cadence!r}"
             )
     pat = _setting("OUTERLOOP_PAT_FILE", "", environ, from_file)
-    # Slurm runs from a checkout; the local loop runs the installed package
-    # and needs only a directory (the launch lanes and GitHub servicing
+    # Foreground loops can run the installed package and need only a
+    # directory (the launch lanes and GitHub servicing
     # switch off without OUTERLOOP_HOME, so one is always set)
     local_root = Path(root_s).expanduser() if root_s else default_local_root(environ)
-    home = _home(environ, cwd, local=(mode == "local"), root=local_root)
+    home = _home(environ, cwd, local=(mode in ("local", "login")), root=local_root)
     if mode == "local":
         return StartPlan(
             mode="local",
@@ -232,6 +249,8 @@ def plan_start(
             cadence_min=cadence,
             pat_file=pat,
         )
+    if mode == "login":
+        root_s = str(local_root)
     if not root_s:
         raise StartError(
             "Slurm mode needs the state root on the shared filesystem: "
@@ -240,9 +259,12 @@ def plan_start(
         )
     acc = _setting("OUTERLOOP_ACCOUNT", account, environ, from_file)
     part = _setting("OUTERLOOP_PARTITION", partition, environ, from_file)
+    qos = _setting("OUTERLOOP_QOS", "", environ, from_file)
     # Account and partition are both optional: left unset, Slurm bills the
     # caller's default association and places the job on its default partition.
-    minutes_s = _setting("OUTERLOOP_RESIDENT_MINUTES", "", environ, from_file)
+    minutes_s = (
+        _setting("OUTERLOOP_RESIDENT_MINUTES", "", environ, from_file) if mode == "slurm" else ""
+    )
     try:
         minutes = int(minutes_s) if minutes_s else DEFAULT_RESIDENT_MINUTES
     except ValueError:
@@ -258,6 +280,7 @@ def plan_start(
         ("root", root_s),
         ("account", acc),
         ("partition", part),
+        ("QOS", qos),
         ("cadence", cadence),
         ("PAT file", pat),
         ("checkout path", str(home)),
@@ -265,7 +288,8 @@ def plan_start(
         if "\n" in value or "\r" in value:
             raise StartError(f"{name} {value!r} cannot contain a newline")
     return StartPlan(
-        mode="slurm",
+        mode=mode,
+        qos=qos,
         root=Path(root_s).expanduser(),
         home=home,
         account=acc,
@@ -441,12 +465,13 @@ def start(args: argparse.Namespace) -> int:
         problem = missing_harness_binary(values, os.environ)
         if problem:
             raise StartError(problem)
-        from_file = {k: v for k, v in values.items() if k in START_KEYS}
+        from_file = values
         plan = plan_start(
             root=args.root or "",
             account=args.account or "",
             partition=args.partition or "",
             local=args.local,
+            tick_host=getattr(args, "tick_host", ""),
             environ=dict(os.environ),
             from_file=from_file,
             sbatch_on_path=shutil.which("sbatch") is not None,
@@ -474,14 +499,48 @@ def start(args: argparse.Namespace) -> int:
     gaps = _app_gaps_from_env({**values, **os.environ})
     if gaps is not None and gaps.problem:
         print(gaps.problem, file=sys.stderr)
-    if plan.mode == "local":
+    if plan.mode in ("slurm", "login"):
+        # one loop per root: a login loop holds the root's tick lease, a
+        # resident chain holds the scheduler's singleton; each mode refuses
+        # to start over the other
+        import socket
+        import time
+
+        from outerloop.runstate import tick_lease_holder
+        from outerloop.tick import _loop_cadence_s
+
+        ttl = 3 * _loop_cadence_s(float(plan.cadence_min or 0))
+        held_by = tick_lease_holder(plan.root, time.time(), ttl, socket.gethostname())
+        if held_by:
+            print(
+                f"outerloop start: a loop already holds this root's tick lease ({held_by}); "
+                "stop it first",
+                file=sys.stderr,
+            )
+            return 2
+    if plan.mode == "login":
+        existing = _resident_jobs()
+        if existing is None or existing:
+            reason = (
+                f"resident job {existing[0]} is queued or running"
+                if existing
+                else "could not ask the scheduler (squeue failed)"
+            )
+            print(f"outerloop start: {reason}", file=sys.stderr)
+            return 2
+    if plan.mode in ("local", "login"):
         # the loop has no deploy step, so the author knobs the chain would
         # export from .env each tick are exported here once; the shell wins
         env = {**os.environ, **path_env}
         for key, value in values.items():
             if key in TICK_ENV_KEYS:
                 env.setdefault(key, value)
-        env["OUTERLOOP_COMPUTE"] = "local"
+        env["OUTERLOOP_COMPUTE"] = "local" if plan.mode == "local" else "slurm"
+        if plan.mode == "login":
+            env.update(plan.export_env())
+            env.pop("OUTERLOOP_RESIDENT", None)
+            env["OUTERLOOP_TICK_HOST"] = "login"
+            os.nice(10)  # Yield CPU to other users of the login node.
         env["OUTERLOOP_ROOT"] = str(plan.root)
         env["OUTERLOOP_HOME"] = str(plan.home)
         plan.home.mkdir(parents=True, exist_ok=True)  # <root>/home when there is no checkout
@@ -490,7 +549,7 @@ def start(args: argparse.Namespace) -> int:
         if plan.pat_file:
             env["OUTERLOOP_PAT_FILE"] = plan.pat_file
         print(
-            f"local loop: state in {plan.root}; Ctrl-C stops it, the records resume it",
+            f"{plan.mode} loop: state in {plan.root}; Ctrl-C stops it, the records resume it",
             file=sys.stderr,
         )
         return _exec(cmd, env)
@@ -633,6 +692,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--local", action="store_true", help="run the local loop even where sbatch exists"
+    )
+    p.add_argument(
+        "--tick-host",
+        choices=("resident", "login"),
+        default="",
+        help="run the Slurm tick in a resident job (default) or on this login host",
     )
     p.add_argument("--dry-run", action="store_true", help="print the command and exit")
     sub.add_parser(

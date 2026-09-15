@@ -552,3 +552,47 @@ def test_job_copies_the_seed_cache_into_its_own_before_uv_runs(tmp_path):
         run_dir, "plain", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image="/i.sif"
     )
     assert "cp -a" not in plain.read_text()
+
+
+@pytest.mark.parametrize("gpus", [0, 1])
+def test_operator_placement_and_binary_reach_evals_and_launches(tmp_path, monkeypatch, gpus):
+    import argparse
+    import shlex
+
+    from outerloop.attempt import _dispatch_settings, _make_launcher
+    from outerloop.compute import CommandResult, SlurmCompute
+    from outerloop.measure import Measure
+    from outerloop.syscall import Launch, SyscallRequest
+
+    monkeypatch.setenv("OUTERLOOP_QOS", "priority")
+    binary = "/apps/container tools/apptainer"
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", binary)
+    argv = []
+
+    def runner(command, timeout):
+        argv.append(command)
+        return CommandResult(0, "100", "")
+
+    monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: SlurmCompute(runner=runner))
+    settings = _dispatch_settings(
+        argparse.Namespace(
+            image="/image.sif",
+            account="cpu",
+            partition="short",
+            gpu_account="gpu",
+            gpu_partition="h200",
+        )
+    )
+    run = tmp_path / "run"
+    run.mkdir()
+    measurer = settings.measurer(run, tmp_path, 10, "test")
+    measurer._dispatch(Measure("candidate", "a" * 40, "echo hi", "metric", gpus=gpus))
+    launcher = _make_launcher(settings, run, tmp_path, "test", gpus=gpus)
+    launcher(
+        "a" * 40, SyscallRequest(launches=(Launch(name="trial", command="echo hi", minutes=5),))
+    )
+    assert len(argv) == 2
+    for command in argv:
+        assert "--qos=priority" in command
+        assert f"--partition={'h200' if gpus else 'short'}" in command
+        assert shlex.quote(binary) + " exec --containall" in Path(command[-1]).read_text()

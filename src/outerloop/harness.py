@@ -25,6 +25,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from outerloop.image import apptainer_from_env
+
 log = logging.getLogger(__name__)
 
 # What a session's environment contains — nothing else survives from the
@@ -517,7 +519,7 @@ class ClaudeCodeHarness:
     # closes the threat model's shared-filesystem residual risk. Images stay
     # generic (python + uv + git); the binary is bind-mounted in.
     container_image: str = ""
-    apptainer_binary: str = "apptainer"
+    apptainer_binary: str = field(default_factory=apptainer_from_env)
     # Claude-on-Vertex (ADC) instead of the Anthropic API key; the api_key is
     # ignored when set. Contained sessions get the ADC file bind-mounted.
     vertex: VertexConfig | None = None
@@ -908,7 +910,7 @@ class CodexHarness:
     # when set, login+exec run inside this apptainer image; empty = uncontained
     # (the deployment's runner is the boundary)
     container_image: str = ""
-    apptainer_binary: str = "apptainer"
+    apptainer_binary: str = field(default_factory=apptainer_from_env)
     # in-container path the host codex binary is bound to (bind-from-host, like
     # ClaudeCodeHarness.CONTAINER_CLAUDE — the image stays codex-free, and codex
     # is updated by swapping one host binary, no rebuild). A bare class attribute
@@ -1287,7 +1289,7 @@ class HermesHarness:
     # the per-run home (UV_PROJECT_ENVIRONMENT/UV_CACHE_DIR), so the repo
     # bind stays read-only and nothing survives across runs.
     container_image: str = ""
-    apptainer_binary: str = "apptainer"
+    apptainer_binary: str = field(default_factory=apptainer_from_env)
 
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None

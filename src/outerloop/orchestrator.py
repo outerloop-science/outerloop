@@ -27,6 +27,8 @@ from pathlib import Path
 from secrets import randbits
 from typing import TYPE_CHECKING, Any, Protocol
 
+from outerloop.image import apptainer_from_env
+
 if TYPE_CHECKING:
     from outerloop.measure import Measure
 
@@ -190,7 +192,7 @@ class SubprocessEvaluator:
 
     timeout_s: int = EVAL_TIMEOUT_S
     container_image: str = ""
-    apptainer_binary: str = "apptainer"
+    apptainer_binary: str = field(default_factory=apptainer_from_env)
 
     def evaluate(
         self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None

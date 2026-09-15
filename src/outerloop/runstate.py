@@ -21,6 +21,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from typing import TextIO
 
 log = logging.getLogger(__name__)
 
@@ -354,6 +355,92 @@ def list_runs(root: Path) -> list[RunRecord]:
 
 
 # --- leases ---
+
+
+def _tick_lease_state(lease: TextIO) -> tuple[str, float]:
+    """(holder, heartbeat) written in TICK; ("", 0) when it was released."""
+    lease.seek(0)
+    raw = lease.read()
+    if not raw:
+        return "", 0.0
+    try:
+        record = json.loads(raw)
+        return str(record.get("holder", "unknown")), float(record.get("heartbeat", 0))
+    except (ValueError, TypeError, AttributeError):
+        return "unreadable", os.fstat(lease.fileno()).st_mtime
+
+
+def _tick_lease_free(previous: str, heartbeat: float, host: str, now: float, ttl_s: float) -> bool:
+    """A free lock left by a process on our own host is proof it died; from
+    another host the last heartbeat must be older than the TTL, since file
+    locks may not reach across nodes."""
+    if not previous:
+        return True
+    return previous.rsplit(":", 1)[0] == host or now - heartbeat > ttl_s
+
+
+def tick_lease_holder(root: Path, now: float, ttl_s: float, host: str) -> str:
+    """Who holds the root's tick lease, or "" when nobody does (read-only)."""
+    path = root / "TICK"
+    if not path.exists():
+        return ""
+    with path.open("a+") as lease:
+        try:
+            fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return _tick_lease_state(lease)[0] or "unknown"
+        previous, heartbeat = _tick_lease_state(lease)
+        return "" if _tick_lease_free(previous, heartbeat, host, now, ttl_s) else previous
+
+
+def acquire_tick_lease(
+    root: Path, holder: str, now: float, ttl_s: float, lease: TextIO | None = None
+) -> TextIO:
+    """Take or heartbeat TICK; keep its file lock until the loop exits.
+
+    `holder` is host:pid. The lock fences a live holder however old its
+    heartbeat; a dead one is taken over at once on the same host and after
+    the TTL from another. Never unlink TICK: every contender must lock the
+    same inode.
+    """
+    if lease is None:
+        root.mkdir(parents=True, exist_ok=True)
+        lease = (root / "TICK").open("a+")
+        try:
+            locked = True
+            try:
+                fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                locked = False
+            previous, heartbeat = _tick_lease_state(lease)
+            host = holder.rsplit(":", 1)[0]
+            if not locked or not _tick_lease_free(previous, heartbeat, host, now, ttl_s):
+                raise RuntimeError(f"tick lease held by {previous or 'unknown'}")
+            if previous:
+                log.warning("taking over the tick lease left by %s", previous)
+        except BaseException:
+            lease.close()
+            raise
+    try:
+        lease.seek(0)
+        lease.truncate()
+        lease.write(json.dumps({"holder": holder, "heartbeat": now}))
+        lease.flush()
+        return lease
+    except BaseException:
+        lease.close()
+        raise
+
+
+def release_tick_lease(lease: TextIO) -> None:
+    """Clear our heartbeat and release the root lock, including on exceptions."""
+    try:
+        if not lease.closed:
+            lease.seek(0)
+            lease.truncate()
+            lease.flush()
+    finally:
+        lease.close()
 
 
 def acquire_lease(root: Path, run_id: str, holder: str, holder_job_id: str, now: float) -> bool:

@@ -1120,7 +1120,8 @@ def test_subprocess_evaluator_rejects_nonfinite(tmp_path: Path) -> None:
         SubprocessEvaluator(timeout_s=30).evaluate(tmp_path, """printf '{"m": Infinity}\n'""", "m")
 
 
-def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured", [False, True])
+def test_subprocess_evaluator_container_wrapping(tmp_path: Path, monkeypatch, configured) -> None:
     """With an image set, the eval command runs inside apptainer."""
     import stat as stat_mod
 
@@ -1131,8 +1132,11 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path) -> None:
         f'#!/bin/sh\nprintf "%s " "$@" > {tmp_path}/eval_argv\nprintf \'{{"m": 2.5}}\n\'\n'
     )
     fake.chmod(fake.stat().st_mode | stat_mod.S_IEXEC)
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", str(fake) if configured else "/wrong/path")
     evaluator = SubprocessEvaluator(
-        timeout_s=30, container_image="/img/pilot.sif", apptainer_binary=str(fake)
+        timeout_s=30,
+        container_image="/img/pilot.sif",
+        **({} if configured else {"apptainer_binary": str(fake)}),
     )
     ws = tmp_path / "ws"
     ws.mkdir()

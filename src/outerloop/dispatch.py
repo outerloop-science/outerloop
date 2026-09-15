@@ -44,6 +44,7 @@ from outerloop.github import (
     ensure_regular_git_dir,
     git_identity,
 )
+from outerloop.image import apptainer_from_env
 from outerloop.orchestrator import EvalError, managed_eval_env, metric_from_output
 
 log = logging.getLogger(__name__)
@@ -295,7 +296,7 @@ def write_eval_job(
     snapshot_sha: str,
     command: str,
     image: str,
-    apptainer_binary: str = "apptainer",
+    apptainer_binary: str = "",
     extra_env: dict[str, str] | None = None,
     artifacts: tuple[str, ...] = (),
     artifact_max_bytes: int = 0,
@@ -438,7 +439,7 @@ def write_eval_job(
             # the jail: identical flags to SubprocessEvaluator._run; stdout is
             # redirected OUTSIDE apptainer, so the result lands in the run dir
             # without the jailed process ever seeing it
-            f"{shlex.quote(apptainer_binary)} exec --containall --cleanenv "
+            f"{shlex.quote(apptainer_binary or apptainer_from_env())} exec --containall --cleanenv "
             + ("--nv " if gpus > 0 else "")
             + '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
             '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
@@ -525,6 +526,7 @@ def eval_job_spec(
     account: str,
     partition: str,
     eval_minutes: int,
+    qos: str = "",
     cpus: int = 4,
     mem: str = "8G",
     gpus: int = 0,
@@ -550,6 +552,7 @@ def eval_job_spec(
     return JobSpec(
         job_name=job_name[:60],
         account=account,
+        qos=qos,
         partition=partition,
         time_minutes=effective_eval_minutes(eval_minutes) + EVAL_JOB_SETUP_MINUTES,
         script=str(script),
