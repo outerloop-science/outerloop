@@ -1,3 +1,4 @@
+import sys
 from dataclasses import replace
 from typing import cast
 
@@ -262,6 +263,7 @@ def test_start_permission_warning_continues(app_env, tmp_path, monkeypatch, caps
 
         monkeypatch.setattr(init, "app_permission_gaps", fail)
     monkeypatch.setattr(cli, "find_uv", lambda: ("/bin/uv", ""))
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", sys.executable)  # start checks the author CLI
     launched = []
 
     def launch(cmd, env):

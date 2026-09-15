@@ -228,7 +228,12 @@ def default_binary(backend: str, environ: Mapping[str, str] | None = None) -> st
     recorded = env.get(f"OUTERLOOP_{name.upper()}_BIN", "")
     if recorded:
         return os.path.expanduser(recorded)
-    found = shutil.which(name, path=env.get("PATH", os.defpath))
+    # only absolute PATH entries: an empty or relative entry would resolve a
+    # file in the working directory, which is never the deployment's CLI
+    search = os.pathsep.join(
+        p for p in env.get("PATH", os.defpath).split(os.pathsep) if os.path.isabs(p)
+    )
+    found = shutil.which(name, path=search) if search else None
     if found:
         return str(Path(found).resolve())
     home = env.get("HOME", "")  # only the given environment's home, never the test runner's
