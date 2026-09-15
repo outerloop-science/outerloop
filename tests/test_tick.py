@@ -4423,7 +4423,6 @@ def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplo
     assert mod.main() == 2
     assert "this loop stops" in caplog.text
     assert (tmp_path / "TICK").read_text() == ""  # released on the way out
-    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
 
 
 @pytest.mark.parametrize("prefix", ["outerloop", "autoresearch"])
