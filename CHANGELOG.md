@@ -26,7 +26,7 @@ tasks to finish.
 
 ### Fixed
 
-- A run's ending pushes its line snapshot once, with the kernel's GitHub auth; without auth nothing is pushed and the log says so, and a refused push is retried only when the remote line moved.
+- Ending line snapshots push once, with the kernel's GitHub auth. Without auth nothing is pushed and the log says so. A refused push is retried only when the remote line moved.
 
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
 

@@ -557,3 +557,23 @@ def test_job_log_stream_stops_at_byte_cap(provider, monkeypatch):
     monkeypatch.setattr(AUTH_SAFE_OPENER, "open", lambda *a, **k: response)
     assert GitHubClient(auth=provider).job_log_tail("org/repo", 1, 15) == "old\nold\nold\n"
     assert response.total == MAX_LOG_BYTES
+
+
+def test_network_git_failure_never_carries_the_credential(monkeypatch, tmp_path):
+    """git's error text is re-raised without the token or its Basic form, and
+    without the original exception chained behind it."""
+    from outerloop import github as github_mod
+
+    token = "ghs_secret_token_value"
+    basic = github_mod._basic(token)
+
+    def fail(args, env, timeout=None):
+        raise github_mod.GitError(f"git push failed: remote: {token} and {basic} refused")
+
+    monkeypatch.setattr(github_mod, "_run_git", fail)
+    with pytest.raises(github_mod.GitError) as caught:
+        github_mod._run_git_with_credential(["git", "push"], token, tmp_path)
+    text = str(caught.value)
+    assert token not in text and basic not in text
+    assert text.count("[redacted]") == 2
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__

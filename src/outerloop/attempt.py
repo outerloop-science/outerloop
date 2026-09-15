@@ -12,7 +12,6 @@ has ended; the session sees only its own capped API key inside its container.
 from __future__ import annotations
 
 import argparse
-import base64
 import contextlib
 import fcntl
 import json
@@ -1966,15 +1965,6 @@ def _push_line_snapshot(
         )
         return
     try:
-        operation = "auth"
-        token = ws.auth.token()
-        if not token:
-            operation = "skip"
-            report("snapshot skipped: empty GitHub token")
-            return
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        secrets = (*secrets, token, basic)
-        operation = "prepare"
         branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         seen = ws.git("rev-parse", "HEAD").strip()
         # Track untouched files against each reconciled head across retries.

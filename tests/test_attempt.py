@@ -6018,8 +6018,6 @@ def test_tick_snapshot_uses_kernel_auth(
 
 @pytest.mark.parametrize("operation", ["fetch", "push", "record", "cleanup"])
 def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch, caplog, operation):
-    import base64
-
     from outerloop.attempt import LINE_HEAD_REF, _checkout_line, _push_line_snapshot
     from outerloop.github import GitError
 
@@ -6030,10 +6028,8 @@ def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch,
     seals = []
     real_git = ws.git
     real_snapshot = climb_mod.snapshot_tree
-    basic = base64.b64encode(b"x-access-token:unused").decode()
     error = (
-        f"denied header-value={basic} https://user:private-token@github.com/org/repo "
-        "Authorization: Basic secret-header"
+        "denied https://user:private-token@github.com/org/repo Authorization: Basic secret-header"
     )
 
     def fail(*args):
@@ -6067,5 +6063,4 @@ def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch,
     )
     assert "GitError: denied" in logs[0]
     assert "private-token" not in caplog.text and "secret-header" not in caplog.text
-    assert basic not in caplog.text
     assert "user:" not in caplog.text and "moved line" not in caplog.text
