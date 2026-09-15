@@ -114,26 +114,33 @@ documentation does not say and a first login must answer.
 | --- | --- | --- | --- | --- |
 | Scheduler | Slurm | Slurm | Slurm | PBS Pro |
 | Login | `login.torch.hpc.nyu.edu`, 2FA | `alpha.empire-ai.org` (2FA: confirm) | NERSC MFA | ALCF MFA |
-| Accounts | `torch_pr_36_*` | `su_<PI>_<tag>` subaccounts; institutions also have their own partitions and accounts | `-A m<project>` | project allocation |
-| GPUs | H200, L40S | 8×H100 80GB per HGX node (13 nodes, growing to 144 GPUs); Grace ARM nodes on a separate partition | 4×A100 per GPU node | 4×A100 per node |
-| CPU partition for the tick | `cpu_short` (6h) | a `cpu` partition is documented for at least one institution; confirm for ours | login-node pool via `scrontab` (`cron` QOS; `workflow` QOS for long jobs) | confirm; login nodes run PBS clients |
-| Containers | Apptainer on host | Apptainer, `module load apptainer` | Shifter and podman-hpc; no Apptainer | Apptainer, compute nodes only |
-| Egress | outbound HTTPS from login and compute nodes | confirm | login yes; compute nodes confirm | proxy only (`http_proxy`/`https_proxy` to `proxy.alcf.anl.gov:3128`) |
-| Storage | scratch, 60-day purge, 5M-inode quota | home 100 GB; `/mnt/lustre/<institution>` scratch; no project directories | `$SCRATCH` purged; `$CFS` project space | project filesystems (`-l filesystems=`) |
-| Long-running login processes | login nodes are ephemeral pods; forbidden | confirm | cgroup-limited (56 GB); `scrontab` is the sanctioned way | confirm |
+| Accounts | `torch_pr_36_*` | `ny_mren1_mars` (QOS `priority` 1 day, `standard` 2 days, `long` and `normal` 7 days, `test` 2 hours); the `nyu` partition needs the `nyu` account and a GPU | `-A m<project>` | project allocation |
+| GPUs | H200, L40S | `alpha`: 18 nodes of 8×H100 80GB, 6 of 8×H200, 4 of 8×RTX Pro 6000; `grace`: 60 ARM nodes without GPUs | 4×A100 per GPU node | 4×A100 per node |
+| CPU partition for the tick | `cpu_short` (6h) | `cpu` is one node (96 cores) with a multi-day backlog; CPU-only jobs are accepted on `alpha` but wait days except under `priority` | login-node pool via `scrontab` (`cron` QOS; `workflow` QOS for long jobs) | confirm; login nodes run PBS clients |
+| Containers | Apptainer on host | Apptainer 1.1.9 on PATH, no module needed | Shifter and podman-hpc; no Apptainer | Apptainer, compute nodes only |
+| Egress | outbound HTTPS from login and compute nodes | login node reaches GitHub and both model APIs; compute nodes confirm in the first job | login yes; compute nodes confirm | proxy only (`http_proxy`/`https_proxy` to `proxy.alcf.anl.gov:3128`) |
+| Storage | scratch, 60-day purge, 5M-inode quota | home on a 17 PB NFS with no quota shown; `/mnt/lustre/nyu/<user>` scratch, writable | `$SCRATCH` purged; `$CFS` project space | project filesystems (`-l filesystems=`) |
+| Long-running login processes | login nodes are ephemeral pods; forbidden | login node has 192 cores and 1 TB; no policy published; ask | cgroup-limited (56 GB); `scrontab` is the sanctioned way | confirm |
 
 ## What each cluster asks of the kernel
 
-**Empire AI Alpha.** Slurm and Apptainer, the two things the kernel assumes,
-so tier 1 should run with the current code. Three things to settle on the
-machine: the chain must find `apptainer` (the module in the operator's
-shell profile, or the explicit binary path the dispatcher already accepts);
-the tick needs a CPU partition it may occupy for six hours at a time (if our
-subaccount has none, see the tick-host decision below); and the `.env` must
-name the GPU lane by hand, `OUTERLOOP_GPU_PARTITION` and, when it differs,
-`OUTERLOOP_GPU_ACCOUNT`, because `outerloop init` asks only for the CPU
-placement and GPU benchmarks are refused without a lane. GPU jobs use
-`--gpus-per-node`, which is what `JobSpec` already writes.
+**Empire AI Alpha.** Probed on 2026-09-15 over the owner's session.
+Slurm and Apptainer, the two things the kernel assumes, are there, and the
+login node reaches GitHub and both model APIs. Two things it does not have.
+Python is 3.9 (a 3.10 module exists), so `uv` with a managed 3.12 was
+installed under the home directory; that is enough. And there is no place a
+resident tick can live: the one CPU node carries a multi-day backlog, and a
+CPU-only job on the GPU partition waits days under every QOS except
+`priority`, whose one-day walltime would requeue a resident every day into
+the same wait. So on Alpha the tick is a loop on the login node, which needs
+the tick-host build below and the operators' word that a long-lived process
+there is allowed. Sessions and launches take the `priority` QOS (a two-core
+job in about two and a half hours, one GPU in about five and a half, at the
+time of the probe); the kernel has no QOS setting today (`JobSpec.qos`
+exists, nothing sets it), so `OUTERLOOP_QOS` joins the placement settings.
+The `.env` also names the GPU lane by hand, `OUTERLOOP_GPU_PARTITION=alpha`
+and the account, because `outerloop init` asks only for the CPU placement.
+GPU jobs use `--gpus-per-node`, which is what `JobSpec` already writes.
 
 **NERSC Perlmutter.** Slurm, so `SlurmCompute` and the chain scripts carry
 over, and `scrontab` is a better home for the tick than a job chain: it
@@ -172,42 +179,41 @@ need a tick-level lease in the state root (the existing lease guards one
 run's wake, and tick coalescing is a timer, not mutual exclusion). So:
 `OUTERLOOP_TICK_HOST=resident|scrontab|login` in `outerloop start`, with
 `resident` the default that exists today, plus a tick lease. Empire AI needs
-none of it if our subaccount has a CPU partition.
+the login host: the probe showed no partition a resident could live on.
 
 ## The try-out: Empire AI Alpha, tier 1
 
-1. Access. The owner logs in once and runs a probe: `sinfo` for partitions
-   and their time limits, `sacctmgr show assoc user=$USER` for the
-   subaccount, `module load apptainer && apptainer --version`, an outbound
-   `curl -sI https://api.github.com` and one to the model API from a login
-   node and from a one-minute job (the contained session on a compute node
-   is what needs the model API), `python3 --version` (3.12 or newer) and
-   `which uv`, the quotas on home and scratch, GPU visibility under
-   `apptainer exec --nv` in a GPU job, and a two-node check that the shared
-   filesystem honors the primitives the kernel leans on (atomic rename,
-   `O_EXCL` creates and `flock` visible across nodes). It also asks the
-   policy question the documentation does not answer: whether a long-lived
-   process may sit on a login node. The probe's output decides whether
-   anything in the previous section is needed before the first tick.
-2. Install. A source checkout on Alpha (`git clone` and `uv sync`, as on
+1. Access and probe: done on 2026-09-15 over a multiplexed SSH master from
+   the owner's session (`Host empire` in the SSH config, `ControlPersist
+   12h`); the table above carries the answers. Still open on the machine:
+   whether a long-lived process may sit on the login node (ask the
+   operators), model-API reach from a contained compute job, GPU visibility
+   under `--nv`, and the shared filesystem's atomic-rename, `O_EXCL` and
+   `flock` behavior across nodes; the first one-minute job under `priority`
+   answers the last three.
+2. Build first: `OUTERLOOP_TICK_HOST=login` (the `tick --loop` local mode
+   already runs, with `SlurmCompute` instead of the forced local backend, a
+   tick lease in the state root against a second loop, and a per-cadence
+   pull of the checkout in place of the resident's deploy step) and
+   `OUTERLOOP_QOS` threaded into every job the kernel submits. One small
+   PR, before the first tick on Alpha.
+3. Install. A source checkout on Alpha (`git clone` and `uv sync`, as on
    Torch): in Slurm mode `outerloop start` submits `scripts/tick_chain.sbatch`
    from the checkout and refuses a bare PyPI install (shipping the chain
    script inside the wheel is a queued item). `outerloop init` writes
-   `~/.config/outerloop/.env` with the subaccount, the CPU partition, the
-   image path and the App file; the GPU lane is added by hand as above.
-   The App: the same `outerloop-science` App can serve a second deployment
-   when the target lives in the same org, or the deployment gets its own
-   App through the manifest flow; the bot login on PRs is the visible
-   difference. A decision below.
-3. Target. Tier 1 wants a target the Torch fleet is not climbing. A copy
+   `~/.config/outerloop/.env` with the account, the partition and the App
+   file; the GPU lane, the QOS and the tick host are added by hand. The App:
+   the owner decided to keep one App per target's fleets (decision 2), so
+   the `outerloop-science` App file and key are copied over the two SSH
+   masters; the bot login on PRs stays the same.
+4. Target. Tier 1 wants a target the Torch fleet is not climbing. A copy
    of `quickstart-trial` proves the plumbing in an afternoon (small GPU
    task, cheap evals); a real benchmark follows once a tick cycle, one
    climb with a launch, a sleep and a wake, a published report and a ledger
    row have all been seen on Alpha.
-4. Operate. Torch's operations run over SSH with keys from the Mac; Alpha
-   needs the same, or the owner runs the probe and the start and shares the
-   logs. The kernel's own evidence (tick log, run directories, the board)
-   is what "seen working" means.
+5. Operate. Alpha is operated over the same SSH master as the probe; the
+   owner opens it once per twelve hours of use. The kernel's own evidence
+   (tick log, run directories, the board) is what "seen working" means.
 
 ## Cross-fleet messages on one target
 
@@ -349,13 +355,14 @@ for cross-fleet mail, forum and status, with the medium swappable per
 directory later. Still the owner's:
 
 1. **Tick host.** Accept `OUTERLOOP_TICK_HOST=resident|scrontab|login` with
-   a tick lease, `resident` staying the default? Every non-Torch cluster
-   without a cheap CPU partition needs it; Empire AI may not.
+   a tick lease, `resident` staying the default? Empire AI needs `login`
+   now: the probe found no partition a resident could live on.
 2. **Bot identity.** One App for every fleet of a target is now the
    recommendation, because claim markers count only under the bot's own
    login; per-deployment Apps need identity-independent claims first.
-3. **Order.** Empire AI first (nothing to build if the probe is clean),
-   NERSC second (container seam and `scrontab`), ALCF last (PBS backend).
+3. **Order.** Empire AI first (one small PR: the login tick host and the
+   QOS setting), NERSC second (container seam and `scrontab`), ALCF last
+   (PBS backend).
 4. **Pacing.** Contract-declared fleet shares whose sum is the target's
    ceiling, enforced per kernel; the earlier "each deployment sets a lower
    value" does not hold the ceiling.
