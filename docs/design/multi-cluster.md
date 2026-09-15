@@ -64,9 +64,11 @@ benchmark. What that needs, in order of how soon it bites:
   (`budgets.fleets: {torch: {max_active_attempts: 2, runs_per_week: 5},
   empire: {...}}`), each kernel enforces its own share, and the target's
   owner keeps one place that bounds total spend. New work either way.
-- Claims. Publishes are safe across kernels: the ledger batch is pushed with
-  an expected-head guard and PR merges go through GitHub. Issue claims are
-  not, for two reasons. `pick_issue` counts only claim markers written under
+- Claims. PR merges go through GitHub and the climb board batch is pushed
+  with an expected-head guard, so those are safe across kernels; the
+  ledger's report archival and the status file go through plain `put_file`
+  today and can race between fleets, which the one guarded commit per pass
+  below also fixes. Issue claims are not safe, for two reasons. `pick_issue` counts only claim markers written under
   the bot's own login, so two fleets with different bot identities never see
   each other's claims at all; and even under one identity the claim is a
   read-then-post with a window in which both kernels read an issue as
@@ -291,8 +293,9 @@ outage delays it while local delivery and every job continue).
 bucket, for backup and cross-cluster forensics. It never replicates records
 and leases: they churn every tick and a stale copy elsewhere is a hazard. A
 deployment with no shared filesystem at all replaces the filesystem
-primitives themselves through the storage interface compute-cloud.md
-describes; that is outside this note.
+primitives themselves through the storage interface lifecycle.md names
+(put, list, get, conditional put; the parked cloud note on PR #348 gives it
+an object-store implementation); that is outside this note.
 
 **What a GitHub outage does today, for the record.** Launched jobs and the
 wakes that carry their results continue; a wake whose origin fetch fails
