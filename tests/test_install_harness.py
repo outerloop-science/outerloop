@@ -108,27 +108,47 @@ def test_claude_checksum_gate(tmp_path, valid):
         assert "sha256 mismatch" in result.stderr
 
 
+def _claude_provisioning_block(deploy: str) -> str:
+    start = deploy.index("# The configured author's CLI is a host prerequisite")
+    end = deploy.index("esac\n", start) + len("esac\n")
+    return deploy[start:end]
+
+
 @pytest.mark.parametrize(
-    ("author", "present", "panel", "expected"),
+    ("author", "present", "on_path", "expected"),
     [
-        ("claude", True, "", []),
-        ("claude", False, "", ["claude"]),
-        ("codex", True, "", ["codex"]),
-        ("claude", True, "codex,hermes", ["codex", "hermes"]),
+        ("claude", False, False, True),  # missing everywhere: install to ~/.local/bin
+        ("claude", True, False, False),  # already under ~/.local/bin
+        ("claude", False, True, False),  # already on PATH
+        ("codex", False, False, False),  # not the configured author
     ],
 )
-def test_tick_installs_with_shared_mapping(monkeypatch, author, present, panel, expected):
-    calls = []
-    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", author)
-    monkeypatch.setenv("OUTERLOOP_PANEL", panel)
-    monkeypatch.setattr(init, "locate_harness", lambda _: "/existing" if present else "")
-    monkeypatch.setattr(init, "install_harness", lambda backend: calls.append(backend))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda argv, **kw: calls.append(Path(argv[1]).stem.removeprefix("install_")),
-    )
-    deploy = (ROOT / "scripts/tick_deploy.sh").read_text()
-    code = deploy.split("<<'PYTHON'\n", 1)[1].split("\nPYTHON", 1)[0]
-    exec(compile(code, "tick_deploy.sh", "exec"), {})
-    assert calls == expected
+def test_deploy_provisions_the_configured_author_cli(tmp_path, author, present, on_path, expected):
+    """The chain's deploy step runs the pinned claude installer only when the
+    configured author is claude and no CLI is found; codex keeps its own case."""
+    home = tmp_path / "checkout"
+    (home / "scripts").mkdir(parents=True)
+    log = tmp_path / "calls"
+    (home / "scripts" / "install_claude.sh").write_text(f'#!/bin/bash\necho "claude $1" >> {log}\n')
+    userhome = tmp_path / "userhome"
+    (userhome / ".local" / "bin").mkdir(parents=True)
+    path_dir = tmp_path / "path"
+    path_dir.mkdir()
+    if present:
+        binary = userhome / ".local" / "bin" / "claude"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    if on_path:
+        binary = path_dir / "claude"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    env = {
+        "HOME": str(userhome),
+        "OUTERLOOP_HOME": str(home),
+        "OUTERLOOP_AUTHOR_BACKEND": author,
+        "PATH": f"{path_dir}:/usr/bin:/bin",
+    }
+    block = _claude_provisioning_block((ROOT / "scripts/tick_deploy.sh").read_text())
+    subprocess.run(["/bin/bash", "-c", block], env=env, check=True, capture_output=True, text=True)
+    calls = log.read_text().splitlines() if log.exists() else []
+    assert calls == ([f"claude {userhome / '.local' / 'bin' / 'claude'}"] if expected else [])
