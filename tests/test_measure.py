@@ -185,6 +185,24 @@ def test_late_stdout_is_waited_for_too(tmp_path, monkeypatch):
     assert slept == [3.0, 3.0, 3.0]
 
 
+def test_a_nonzero_exit_is_final_without_stdout(tmp_path, monkeypatch):
+    """A failed checkout leaves exit-code 97 and no stdout; the settle must not
+    hold that known failure for the whole window."""
+    from outerloop import measure as mod
+
+    m = _measurer(tmp_path, [], live={})
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _land(m, cand, value=None, code="97", job="102")  # exit-code only
+    monkeypatch.setattr(mod, "RESULT_SETTLE_S", 60.0)
+    monkeypatch.setattr(mod, "RESULT_POLL_S", 3.0)
+    slept: list[float] = []
+    monkeypatch.setattr(mod.time, "sleep", lambda s: slept.append(s))
+    with pytest.raises(EvalError):
+        m.results(_measures())
+    assert slept == []
+
+
 def test_no_result_after_the_settle_window_is_final(tmp_path, monkeypatch):
     from outerloop import measure as mod
 

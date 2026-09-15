@@ -340,13 +340,17 @@ class DispatchedMeasurer:
         return (self._ev(m) / "exit-code").exists()
 
     def _readable(self, m: Measure) -> bool:
-        """exit-code and stdout are both visible, and a clean exit has output;
-        the two files can arrive in either order on a lagging filesystem."""
+        """The result can be read: a nonzero exit-code is final on its own (the
+        job writer records a failed checkout as exit 97 with no stdout); a
+        clean exit also needs its stdout, which can arrive later on a lagging
+        filesystem."""
         ev = self._ev(m)
         code, out = ev / "exit-code", ev / "stdout"
-        if not (code.exists() and out.exists()):
+        if not code.exists():
             return False
-        return code.read_text().strip() != "0" or out.stat().st_size > 0
+        if code.read_text().strip() != "0":
+            return True
+        return out.exists() and out.stat().st_size > 0
 
     def _settled(self, m: Measure) -> bool:
         """Wait a little for a finished job's files. A shared filesystem can
