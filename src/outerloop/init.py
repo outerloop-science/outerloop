@@ -21,7 +21,6 @@ import getpass
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 import urllib.error
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.cli import ENV_FILE
+from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
@@ -107,32 +107,25 @@ def author_bin_env(backend: str) -> str:
     return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
 
 
-HARNESS_INSTALL = {
-    "claude": "npm install -g @anthropic-ai/claude-code "
-    "(or: curl -fsSL https://claude.ai/install.sh | bash)",
-    "codex": "npm install -g @openai/codex",
-}
-
-
 def locate_harness(backend: str) -> str:
     """The absolute path of `backend`'s CLI on this machine: PATH first, then
     ~/.local/bin (where the native installers put it and where a Slurm job,
     with no login PATH, would not find it); "" when absent. Recorded in .env so
     every job spawns the same binary the operator installed."""
     name = backend or AUTHOR_BACKENDS[0]
-    found = shutil.which(name)
-    if found:
-        return str(Path(found).resolve())
-    local = Path.home() / ".local" / "bin" / name
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else ""
+    # the harness's own lookup, minus any path already recorded: absolute PATH
+    # entries only (never the working directory), then ~/.local/bin
+    env = {k: v for k, v in os.environ.items() if k != f"OUTERLOOP_{name.upper()}_BIN"}
+    found = default_binary(name, env)
+    return found if os.path.isabs(found) else ""
 
 
 def _harness_hint(answers: InitAnswers) -> None:
     if not answers.author_bin:
         name = answers.author_backend or AUTHOR_BACKENDS[0]
         print(
-            f"  no `{name}` binary found on PATH or in ~/.local/bin — the first climb would end\n"
-            f"  with spawn-error. Install it: {HARNESS_INSTALL.get(name, 'see its docs')}\n"
+            f"  no `{name}` binary found on PATH or in ~/.local/bin — start will refuse to run\n"
+            f"  until it is installed. Install it: {HARNESS_INSTALL.get(name, 'see its docs')}\n"
             "  then run `outerloop init --force` so its path is recorded."
         )
 

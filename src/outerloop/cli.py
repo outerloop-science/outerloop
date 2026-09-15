@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outerloop import paths
+from outerloop.harness import HARNESS_INSTALL, default_binary
 
 if TYPE_CHECKING:
     from outerloop.init import AppPermissionGaps
@@ -380,18 +381,30 @@ def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str])
 
 
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
-    """Why start must not launch: the CONFIGURED author backend's recorded
-    binary is not there (init records the path; a moved or uninstalled CLI
-    would end every climb with spawn-error). The other backend's path is not
-    consulted: a stale entry for a backend the loop never spawns must not block
-    it. "" when the binary exists or none is recorded."""
+    """Check only the configured author's host CLI, using the harness's lookup."""
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
     key = f"OUTERLOOP_{backend.upper()}_BIN"
     if key not in HARNESS_BIN_KEYS:
-        return ""  # an unknown backend is init's error to report, not this check's
-    path = _setting_of(key, values, environ)
-    if path and not Path(path).expanduser().is_file():
-        return f"{key}={path} is not a file; reinstall the CLI or run `outerloop init --force`"
+        hint = (
+            f" Hermes is a review backend; install its source with `{HARNESS_INSTALL['hermes']}`."
+            if backend == "hermes"
+            else ""
+        )
+        return f"unsupported author backend {backend!r}; choose claude or codex.{hint}"
+    env = {**values, **environ}
+    recorded = env.get(key, "")
+    binary = default_binary(backend, env)
+    if (not recorded and not os.path.isabs(binary)) or not (
+        Path(binary).is_file() and os.access(binary, os.X_OK)
+    ):
+        looked_for = (
+            f"{key}={recorded}" if recorded else f"`{backend}` on PATH or ~/.local/bin/{backend}"
+        )
+        return (
+            f"{backend} author CLI: {looked_for} is not an executable file; "
+            f"install it with `{HARNESS_INSTALL[backend]}`, then run "
+            "`outerloop init --force` to re-record its path"
+        )
     return ""
 
 
@@ -462,7 +475,7 @@ def permissions(args: argparse.Namespace) -> int:
 def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
-        problem = missing_harness_binary(values, os.environ)
+        problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
         if problem:
             raise StartError(problem)
         from_file = values

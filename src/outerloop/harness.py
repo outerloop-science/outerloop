@@ -17,10 +17,12 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import stat
 import subprocess
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -207,15 +209,38 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     return text
 
 
-def default_binary(backend: str) -> str:
+HARNESS_INSTALL = {
+    "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+    "codex": "bash scripts/install_codex.sh",
+    "hermes": "bash scripts/install_hermes.sh",
+}
+
+
+def default_binary(backend: str, environ: Mapping[str, str] | None = None) -> str:
     """The host CLI a job spawns for `backend`: the path init recorded
-    (`OUTERLOOP_<BACKEND>_BIN`), else `~/.local/bin/<backend>` where the native
-    installers put it. One rule for the climb, the follow-up and the steward,
-    so a CLI installed anywhere else works in every lane."""
+    (`OUTERLOOP_<BACKEND>_BIN`), else PATH, else `~/.local/bin/<backend>` where
+    the native installers put it and where a Slurm job with a bare PATH still
+    finds it. One rule for the climb, the follow-up, the steward and start's
+    preflight. PATH hits come back absolute (the container bind needs a path);
+    an absent CLI stays a bare name so callers can report it."""
+    env = os.environ if environ is None else environ
     name = backend.strip().lower() or "claude"
-    return os.path.expanduser(
-        os.environ.get(f"OUTERLOOP_{name.upper()}_BIN") or f"~/.local/bin/{name}"
+    recorded = env.get(f"OUTERLOOP_{name.upper()}_BIN", "")
+    if recorded:
+        return os.path.expanduser(recorded)
+    # only absolute PATH entries: an empty or relative entry would resolve a
+    # file in the working directory, which is never the deployment's CLI
+    search = os.pathsep.join(
+        p for p in env.get("PATH", os.defpath).split(os.pathsep) if os.path.isabs(p)
     )
+    found = shutil.which(name, path=search) if search else None
+    if found:
+        return str(Path(found).resolve())
+    home = env.get("HOME", "")  # only the given environment's home, never the test runner's
+    local = Path(home) / ".local" / "bin" / name if home else None
+    if local is not None and local.is_file() and os.access(local, os.X_OK):
+        return str(local)
+    return name
 
 
 def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "") -> SessionResult:
