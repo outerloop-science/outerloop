@@ -4505,3 +4505,25 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
     tick_once()
     assert len(github.posts) == 3
     assert github.lookups == lookups
+
+
+def test_sigterm_handler_is_installed_before_the_lease(tmp_path, monkeypatch):
+    import signal
+    import sys
+
+    from outerloop import tick as mod
+
+    monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    seen = []
+
+    def acquire(*args, **kwargs):
+        seen.append(callable(signal.getsignal(signal.SIGTERM)))
+        raise RuntimeError("held elsewhere")
+
+    monkeypatch.setattr(mod, "acquire_tick_lease", acquire)
+    before = signal.getsignal(signal.SIGTERM)
+    assert mod.main() == 2
+    assert seen == [True]
+    assert signal.getsignal(signal.SIGTERM) is before  # restored on the way out

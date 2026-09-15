@@ -3344,12 +3344,14 @@ def main() -> int:
         # every foreground loop holds the root's tick lease; a resident tick
         # runs once under the scheduler's singleton and takes none
         if args.loop:
+            # the handler goes in first: a SIGTERM between taking the lease
+            # and installing it would leave the lease to its TTL
+            previous_term = signal.signal(signal.SIGTERM, stop)
             try:
                 lease = acquire_tick_lease(args.root, holder, time.time(), 3 * cadence_s)
             except RuntimeError as exc:
                 log.error("%s", exc)
                 return 2
-            previous_term = signal.signal(signal.SIGTERM, stop)
             if not local_mode():
                 # a login loop against Slurm: a resident chain queued between
                 # start's check and this lease owns the root (its own start
