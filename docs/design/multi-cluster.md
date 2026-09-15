@@ -215,6 +215,64 @@ the login host: the probe showed no partition a resident could live on.
    owner opens it once per twelve hours of use. The kernel's own evidence
    (tick log, run directories, the board) is what "seen working" means.
 
+## Empire AI Beta, as probed
+
+The owner pointed at the second Empire AI cluster on 2026-09-15
+(`beta.empireai.edu`; `Host empire-beta` in the SSH config, the same
+master-socket pattern as Alpha). Probed the same day from its login node:
+
+- **One partition, whole-node jobs.** `beta` is 72 nodes of 4×B200 80GB
+  (288 GPUs, `TIMELIMIT infinite`); the QOS decide everything. Our
+  association (`ny_mren1_mars`) has `test` (2 h), `interactive` (2 h, one
+  job), `standard` (2 days, default), `long` (7 days), `priority` (1 day,
+  priority 1000) and `normal`. Every one of those but `normal` carries
+  `MinTRES gres/gpu=4`: a job below four GPUs is refused (`QOSMinGRES`),
+  including a two-core CPU job and a one-GPU job. `normal` has no minimum
+  and priority 0; a two-core job under it is estimated three and a half
+  days out. Billing is 2 SU per GPU-hour times the QOS factor (`priority`
+  4×). Estimates at probe time for a four-GPU job: `priority` about 3.5 h,
+  `standard` about 30 h; 91 pending (36 `priority`, 53 `standard`), 47
+  running, all with GPUs.
+- **Containers are pyxis and enroot, not Apptainer.** `srun --container-image`
+  and `--container-mounts` are the interface; `/usr/bin/enroot` is present;
+  no Apptainer binary or module on the login node. Beta is therefore the
+  second consumer of the container seam the NERSC section asks for, and it
+  wants an OCI form of the agent image (enroot imports `docker://`).
+- **The login node is shared with nobody's scheduler.** 144 cores, 478 GB,
+  load about 9, no CPU or memory quota on the user slice, user processes
+  running for days: a login-host loop is within observed practice, as on
+  Alpha. Slurm's binaries live under `/cm/local/apps/slurm/current/bin` and
+  are on PATH only in a login shell, so the loop must start from one (tmux).
+- **The home is Alpha's home.** `/mnt/home` is the same NFS export on both
+  clusters: `~/outerloop`, `~/.config/outerloop/` (App file, keys, `.env`)
+  and the uv install written for Alpha are already visible on Beta. No user
+  scratch exists yet (`/ddn/lustre` holds validation runs; `/projects/nyu`
+  is empty and root-owned); the state root would have to sit on the home
+  NFS until the operators hand out project space. Egress from the login
+  node reaches GitHub and both model APIs.
+
+What this means for the kernel and the order of work:
+
+1. **Per-deployment settings in a shared home.** Two deployments reading
+   one `~/.config/outerloop/.env` cannot both be right (root, partition,
+   QOS, container path all differ). `start` and `tick_deploy.sh` need an
+   explicit env-file setting (`OUTERLOOP_ENV_FILE`, or a per-host file the
+   default resolves to) before Beta gets a loop. Small; independent.
+2. **Job shape.** With four GPUs the floor for every job, Outerloop's small
+   jobs (a five-minute eval, a one-hour session) each spend a node. Beta is
+   economical only when an attempt bundles its session and its evaluations
+   into one allocation, or when the benchmark itself uses the four GPUs.
+   That is the "sessions ride GPU allocations" item from the Alpha section,
+   now with a number attached; until it exists, Beta launches only work
+   whose benchmark is four-GPU sized.
+3. **Container seam first.** The pyxis path is the same code change NERSC
+   needs; Beta makes it the next backend seam after the login-host loop.
+4. **Order.** Alpha stays the tier-1 try-out. Beta is the natural tier-2
+   partner (same institution, same home, same App, a second fleet on a
+   shared target) once 1 and 3 exist, and the place to test slot ranges
+   and the shared mail. Ask the operators for project scratch and for the
+   login-node policy in the same message as Alpha's.
+
 ## Cross-fleet messages on one target
 
 The owner asked (2026-09-15) whether `message --to agent-NN` could reach a
@@ -383,6 +441,11 @@ directory later. Still the owner's:
    required (a requested run lands on `agent-01` today). For the second,
    whether a requested run counts against the width or takes an id beyond
    it (recommended).
+
+9. **Empire AI Beta.** Accept the order above (Alpha first; Beta after the
+   per-deployment env file and the pyxis seam), and say whether the
+   allocation-bundling item is worth building for Beta's four-GPU floor or
+   whether Beta hosts only four-GPU benchmarks.
 
 ## Sources
 
