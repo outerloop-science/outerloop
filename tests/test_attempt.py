@@ -760,6 +760,10 @@ class FakeGitHub:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
         return f"https://github.com/{repo}/pull/1"
 
+    def append_pull_body(self, repo, number, addendum):
+        if self.prs:
+            self.prs[-1]["body"] += "\n\n" + addendum
+
     def find_open_pull_for_head(self, repo, head_branch, base):
         if not self.existing_pr:
             return None
@@ -3957,6 +3961,8 @@ def test_auto_publish_only_records_blessed_head(panel_ran):
 
     class Workspace:
         def git(self, *args):
+            if args == ("for-each-ref", "--format=%(refname)", "refs/remotes/origin/main"):
+                return "refs/remotes/origin/main"
             assert args in [
                 ("rev-parse", "HEAD"),
                 ("rev-parse", "--verify", "-q", "origin/main^{commit}"),
@@ -5870,7 +5876,9 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
                 monkeypatch.setattr(
                     attempt,
                     "_rev",
-                    lambda ws, ref: "moved-base" if ref == "origin/main" else original_rev(ws, ref),
+                    lambda ws, ref, **kw: (
+                        "moved-base" if ref == "origin/main" else original_rev(ws, ref, **kw)
+                    ),
                 )
             return url
 
@@ -5898,3 +5906,167 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     record = load_record(tmp_path / "state", "tsp-auto")
     expected = "" if base_moved else _git(target, "rev-parse", github.prs[0]["head"]).strip()
     assert record.auto_blessed_head == expected
+
+
+@pytest.mark.parametrize("base_moved", [False, True])
+def test_resumed_line_publish_bless_decision(tmp_path, monkeypatch, base_moved, caplog):
+    import json
+    from dataclasses import replace
+
+    from outerloop.github import GitHubClient
+    from outerloop.roles import author_spec
+    from outerloop.syscall import ensure_excluded
+
+    state, run_id = _write_parked_candidate(
+        tmp_path,
+        monkeypatch,
+        contract=CONTRACT_LINES + "\nmerge: auto\n",
+        agent_id="agent-03",
+        values={"baseline": 13.0, "candidate": 12.0},
+    )
+    record = load_record(state, run_id)
+    save_record(state, replace(record, stage={**record.stage, "submitted": True}), 1_000_050.0)
+    ws = state / "runs" / run_id / "ws"
+    ensure_excluded(ws)
+    bare = tmp_path / f"origin-{run_id}.git"
+    _git(ws, "push", "origin", "agents/agent-03")
+    _git(ws, "fetch", "origin")
+
+    class GitHub(FakeGitHub):
+        def create_pull(self, *args, **kwargs):
+            url = super().create_pull(*args, **kwargs)
+            if base_moved:
+                _git(
+                    ws, "update-ref", "refs/remotes/origin/main", str(record.stage["candidate_sha"])
+                )
+            return url
+
+    github = GitHub()
+    caplog.set_level("INFO")
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=cast(GitHubClient, github),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        panel_lenses=_panel_lens(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "file": "src/pilot/solvers/tsp.py",
+                            "line": 1,
+                            "confidence": "high",
+                            "summary": "readability",
+                            "detail": "name the constant",
+                            "blocking": False,
+                        }
+                    ],
+                    "notes": "",
+                }
+            )
+        ),
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "improved"
+    pr = github.prs[0]
+    assert not pr["draft"]
+    pushed = _git(bare, "rev-parse", pr["head"]).strip()
+    latest = load_record(state, run_id)
+    assert latest.auto_blessed_head == ("" if base_moved else pushed)
+    expected_reason = (
+        f"base moved: origin/main {record.stage['candidate_sha']} "
+        f"!= measured {record.stage['base_sha']}"
+        if base_moved
+        else ""
+    )
+    assert latest.auto_bless_reason == expected_reason
+    line = (
+        f"Self-merge: not armed ({expected_reason})"
+        if base_moved
+        else f"Self-merge: armed at {pushed}"
+    )
+    assert line in pr["body"]
+    assert (
+        "self-merge decision: panel_rounds=1 panel_blocking_open=False panel_degraded=False"
+        in caplog.text
+    )
+    assert "contract.merge=auto base_branch=main" in caplog.text
+
+
+@pytest.mark.parametrize("ref", ["origin/main", "HEAD"])
+def test_bless_unreadable_reason(tmp_path, monkeypatch, caplog, ref):
+    from types import SimpleNamespace
+    from typing import Any
+
+    from outerloop.attempt import _bless_decision
+    from outerloop.github import Workspace
+
+    def revision(*args, **kwargs):
+        if ref == "origin/main":
+            raise RuntimeError("git failed secret-value")
+        return "base"
+
+    class BrokenHead:
+        def git(self, *args):
+            raise RuntimeError("git failed secret-value")
+
+    monkeypatch.setattr(climb_mod, "_rev", revision)
+    caplog.set_level("INFO")
+    head, reason = _bless_decision(
+        cast(Workspace, BrokenHead()),
+        SimpleNamespace(panel_rounds=1, panel_blocking_open=False, panel_degraded=False),
+        cast(Any, SimpleNamespace(merge="auto")),
+        "main",
+        "base",
+        ("secret-value",),
+    )
+    assert not head
+    assert reason.startswith(f"{ref} unreadable: RuntimeError: git failed")
+    assert "base moved" not in reason
+    assert "secret-value" not in reason + caplog.text
+
+
+def test_bless_absent_remote_is_distinct_from_git_failure(tmp_path):
+    from types import SimpleNamespace
+
+    from outerloop.attempt import _bless_decision, _rev
+    from outerloop.github import Workspace
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    result = SimpleNamespace(panel_rounds=1, panel_blocking_open=False, panel_degraded=False)
+    ws = Workspace(root=tmp_path)
+    assert _bless_decision(ws, result, SimpleNamespace(merge="auto"), "main", "base") == (
+        "",
+        "origin/main absent",
+    )
+    broken = Workspace(root=tmp_path / "not-a-repo")
+    assert _rev(broken, "origin/main") == ""
+    head, reason = _bless_decision(broken, result, SimpleNamespace(merge="auto"), "main", "base")
+    assert not head
+    assert reason.startswith("origin/main unreadable:")
+
+
+@pytest.mark.parametrize(
+    "rounds,blocking,degraded,merge,reason",
+    [
+        (0, False, False, "auto", "panel did not run"),
+        (1, True, False, "auto", "panel blocking or degraded"),
+        (1, False, True, "auto", "panel blocking or degraded"),
+        (1, False, False, "manual", "contract merge is manual"),
+    ],
+)
+def test_bless_guard_reasons(rounds, blocking, degraded, merge, reason):
+    from types import SimpleNamespace
+    from typing import Any
+
+    from outerloop.attempt import _bless_decision
+
+    result = SimpleNamespace(
+        panel_rounds=rounds, panel_blocking_open=blocking, panel_degraded=degraded
+    )
+    assert _bless_decision(
+        cast(Any, None), result, SimpleNamespace(merge=merge), "main", "base"
+    ) == ("", reason)

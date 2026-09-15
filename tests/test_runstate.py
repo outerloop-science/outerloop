@@ -355,3 +355,15 @@ def test_migration_drops_the_follow_up_job_fields(tmp_path):
     after = json.loads(path.read_text())
     assert "followup_job_id" not in after and "followup_stage" not in after
     assert load_record(tmp_path, "legacy2").state == "parked"
+
+
+def test_legacy_bless_reason_defaults_empty(tmp_path):
+    record = RunRecord("legacy-bless", "org/repo", "task", "parked", auto_blessed_head="head")
+    save_record(tmp_path, record, 1)
+    path = run_dir(tmp_path, record.run_id) / "state.json"
+    raw = json.loads(path.read_text())
+    del raw["auto_bless_reason"]
+    path.write_text(json.dumps(raw))
+    latest = load_record(tmp_path, record.run_id)
+    assert latest.auto_blessed_head == "head"
+    assert latest.auto_bless_reason == ""
