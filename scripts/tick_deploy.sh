@@ -218,8 +218,19 @@ fi
 # break the chain — start's preflight and the climb report a missing CLI.
 case "${OUTERLOOP_AUTHOR_BACKEND:-claude}" in
     claude)
-        target="${OUTERLOOP_CLAUDE_BIN:-$HOME/.local/bin/claude}"
-        if [ ! -x "$target" ] && ! command -v claude >/dev/null 2>&1; then
+        # a recorded path is the one the jobs will use, so it alone decides;
+        # otherwise an absolute PATH hit or the default install location counts
+        # (jobs ignore relative PATH entries, so the check does too)
+        if [ -n "${OUTERLOOP_CLAUDE_BIN:-}" ]; then
+            target="$OUTERLOOP_CLAUDE_BIN"; found=""
+            [ -x "$target" ] && found="$target"
+        else
+            target="$HOME/.local/bin/claude"
+            found="$(command -v claude 2>/dev/null || true)"
+            case "$found" in /*) ;; *) found="" ;; esac
+            [ -z "$found" ] && [ -x "$target" ] && found="$target"
+        fi
+        if [ -z "$found" ]; then
             bash "$OUTERLOOP_HOME/scripts/install_claude.sh" "$target" || echo "deploy: claude install failed"
         fi
         ;;

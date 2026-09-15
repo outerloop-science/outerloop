@@ -127,6 +127,12 @@ def locate_harness(backend: str) -> str:
     return found if os.path.isabs(found) else ""
 
 
+def cli_install_wanted(author_bin: str, args: argparse.Namespace) -> bool:
+    """Install the author's CLI only in the full setup, when none was found and
+    the operator did not opt out; the focused --github-app run sets up the App."""
+    return not author_bin and not args.no_install_harness and not args.github_app
+
+
 def install_harness(backend: str) -> str:
     """Install a missing author CLI and return its executable host path."""
     name = backend or AUTHOR_BACKENDS[0]
@@ -761,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             answers.author_key_file = str(key_path)
             print(f"wrote {key_path} (0600)")
 
-    if not answers.author_bin and not args.no_install_harness:
+    if cli_install_wanted(answers.author_bin, args):
         try:
             answers.author_bin = install_harness(answers.author_backend)
         except ValueError as exc:

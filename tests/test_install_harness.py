@@ -110,22 +110,49 @@ def test_claude_checksum_gate(tmp_path, valid):
 
 def _claude_provisioning_block(deploy: str) -> str:
     start = deploy.index("# The configured author's CLI is a host prerequisite")
-    end = deploy.index("esac\n", start) + len("esac\n")
+    end = deploy.index("\nesac\n", start) + len("\nesac\n")  # the outer case, at column 0
     return deploy[start:end]
 
 
 @pytest.mark.parametrize(
-    ("author", "present", "on_path", "expected"),
+    ("author", "present", "on_path", "recorded", "relative_path", "expected"),
     [
-        ("claude", False, False, True),  # missing everywhere: install to ~/.local/bin
-        ("claude", True, False, False),  # already under ~/.local/bin
-        ("claude", False, True, False),  # already on PATH
-        ("codex", False, False, False),  # not the configured author
+        (
+            "claude",
+            False,
+            False,
+            "",
+            False,
+            "default",
+        ),  # missing everywhere: install to ~/.local/bin
+        ("claude", True, False, "", False, ""),  # already under ~/.local/bin
+        ("claude", False, True, "", False, ""),  # already on PATH (absolute entry)
+        (
+            "claude",
+            False,
+            True,
+            "",
+            True,
+            "default",
+        ),  # only through a relative PATH entry: jobs cannot use it
+        (
+            "claude",
+            False,
+            True,
+            "stale",
+            False,
+            "recorded",
+        ),  # recorded path gone: PATH does not excuse it
+        ("claude", True, False, "present", False, ""),  # recorded path present
+        ("codex", False, False, "", False, ""),  # not the configured author
     ],
 )
-def test_deploy_provisions_the_configured_author_cli(tmp_path, author, present, on_path, expected):
+def test_deploy_provisions_the_configured_author_cli(
+    tmp_path, author, present, on_path, recorded, relative_path, expected
+):
     """The chain's deploy step runs the pinned claude installer only when the
-    configured author is claude and no CLI is found; codex keeps its own case."""
+    configured author is claude and the CLI the jobs will use is missing: the
+    recorded path when there is one, else an absolute PATH hit or ~/.local/bin."""
     home = tmp_path / "checkout"
     (home / "scripts").mkdir(parents=True)
     log = tmp_path / "calls"
@@ -148,7 +175,44 @@ def test_deploy_provisions_the_configured_author_cli(tmp_path, author, present, 
         "OUTERLOOP_AUTHOR_BACKEND": author,
         "PATH": f"{path_dir}:/usr/bin:/bin",
     }
+    recorded_path = tmp_path / "recorded" / "claude"
+    if recorded == "present":
+        recorded_path.parent.mkdir()
+        recorded_path.write_text("#!/bin/sh\n")
+        recorded_path.chmod(0o755)
+    if recorded:
+        env["OUTERLOOP_CLAUDE_BIN"] = str(recorded_path)
+    if relative_path:
+        env["PATH"] = ".:/usr/bin:/bin"
     block = _claude_provisioning_block((ROOT / "scripts/tick_deploy.sh").read_text())
-    subprocess.run(["/bin/bash", "-c", block], env=env, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["/bin/bash", "-c", block],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=path_dir,
+    )
     calls = log.read_text().splitlines() if log.exists() else []
-    assert calls == ([f"claude {userhome / '.local' / 'bin' / 'claude'}"] if expected else [])
+    want = {
+        "": [],
+        "default": [f"claude {userhome / '.local' / 'bin' / 'claude'}"],
+        "recorded": [f"claude {recorded_path}"],
+    }[expected]
+    assert calls == want
+
+
+@pytest.mark.parametrize(
+    ("author_bin", "github_app", "no_install", "wanted"),
+    [
+        ("", False, False, True),
+        ("/usr/local/bin/claude", False, False, False),
+        ("", True, False, False),  # the focused App run sets up the App only
+        ("", False, True, False),
+    ],
+)
+def test_cli_install_wanted(author_bin, github_app, no_install, wanted):
+    import argparse
+
+    args = argparse.Namespace(github_app=github_app, no_install_harness=no_install)
+    assert init.cli_install_wanted(author_bin, args) is wanted
