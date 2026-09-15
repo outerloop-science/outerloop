@@ -4223,7 +4223,85 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
             events.append("merge")
 
     tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
-    if changed == "base":
-        assert events == []  # the sweep's own read already rules it out: no lease taken
-    else:
-        assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+
+
+@pytest.mark.parametrize("prefix", ["outerloop", "autoresearch"])
+def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
+    from outerloop.tick import _merge_blessed_pr
+
+    record = waiting_run(
+        tmp_path,
+        pr_url="https://github.com/org/repo/pull/9",
+        auto_bless_reason="base moved: origin/main new != measured old",
+    )
+    pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+
+    class GitHub:
+        def __init__(self):
+            self.comments = []
+            self.posts = []
+            self.fail_lookup = False
+            self.dial = "auto"
+            self.lookups = 0
+
+        def get_pull_request(self, *args):
+            return pr
+
+        def get_file_content(self, *args, **kwargs):
+            return (
+                "benchmarks: [{name: x, command: echo, metric: score, direction: max}]\n"
+                "budgets: {gpu_hours_per_run: 1, runs_per_week: 3}\n"
+                f"scope: {{allowed: [src/]}}\nroadmap: docs/roadmap.md\nmerge: {self.dial}"
+            )
+
+        def list_comments(self, *args):
+            assert read_lease(tmp_path, record.run_id) is not None
+            self.lookups += 1
+            if self.fail_lookup:
+                raise RuntimeError("lookup failed")
+            return self.comments
+
+        def comment(self, repo, number, body):
+            assert read_lease(tmp_path, record.run_id) is not None
+            self.posts.append(body)
+            self.comments.append({"body": body, "user": {"login": "bot"}})
+
+    github = GitHub()
+
+    def tick_once():
+        _merge_blessed_pr(tmp_path, record, github, pr, "tick", NOW, "bot")
+        assert read_lease(tmp_path, record.run_id) is None
+
+    tick_once()
+    assert github.posts == [
+        "<!-- outerloop:self-merge-status -->\nSelf-merge waiting: no head was blessed at publish: "
+        "base moved: origin/main new != measured old."
+    ]
+    github.comments[0]["body"] = github.comments[0]["body"].replace("outerloop:", f"{prefix}:")
+    github.comments.append(
+        {"body": "<!-- outerloop:self-merge-status -->\nunrelated", "user": {"login": "human"}}
+    )
+    tick_once()
+    assert len(github.posts) == 1
+    save_record(tmp_path, replace(record, auto_bless_reason="panel did not run"), NOW)
+    tick_once()
+    assert len(github.posts) == 2
+    assert github.posts[-1].endswith("panel did not run.")
+    tick_once()
+    assert len(github.posts) == 2
+    save_record(tmp_path, record, NOW)
+    github.fail_lookup = True
+    tick_once()
+    assert len(github.posts) == 2
+    github.fail_lookup = False
+    tick_once()
+    assert len(github.posts) == 3
+    assert github.posts[0] == github.posts[-1]
+    # a manual-merge PR is a human's to merge: no status comment, no lookup
+    save_record(tmp_path, replace(record, auto_bless_reason="contract merge is manual"), NOW)
+    github.dial = "manual"
+    lookups = github.lookups
+    tick_once()
+    assert len(github.posts) == 3
+    assert github.lookups == lookups

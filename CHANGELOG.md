@@ -26,6 +26,8 @@ tasks to finish.
 
 ### Fixed
 
+- PRs under `merge: auto` say why self-merge is waiting, and the publish records and logs the bless decision.
+
 - A timed-out local job could leave its GPUs reserved until the next submit; they are now released once its process group is gone.
 
 - The tick log says why a blessed PR is not merged yet (a message waits for the author, the run sleeps on jobs, the base moved, and so on), one line per sweep.

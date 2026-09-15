@@ -601,19 +601,29 @@ def _observe_auto_pr(
 
 
 def _merge_blessed_pr(
-    root: Path, record: RunRecord, github: Any, pr: dict, holder: str, now: float
+    root: Path,
+    record: RunRecord,
+    github: Any,
+    pr: dict,
+    holder: str,
+    now: float,
+    bot_login: str = "",
 ) -> None:
     from outerloop.inbox import wake_pending
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def why_not(record: RunRecord, pr: dict) -> str:
+    def why_not(record: RunRecord, pr: dict, dial: str) -> str:
         """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
             (record.state != PARKED, "the run is not parked"),
             (record.agent_id.startswith("steward"), "a steward's PR is a human's to merge"),
-            (not record.auto_blessed_head, "no head was blessed at publish"),
+            (
+                not record.auto_blessed_head,
+                "no head was blessed at publish"
+                + (f": {record.auto_bless_reason}" if record.auto_bless_reason else ""),
+            ),
             (bool(_poll_targets(record)), "the run sleeps on jobs"),
             (wake_pending(run_dir(root, record.run_id), record), "a message waits for the author"),
             (pr.get("state") != "open" or bool(pr.get("merged")), "the PR is not open"),
@@ -624,17 +634,10 @@ def _merge_blessed_pr(
                 (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha"),
                 "the base moved",
             ),
-            (
-                _base_dial(github, record.target, pr, None) != "auto",
-                "the base contract is not auto",
-            ),
+            (dial != "auto", "the base contract is not auto"),
         )
         return next((reason for failed, reason in checks if failed), "")
 
-    reason = why_not(record, pr)
-    if reason:
-        log.info("merge of %s#%s waits: %s", record.target, number, reason)
-        return
     if not acquire_lease(root, record.run_id, holder, "", now):
         return
     try:
@@ -643,9 +646,44 @@ def _merge_blessed_pr(
         # guards only the head)
         record = load_record(root, record.run_id)
         pr = github.get_pull_request(record.target, number)
-        reason = why_not(record, pr)
+        dial = _base_dial(github, record.target, pr, None)
+        reason = why_not(record, pr, dial)
         if reason:
+            from outerloop.github import is_own_login
+            from outerloop.markers import has_marker, legacy_marker, marker
+
+            reason = redact(reason, _client_secrets(github))
             log.info("merge of %s#%s waits: %s", record.target, number, reason)
+            if dial != "auto":
+                # a manual-merge PR is a human's to merge; nothing to explain
+                return
+            try:
+                comments = github.list_comments(record.target, number)
+                latest = next(
+                    (
+                        str(c.get("body") or "")
+                        for c in reversed(comments)
+                        if has_marker(str(c.get("body") or ""), "self-merge-status")
+                        and is_own_login(
+                            str((c.get("user") or {}).get("login") or ""),
+                            bot_login or _bot_login_default(),
+                        )
+                    ),
+                    "",
+                )
+            except Exception as exc:
+                log.warning(
+                    "self-merge status lookup failed: %s", redact(str(exc), _client_secrets(github))
+                )
+                return
+            status = f"Self-merge waiting: {reason}."
+            previous = (
+                latest.replace(marker("self-merge-status"), "")
+                .replace(legacy_marker("self-merge-status"), "")
+                .strip()
+            )
+            if previous != status:
+                github.comment(record.target, number, f"{marker('self-merge-status')}\n{status}")
             return
         methods = github.allowed_merge_methods(record.target)
         if not methods:
@@ -998,7 +1036,7 @@ def sweep(
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        _merge_blessed_pr(root, record, github, pr, holder, now)
+                        _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
             except Exception as exc:
                 log.warning(
                     "GitHub polling failed on %s: %s: %s", record.run_id, type(exc).__name__, exc
