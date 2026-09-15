@@ -295,15 +295,26 @@ says so — rerun `outerloop init --force` online, or set the login in the
 
 ### 2c. Run the loop
 
+When the configured author's CLI is missing, `outerloop init` installs it from
+a pinned release and records its path. An existing executable is kept.
+Use `--no-install-harness` to skip this step. To install by hand from the
+outerloop checkout, run `bash scripts/install_claude.sh [target_path]` or
+`bash scripts/install_codex.sh [target_path]`, then rerun `outerloop init --force`.
+The default target is `$OUTERLOOP_<BACKEND>_BIN`, else `~/.local/bin/<backend>`.
+Claude 2.1.272 is pinned for Linux x64 (glibc/musl) and ARM64; other platforms
+are refused. Installation needs `curl`, `sha256sum`, and a writable target
+directory. Hermes remains a review backend, provisioned with
+`bash scripts/install_hermes.sh [target_dir]`.
+
 **Host prerequisites for model backends.** From the outerloop checkout:
 
 | Backend | Host prerequisite | Install command |
 | --- | --- | --- |
-| Claude author or reviewer | Claude Code CLI ([official setup](https://code.claude.com/docs/en/setup)) | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| Claude author or reviewer | Pinned Claude Code CLI | `bash scripts/install_claude.sh` |
 | Codex author or reviewer | Pinned Codex CLI | `bash scripts/install_codex.sh` |
 | Hermes reviewer (not an author backend) | Pinned hermes-agent source checkout, run through `uv` | `bash scripts/install_hermes.sh` |
 
-Install the selected backend before setup. `init` records the absolute Claude
+`init` records the absolute Claude
 or Codex path found on PATH (or in `~/.local/bin`) as `OUTERLOOP_<BACKEND>_BIN`.
 `start` checks only the configured author's CLI: the recorded path takes
 precedence, otherwise it searches PATH. A missing or non-executable CLI stops

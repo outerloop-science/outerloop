@@ -213,24 +213,31 @@ if [ -n "$ENV_TRUSTED" ]; then
     done
 fi
 
-# The codex author binary is a host prerequisite; install it (idempotent, fast
-# path is a local version check) when ANY codex role is deployed — the fleet
-# author, or a codex panel lens (a claude-author/codex-panel rollout still
-# bind-mounts the binary into every judge container). Best-effort: a failure
-# here must never break the chain — the climb will report a missing codex
-# clearly if it comes to that.
-case "${OUTERLOOP_AUTHOR_BACKEND:-}:${OUTERLOOP_PANEL:-}" in
-    codex:*|*:*codex*)
-        bash "$OUTERLOOP_HOME/scripts/install_codex.sh" || echo "deploy: codex install failed"
-        ;;
-esac
+# Keep existing codex/panel pin maintenance; provision other authors only when
+# missing. The installer mapping is shared with init and start's manual hints.
 case "${OUTERLOOP_PANEL:-}" in
-    *hermes*)
-        # the default install location IS the default config: exporting it
-        # here connects the provisioned clone to the preflight/climb without
-        # requiring the operator to name a path they didn't choose
-        export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}"
-        bash "$OUTERLOOP_HOME/scripts/install_hermes.sh" "$REVIEW_HERMES_REPO" \
-            || echo "deploy: hermes install failed"
-        ;;
+    *hermes*) export REVIEW_HERMES_REPO="${REVIEW_HERMES_REPO:-$HOME/hermes-agent}" ;;
 esac
+(cd "$OUTERLOOP_HOME" && uv run --no-sync python - <<'PYTHON'
+import os
+import shlex
+import subprocess
+
+from outerloop.harness import HARNESS_INSTALL
+from outerloop.init import AUTHOR_BACKENDS, install_harness, locate_harness
+
+author = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+panel = os.environ.get("OUTERLOOP_PANEL", "")
+if author in AUTHOR_BACKENDS and author != "codex" and not locate_harness(author):
+    try:
+        install_harness(author)
+    except ValueError as exc:
+        print(f"deploy: {exc}")
+for backend in ("codex", "hermes"):
+    if backend in panel or (backend == "codex" and author == backend):
+        try:
+            subprocess.run(shlex.split(HARNESS_INSTALL[backend]), check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"deploy: {backend} install failed: {exc}")
+PYTHON
+) || echo "deploy: harness install check failed"
