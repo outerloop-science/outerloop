@@ -183,6 +183,8 @@ open-ended sweep space.
 ## Cross-cluster (dev plan, 2026-08-29)
 
 Research findings sync through GitHub; job state never leaves its cluster.
+Design note: design/multi-cluster.md (2026-09-15) fills in the tiers against
+the code and against Empire AI, NERSC and ALCF, and plans the Empire AI try-out.
 
 - [x] Findings memory: every attempt fetches the target's `research-log`
       branch — the brief inlines the newest reports, the full archive lands
