@@ -413,15 +413,17 @@ direct, and one generic sync replicates the shared tree to `research-log`
 for cross-fleet mail, forum and status, with the medium swappable per
 directory later. Still the owner's:
 
-1. **Tick host.** Accept `OUTERLOOP_TICK_HOST=resident|scrontab|login` with
-   a tick lease, `resident` staying the default? Empire AI needs `login`
-   now: the probe found no partition a resident could live on.
-2. **Bot identity.** One App for every fleet of a target is now the
-   recommendation, because claim markers count only under the bot's own
-   login; per-deployment Apps need identity-independent claims first.
-3. **Order.** Empire AI first (one small PR: the login tick host and the
-   QOS setting), NERSC second (container seam and `scrontab`), ALCF last
-   (PBS backend).
+1. **Tick host.** Built (#402, 2026-09-15): `OUTERLOOP_TICK_HOST=login`
+   runs the foreground loop against Slurm with a tick lease in the state
+   root; `resident` stays the default; `scrontab` waits for NERSC. Alpha
+   runs this way.
+2. **Bot identity.** In effect: Alpha reuses the `outerloop-science` App
+   (decided 2026-09-15); a lab-org target uses the same App's lab
+   installation. Per-deployment Apps stay out until claims are
+   identity-independent.
+3. **Order.** Empire AI Alpha is live (2026-09-15, one full cycle seen);
+   Beta next (decision 9), then NERSC (container seam and `scrontab`), ALCF
+   last (PBS backend).
 4. **Pacing.** Contract-declared fleet shares whose sum is the target's
    ceiling, enforced per kernel; the earlier "each deployment sets a lower
    value" does not hold the ceiling.
@@ -436,12 +438,13 @@ directory later. Still the owner's:
    so both paths share one rule (recommended).
 7. **Forum placement and retention.** Permanently on GitHub as research
    content, compacted into digests after a window.
-8. **Two small fixes first, independent of any fleet decision.** The GitHub
-   outage latch (a publish that meets a GitHub failure today ends the run
-   aborted), and the agent-slot allocator on every lane with `--agent-id`
-   required (a requested run lands on `agent-01` today). For the second,
-   whether a requested run counts against the width or takes an id beyond
-   it (recommended).
+8. **Two small fixes first, independent of any fleet decision.** Still
+   open: the GitHub outage latch (a publish that meets a GitHub failure
+   today ends the run aborted; a clone at attempt start has no retry
+   either, seen on Alpha), and the agent-slot allocator on every lane with
+   `--agent-id` required (a requested run lands on `agent-01` today). For
+   the second, whether a requested run counts against the width or takes an
+   id beyond it (recommended).
 
 9. **Empire AI Beta.** Decided (2026-09-15): Beta hosts four-GPU-sized
    experiments; allocation bundling for small jobs is not built. Order as
