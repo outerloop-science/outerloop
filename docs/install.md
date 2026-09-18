@@ -327,12 +327,13 @@ defaults to `~/hermes-agent`); contained review sessions bind its source read-on
 The quickest path is the guided setup:
 
 ```bash
-outerloop init      # asks for compute, target repo, placement, auth, and the author's model key
+outerloop init      # asks for compute, target repo, placement, auth, the Claude model, and the author's key
 outerloop start
 ```
 
 `init` asks for the compute backend, the target repo, placement, the
-identity from 2b, and the author's model key, and writes
+identity from 2b, the Claude model (`OUTERLOOP_CLAUDE_MODEL`, required for
+every Claude role), and the author's model key, and writes
 `~/.config/outerloop/.env` (all `0600`) — everything the prose below otherwise
 sets by hand. The rest of this section documents what it writes, for when
 you'd rather set it directly.
@@ -447,9 +448,11 @@ comma-separated partition list lets Slurm start each job wherever it fits
 first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
-`OUTERLOOP_CLAUDE_MODEL` sets the default for all Claude roles (default:
-`claude-opus-5` when unset or blank); `OUTERLOOP_AUTHOR_MODEL` overrides it
-for the author. The author key file is
+`OUTERLOOP_CLAUDE_MODEL` names the model for every Claude role (author,
+panel judges, steward) and is required whenever the deployment runs one:
+there is no built-in default, and `start` refuses without it, naming the
+line to add; `OUTERLOOP_AUTHOR_MODEL` overrides it for the author. The
+author key file is
 `OUTERLOOP_<BACKEND>_KEY_FILE` (`OUTERLOOP_CLAUDE_KEY_FILE`,
 `OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to
 `~/.config/outerloop/<backend>_key`, 0600). A Codex author always runs contained,
@@ -613,10 +616,10 @@ OUTERLOOP_VERTEX_REGION=global              # optional (default: global)
 OUTERLOOP_VERTEX_ADC=~/.config/outerloop/vertex_adc.json  # ADC file
 ```
 
-If your Vertex project has access to a different model, set
-`OUTERLOOP_CLAUDE_MODEL` in `~/.config/outerloop/.env` to that model ID.
-This sets the default for Claude authors, panel judges, reviewers, and stewards;
-an explicit role model or `OUTERLOOP_AUTHOR_MODEL` still takes precedence.
+`OUTERLOOP_CLAUDE_MODEL` in `~/.config/outerloop/.env` (required for every
+Claude role) must name a model ID your Vertex project has access to; it is
+what Claude authors, panel judges, reviewers, and stewards run, and an
+explicit role model or `OUTERLOOP_AUTHOR_MODEL` still takes precedence.
 `OUTERLOOP_VERTEX_SMALL_MODEL` selects Claude Code's auxiliary fast model and defaults to the session model.
 
 Enable the Claude models in the project's Model Garden, mint ADC

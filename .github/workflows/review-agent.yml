@@ -19,9 +19,11 @@ on:
         default: claude
       model:
         description: >-
-          Model for the session. Empty -> the backend default (claude-opus-5,
-          codex configured, hermes default). For hermes pass the PROVIDER'S
-          native id (openrouter: deepseek/deepseek-chat; openai: gpt-5.6-terra).
+          Model for the session. The claude backend requires one: this input,
+          else OUTERLOOP_CLAUDE_MODEL in the environment (no built-in default).
+          Empty -> codex configured, hermes default. For hermes pass the
+          PROVIDER'S native id (openrouter: deepseek/deepseek-chat; openai:
+          gpt-5.6-terra).
         type: string
         required: false
         default: ''

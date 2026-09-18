@@ -22,7 +22,7 @@ tasks to finish.
 
 ### Added
 
-- `OUTERLOOP_CLAUDE_MODEL` configures the shared default for all Claude roles, including deployments whose Vertex project has access to a different model. `OUTERLOOP_AUTHOR_MODEL` still overrides the author default. Vertex auxiliary fast calls default to the session model, avoiding dependencies on models the project has not enabled; `OUTERLOOP_VERTEX_SMALL_MODEL` overrides that default.
+- `OUTERLOOP_CLAUDE_MODEL` names the model for all Claude roles, including deployments whose Vertex project has access to a different model. `OUTERLOOP_AUTHOR_MODEL` still overrides the author default. `outerloop init` asks for it (`--claude-model`). Vertex auxiliary fast calls default to the session model, avoiding dependencies on models the project has not enabled; `OUTERLOOP_VERTEX_SMALL_MODEL` overrides that default.
 
 - `outerloop init` installs a missing author CLI and records its path; `--no-install-harness` opts out. Claude has a pinned, SHA256-verified installer.
 
@@ -66,6 +66,7 @@ tasks to finish.
 
 ### Changed
 
+- **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` — `outerloop start` refuses without it and names the line — and the review/verify agents on the claude backend need a model input or that variable.
 - Completed CI checks reach the author as messages with bounded log tails. Failed checks wake idle runs; successful, neutral and skipped checks wait as context.
 
 - Messages carry an origin and a qualified repository thread. Staged replies keep their destination through retries and later PR changes.
