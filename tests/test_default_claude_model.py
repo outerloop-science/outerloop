@@ -5,6 +5,7 @@ model never needs it and a missing one is a named error, not a traceback."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -411,3 +412,96 @@ def test_legacy_claude_wake_honors_an_explicit_model_under_a_codex_fleet(monkeyp
     # without an explicit model the claude default is still required
     with pytest.raises(attempt.ClaudeModelUnset):
         attempt.resume_author(legacy, "gpt-fleet", "codex")
+
+
+def test_bare_panel_lenses_follow_the_author_backend(monkeypatch, tmp_path):
+    """A codex deployment that never set OUTERLOOP_PANEL gets codex judges and is
+    not asked for a Claude model; a claude deployment gets claude judges."""
+    from outerloop import cli
+    from outerloop.panel import parse_lenses
+
+    assert parse_lenses("verify,review", "codex") == (
+        ("verify", "codex", ""),
+        ("review", "codex", ""),
+    )
+    assert parse_lenses("verify,review") == (("verify", "claude", ""), ("review", "claude", ""))
+    assert parse_lenses("verify:claude:m,review", "codex") == (
+        ("verify", "claude", "m"),
+        ("review", "codex", ""),
+    )
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    codex_env = {"OUTERLOOP_AUTHOR_BACKEND": "codex", "OUTERLOOP_AUTHOR_MODEL": "gpt-x"}
+    assert cli.missing_claude_model({}, codex_env) == ""
+    claude_env = {"OUTERLOOP_AUTHOR_BACKEND": "claude", "OUTERLOOP_AUTHOR_MODEL": "claude-a"}
+    assert cli.missing_claude_model({}, claude_env) == ""  # claude lenses inherit the claude author
+    mixed = {
+        "OUTERLOOP_AUTHOR_BACKEND": "codex",
+        "OUTERLOOP_AUTHOR_MODEL": "gpt-x",
+        "OUTERLOOP_PANEL": "verify,review:claude:m",
+    }
+    assert cli.missing_claude_model({}, mixed) == ""  # explicit model, no shared setting needed
+
+
+def test_model_less_panel_lens_inherits_the_author_model_on_the_same_backend(monkeypatch, tmp_path):
+    """`review:codex` under a codex author runs on the author's model; an explicit
+    lens model wins; a claude lens under a codex author uses the Claude setting."""
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-deploy")
+    monkeypatch.setattr(attempt, "role_key", lambda *args: "test-key")
+    monkeypatch.setattr(
+        attempt,
+        "_judge_lens_key",
+        lambda **kw: str(tmp_path / f"{kw['backend']}-judge-key"),
+    )
+    built: list[tuple[str, str | None]] = []
+    real = attempt.PanelLens
+
+    def capture(*args, **kwargs):
+        judge = kwargs.get("harness")
+        built.append(
+            (
+                type(judge).__name__.replace("Harness", "").replace("CodeClaude", "claude").lower(),
+                getattr(judge, "model", None),
+            )
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(attempt, "PanelLens", capture)
+    args = SimpleNamespace(
+        panel="verify,review:codex:gpt-pinned,review:claude",
+        panel_key_file=str(tmp_path / "key"),
+        claude_bin="claude",
+        codex_bin="codex",
+        image=str(tmp_path / "img.sif"),
+        author_backend="codex",
+        model="gpt-author",
+    )
+    (tmp_path / "img.sif").write_text("")
+    # `review:claude` names no model and is not on the author's backend: refused
+    with pytest.raises(ValueError, match="review:claude:<model>"):
+        attempt._panel_lenses_from_args(args)
+    args.panel = "verify,review:codex:gpt-pinned,review:claude:claude-x"
+    with contextlib.suppress(Exception):  # harness construction is not under test
+        attempt._panel_lenses_from_args(args)
+    models = {m for _, m in built}
+    assert {"gpt-author", "gpt-pinned", "claude-x"} <= models, built
+
+
+def test_start_refuses_a_model_less_lens_off_the_author_backend():
+    from outerloop import cli
+
+    codex = {"OUTERLOOP_AUTHOR_BACKEND": "codex", "OUTERLOOP_AUTHOR_MODEL": "gpt-x"}
+    assert cli.missing_panel_model({}, codex) == ""  # bare verify,review -> codex judges on gpt-x
+    assert (
+        cli.missing_panel_model({}, {"OUTERLOOP_AUTHOR_BACKEND": "codex"}) == ""
+    )  # inherits like the author
+    assert "review:claude" in cli.missing_panel_model(
+        {}, {**codex, "OUTERLOOP_PANEL": "verify,review:claude"}
+    )
+    assert cli.missing_panel_model({}, {**codex, "OUTERLOOP_PANEL": "verify,review:claude:m"}) == ""
+    claude = {"OUTERLOOP_AUTHOR_BACKEND": "claude", "OUTERLOOP_CLAUDE_MODEL": "claude-m"}
+    assert (
+        cli.missing_panel_model({}, claude) == ""
+    )  # claude lenses resolve through the shared setting
+    assert "review:codex" in cli.missing_panel_model(
+        {}, {**claude, "OUTERLOOP_PANEL": "verify,review:codex"}
+    )

@@ -35,9 +35,12 @@ log = logging.getLogger(__name__)
 LENS_KINDS = ("verify", "review")
 
 
-def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
+def parse_lenses(panel: str, default_backend: str = "claude") -> tuple[tuple[str, str, str], ...]:
     """Parse a panel spec — comma-separated ``kind[:backend[:model]]`` — into
-    (kind, backend, model) triples, or raise ValueError.
+    (kind, backend, model) triples, or raise ValueError. A lens that names no
+    backend takes `default_backend`: callers pass the author's backend, so a
+    codex deployment gets codex judges by default and a claude deployment
+    claude judges, and no deployment is asked for a model it never chose.
 
     One owner for the grammar: the climb CLI turns the error into
     parser.error, and the tick preflights the SAME rules before claiming an
@@ -54,7 +57,7 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
         entry = raw.strip()
         kind, _, rest = entry.partition(":")
         backend, _, model = rest.partition(":")
-        backend = backend or "claude"
+        backend = backend or (default_backend or "claude")
         if kind not in LENS_KINDS:
             raise ValueError(f"panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
         if backend not in ("claude", "codex", "hermes"):

@@ -658,14 +658,20 @@ def test_missing_claude_model_resolution() -> None:
     # the defaults alone (claude author, verify,review panel) need it
     problem = missing_claude_model({}, {})
     assert unset in problem and "OUTERLOOP_CLAUDE_MODEL=<model>" in problem
-    assert "claude author" in problem and "verify, review" in problem and "steward" not in problem
+    # the claude lenses inherit the claude author, so the one missing setting is
+    # named once, for the author
+    assert "claude author" in problem and "panel judge" not in problem and "steward" not in problem
     # the author's own model covers the author; explicit lens models cover the panel
     covered = {
         "OUTERLOOP_AUTHOR_MODEL": "claude-author",
         "OUTERLOOP_PANEL": "verify:claude:claude-v,review:codex:gpt-x",
     }
     assert missing_claude_model(covered, {}) == ""
-    assert "review" in missing_claude_model({**covered, "OUTERLOOP_PANEL": "review"}, {})
+    # a bare claude lens under a claude author inherits the author's model
+    assert missing_claude_model({**covered, "OUTERLOOP_PANEL": "review"}, {}) == ""
+    # ... but under a codex author it needs the shared setting
+    codex_bare = {"OUTERLOOP_AUTHOR_BACKEND": "codex", "OUTERLOOP_PANEL": "review:claude"}
+    assert "review" in missing_claude_model(codex_bare, {})
     # a codex author with the panel off needs nothing; a provisioned steward does
     codex = {"OUTERLOOP_AUTHOR_BACKEND": "codex", "OUTERLOOP_PANEL": ""}
     assert missing_claude_model(codex, {}) == ""

@@ -2282,7 +2282,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         from outerloop.panel import parse_lenses
 
         try:
-            lenses = parse_lenses(spec.panel)
+            lenses = parse_lenses(
+                spec.panel, os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude"
+            )
         except ValueError as exc:
             return str(exc)
         # non-claude (shelled) lenses: mirror the climb's rules exactly, per

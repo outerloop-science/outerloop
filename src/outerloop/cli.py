@@ -424,6 +424,30 @@ def _configured(key: str, values: Mapping[str, str], environ: Mapping[str, str])
     return values.get(key)
 
 
+def missing_panel_model(values: dict[str, str], environ: Mapping[str, str]) -> str:
+    """Refuse a panel lens that names no model and does not run on the author's
+    backend: it would run on whatever that backend's CLI defaults to, a model
+    nobody chose. Empty when every lens has a model or inherits the author's."""
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    panel = _configured("OUTERLOOP_PANEL", values, environ)
+    panel = DEFAULT_PANEL if panel is None else panel.strip()
+    if not panel:
+        return ""
+    from outerloop.panel import parse_lenses
+
+    try:
+        lenses = parse_lenses(panel, backend)
+    except ValueError:
+        return ""  # a malformed panel is the tick's own diagnosis
+    bad = [f"{kind}:{on}" for kind, on, model in lenses if not model and on != backend]
+    if not bad:
+        return ""
+    return (
+        f"panel lens(es) {', '.join(bad)} name no model and do not run on the author's "
+        f"backend ({backend}); write each as kind:backend:<model> in OUTERLOOP_PANEL"
+    )
+
+
 def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
     """Why this start would run a Claude role with no model ("" when it won't).
     OUTERLOOP_CLAUDE_MODEL is a required deployment setting, never a code
@@ -443,10 +467,17 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
         from outerloop.panel import parse_lenses
 
         try:
-            lenses = parse_lenses(panel)
+            lenses = parse_lenses(panel, backend)
         except ValueError:
             lenses = ()  # a malformed panel is the tick's own diagnosis
-        unnamed = [kind for kind, on, model in lenses if on == "claude" and not model]
+        # a claude lens without a model inherits a claude author's model; under
+        # any other author it needs the shared Claude setting (a non-claude lens
+        # without a model is refused by missing_panel_model)
+        unnamed = [
+            kind
+            for kind, on, model in lenses
+            if on == "claude" and not model and backend != "claude"
+        ]
         if unnamed:
             roles.append(
                 f"the claude panel judge(s) {', '.join(unnamed)} (no model in OUTERLOOP_PANEL)"
@@ -532,6 +563,7 @@ def start(args: argparse.Namespace) -> int:
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
         # the model check holds for --dry-run too: it is configuration, not a host lookup
         problem = problem or missing_claude_model(values, os.environ)
+        problem = problem or missing_panel_model(values, os.environ)
         if problem:
             raise StartError(problem)
         from_file = values

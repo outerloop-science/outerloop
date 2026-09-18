@@ -3024,7 +3024,27 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
     from outerloop.panel import parse_lenses
     from outerloop.roles import reviewer_spec
 
-    parsed = parse_lenses(args.panel)
+    author_backend = getattr(args, "author_backend", "") or "claude"
+    author_model = getattr(args, "model", "") or ""
+    parsed = parse_lenses(args.panel, author_backend)
+    # a lens that names no model runs the author's model when it runs the
+    # author's backend (one deployment, one model unless told otherwise);
+    # on any other backend the model must be named: no judge runs on a
+    # model nobody chose
+    resolved = []
+    for kind, backend, model in parsed:
+        if not model:
+            if backend == author_backend:
+                # inherit, even when the author itself runs its CLI's default
+                model = author_model
+            else:
+                raise ValueError(
+                    f"panel lens {kind}:{backend} names no model and does not run on the "
+                    f"author's backend ({author_backend}); write it as "
+                    f"{kind}:{backend}:<model> in OUTERLOOP_PANEL"
+                )
+        resolved.append((kind, backend, model))
+    parsed = tuple(resolved)
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
     panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
@@ -4761,6 +4781,9 @@ def main() -> int:
                 ((), ()) if args.panel_skip else _panel_lenses_from_args(args)
             )
         except ValueError as exc:
+            # this wake holds the run's lease; a panel misconfiguration must not
+            # strand it until the TTL reap
+            _release_own_lease(args.run_root, args.resume)
             parser.error(str(exc))
         wake_api_key = ""
         wake_harness = None

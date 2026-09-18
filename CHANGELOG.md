@@ -28,7 +28,7 @@ tasks to finish.
 - `outerloop init` asks for the Claude model (`--claude-model`, else the shell's `OUTERLOOP_CLAUDE_MODEL`, else a required prompt) and writes it to `.env`. A focused `init --github-app` run preserves every existing `.env` setting it does not manage.
 
 ### Changed
-- **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` (`outerloop start` refuses without it and names the line), and the review and verify agents on the claude backend read it from the `OUTERLOOP_CLAUDE_MODEL` Actions variable when no model input is given.
+- **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. A panel lens that names no backend now runs on the author's backend (a codex author gets codex judges by default), so a deployment that never chose Claude is not asked for a Claude model. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` (`outerloop start` refuses without it and names the line), and the review and verify agents on the claude backend read it from the `OUTERLOOP_CLAUDE_MODEL` Actions variable when no model input is given.
 
 ## [0.2.0] - 2026-09-18
 

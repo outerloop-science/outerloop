@@ -448,7 +448,10 @@ tick does not service a target without it); `OUTERLOOP_GPU_PARTITION` (optionall
 `OUTERLOOP_GPU_ACCOUNT`) is the lane for GPU evals and launches — a
 comma-separated partition list lets Slurm start each job wherever it fits
 first; `OUTERLOOP_PANEL` names the verify/review lenses (with
-`OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
+`OUTERLOOP_PANEL_*_KEY_FILE` for their keys; a lens that names no backend
+runs on the author's backend, so a codex deployment gets codex judges by
+default, and a lens that names no model runs the author's model when it
+shares the author's backend, else that backend's default); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
 `OUTERLOOP_CLAUDE_MODEL` names the model for every Claude role (author,
 panel judges, steward) and is required whenever the deployment runs one:

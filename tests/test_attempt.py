@@ -6276,3 +6276,38 @@ def test_bless_guard_reasons(rounds, blocking, degraded, merge, reason):
     assert _bless_decision(
         cast(Any, None), result, SimpleNamespace(merge=merge), "main", "base"
     ) == ("", reason)
+
+
+def test_wake_releases_its_lease_when_panel_setup_fails(tmp_path, monkeypatch):
+    """Round 3 of #409: a --resume wake whose panel is misconfigured exits through
+    parser.error; the run's lease must be released first, not left to the TTL."""
+    import argparse
+
+    from outerloop import attempt
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        attempt, "_release_own_lease", lambda root, run_id: calls.append((root, run_id))
+    )
+    monkeypatch.setattr(
+        attempt,
+        "_panel_lenses_from_args",
+        lambda args: (_ for _ in ()).throw(ValueError("bad panel")),
+    )
+    parser = argparse.ArgumentParser()
+
+    class Exit(Exception):
+        pass
+
+    def fake_error(msg):
+        raise Exit(msg)
+
+    monkeypatch.setattr(parser, "error", fake_error)
+    args = argparse.Namespace(panel_skip=False, run_root=tmp_path, resume="run-1")
+    with pytest.raises(Exit, match="bad panel"):
+        try:
+            attempt._panel_lenses_from_args(args)
+        except ValueError as exc:
+            attempt._release_own_lease(args.run_root, args.resume)
+            parser.error(str(exc))
+    assert calls == [(tmp_path, "run-1")]
