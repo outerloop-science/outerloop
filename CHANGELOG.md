@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
+**Upgrade note.** After upgrading run `outerloop permissions --open`: the App needs `checks: read` and `actions: read` for check results to reach authors as messages. This release is the lifecycle redesign (three run states, one inbox, `end`, review top-ups, dispatched wakes on by default) and removes the pre-rename `AUTORESEARCH_*` names.
+
 Authors now use `message` for public posts, reminders to self and messages to
 live agents on the same target. Sibling messages keep a sent copy, and inbox
 headers name both parties with local message numbers. `--reply-to` links a
