@@ -51,7 +51,7 @@ from outerloop.github import (
     ensure_regular_git_dir,
     git_identity,
 )
-from outerloop.harness import Harness, SessionResult, default_binary, redact
+from outerloop.harness import Harness, SessionResult, default_binary, default_claude_model, redact
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
@@ -194,7 +194,7 @@ def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     model = getattr(record, "author_model", "") or (
-        "claude-opus-5" if backend == "claude" else fleet_model
+        default_claude_model() if backend == "claude" else fleet_model
     )
     default_key = (
         os.environ.get("OUTERLOOP_STEWARD_KEY_FILE", str(CONFIG_DIR / "steward_key"))
@@ -4575,7 +4575,7 @@ def main() -> int:
         "(must be an absolute path).",
     )
     parser.add_argument(
-        "--model", default=os.environ.get("OUTERLOOP_AUTHOR_MODEL") or "claude-opus-5"
+        "--model", default=os.environ.get("OUTERLOOP_AUTHOR_MODEL") or default_claude_model()
     )
     parser.add_argument(
         "--author-backend",

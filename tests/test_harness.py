@@ -795,6 +795,38 @@ def test_vertex_mode_swaps_the_key_for_adc_env(tmp_path: Path, monkeypatch) -> N
     assert "ANTHROPIC_API_KEY" not in env
 
 
+@pytest.mark.parametrize("small_model", ["", "configured-small-model"])
+@pytest.mark.parametrize("contained", [False, True])
+def test_vertex_small_fast_model_defaults_to_session_model(
+    tmp_path: Path, monkeypatch, small_model: str, contained: bool
+) -> None:
+    from outerloop.harness import VertexConfig
+
+    captured = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured["env"] = env
+        raise OSError("stop here")
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    vertex = VertexConfig(project="p-123", small_model=small_model)
+    # the config exports the slot only when set; an empty value would tell the
+    # CLI to use no model at all, so the harness fills it from the session model
+    assert vertex.env().get("ANTHROPIC_SMALL_FAST_MODEL") == (small_model or None)
+    h = ClaudeCodeHarness(
+        api_key="",
+        binary="/abs/claude",
+        model="session-model",
+        container_image="/img.sif" if contained else "",
+        vertex=vertex,
+    )
+    assert h.run("brief", tmp_path).is_error
+    expected = small_model or h.model
+    assert captured["env"]["ANTHROPIC_SMALL_FAST_MODEL"] == expected
+    if contained:
+        assert captured["env"]["APPTAINERENV_ANTHROPIC_SMALL_FAST_MODEL"] == expected
+
+
 def test_vertex_contained_session_binds_the_adc_file(tmp_path: Path, monkeypatch) -> None:
     from outerloop.harness import ClaudeCodeHarness, VertexConfig
 
@@ -824,16 +856,22 @@ def test_vertex_contained_session_binds_the_adc_file(tmp_path: Path, monkeypatch
     assert "APPTAINERENV_ANTHROPIC_API_KEY" not in env
 
 
-def test_vertex_from_env_is_the_single_owner(monkeypatch) -> None:
+@pytest.mark.parametrize("small_model", [None, " configured-small-model "])
+def test_vertex_from_env_is_the_single_owner(monkeypatch, small_model) -> None:
     from outerloop.harness import vertex_from_env
 
     monkeypatch.delenv("OUTERLOOP_VERTEX_PROJECT", raising=False)
     assert vertex_from_env() is None
     monkeypatch.setenv("OUTERLOOP_VERTEX_PROJECT", "p-9")
     monkeypatch.setenv("OUTERLOOP_VERTEX_ADC", "~/adc.json")
+    if small_model is None:
+        monkeypatch.delenv("OUTERLOOP_VERTEX_SMALL_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("OUTERLOOP_VERTEX_SMALL_MODEL", small_model)
     cfg = vertex_from_env()
     assert cfg is not None and cfg.project == "p-9" and cfg.region == "global"
     assert cfg.adc_file.endswith("/adc.json") and not cfg.adc_file.startswith("~")
+    assert cfg.small_model == (small_model or "").strip()
 
 
 def test_vertex_from_env_resolves_ambient_adc_under_the_real_home(tmp_path, monkeypatch) -> None:
