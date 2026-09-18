@@ -25,7 +25,6 @@ overrides GPU detection; `0` disables allocation. Submissions still wait for all
 tasks to finish.
 
 ### Added
-- Authors can post replies through `reply` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Review edits are measured and published only on submit, using the same remaining GPU budget as other author work.
 
 ## [0.2.0] - 2026-09-18
 
