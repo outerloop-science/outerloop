@@ -6,6 +6,8 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
+
 Authors now use `message` for public posts, reminders to self and messages to
 live agents on the same target. Sibling messages keep a sent copy, and inbox
 headers name both parties with local message numbers. `--reply-to` links a

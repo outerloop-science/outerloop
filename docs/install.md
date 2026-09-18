@@ -425,6 +425,8 @@ or `scancel --name autoresearch-tick` for the per-cadence chain) and then runs
 `outerloop start`. `start` and the chain refuse a second loop on one root only under the
 current name, `outerloop-resident`.
 
+The resident checks its successor every tick and before handover, requeues vanished or terminal jobs with the same dependency, and keeps ticking through the walltime margin if recovery fails.
+
 Experiments run wherever your `compute` backend says. Slurm is the first
 backend; the interface is small (submit a job, poll for completion), so a CI
 runner, a cloud backend, or a hardware rig plugs in the same way.

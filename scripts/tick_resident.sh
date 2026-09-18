@@ -74,6 +74,46 @@ drain_per_cadence_chain() {
 
 shim_checksum() { cksum "$shim" 2>/dev/null | cut -d' ' -f1; }
 
+ensure_successor() {
+    local state="" old="$successor" replacement=""
+    if [ -n "$successor" ]; then
+        if ! state=$(squeue -h -j "$successor" -o %T 2>&1); then
+            case "$state" in
+                *"Invalid job id specified"*) state="" ;;
+                *)
+                    # A query outage is not evidence that the job vanished.
+                    # Keep its id to avoid duplicates, but do not hand over.
+                    echo "resident: ERROR: cannot check successor $successor: $state; retrying next iteration"
+                    return 1 ;;
+            esac
+        fi
+        state=$(printf '%s' "$state" | awk 'NF {print $1; exit}')
+        case "$state" in
+            PENDING|RUNNING) return 0 ;;
+            "") state="GONE" ;;
+            CANCELLED|FAILED|TIMEOUT|NODE_FAIL|COMPLETED|OUT_OF_MEMORY|BOOT_FAIL|DEADLINE|PREEMPTED|REVOKED) ;;
+            *)
+                echo "resident: successor $successor is $state; waiting before handover"
+                return 1 ;;
+        esac
+    fi
+    if replacement=$(submit_successor); then
+        successor="$replacement"
+        successor_sum=$(shim_checksum)
+        if [ -n "$old" ]; then
+            echo "resident: successor $old vanished ($state); requeued as $successor"
+        elif [ $((end_epoch - $(date +%s))) -le "$margin_s" ]; then
+            echo "resident: successor $successor queued at handover"
+        else
+            echo "resident: successor $successor queued (afterany:${self:-none})"
+        fi
+        drain_per_cadence_chain
+        return 0
+    fi
+    echo "resident: ERROR: successor ${old:-none} submit failed; retrying next iteration"
+    return 1
+}
+
 successor=""
 successor_sum=""  # the shim checksum the queued successor was submitted under
 LOG_DIR="$OUTERLOOP_ROOT/logs"
@@ -89,35 +129,24 @@ while :; do
         [ -n "$successor" ] && scancel "$successor" 2>/dev/null
         exit 0
     fi
-    if [ $((end_epoch - now)) -le "$margin_s" ]; then
-        # never end without a successor: keep trying through the margin (a
-        # scheduler outage that clears before walltime still gets a
-        # successor), giving up only two minutes before the job is killed
-        while [ -z "$successor" ] && [ $((end_epoch - $(date +%s))) -gt 120 ]; do
-            if successor=$(submit_successor); then
-                echo "resident: successor $successor queued at handover"
-            else
-                successor=""
-                echo "resident: successor submit failed at handover; retrying"
-                sleep $((retry_s + retry_s / 2))
-            fi
-        done
-        if [ -n "$successor" ]; then
-            echo "resident: walltime margin reached; handing over to successor $successor"
-        else
-            echo "resident: walltime margin reached with NO successor queued — the chain needs a restart"
-        fi
-        exit 0
+    if [ "$now" -ge "$end_epoch" ]; then
+        echo "resident: ERROR: walltime ended without a verified live successor — the chain needs a restart"
+        exit 1
     fi
-    if [ -z "$successor" ]; then
-        successor_sum=$(shim_checksum)
-        if successor=$(submit_successor); then
-            echo "resident: successor $successor queued (afterany:${self:-none})"
-            drain_per_cadence_chain
-        else
-            successor=""
-            echo "resident: successor submit failed; retrying next iteration"
+    successor_ready=0
+    ensure_successor && successor_ready=1
+    if [ $((end_epoch - $(date +%s))) -le "$margin_s" ]; then
+        # Recheck immediately before exiting, including freshly submitted jobs.
+        if [ "$successor_ready" -eq 1 ] && ensure_successor; then
+            if handover_state=$(squeue -h -j "$successor" -o %T 2>/dev/null); then
+                case "$handover_state" in
+                    PENDING|RUNNING)
+                        echo "resident: walltime margin reached; handing over to successor $successor"
+                        exit 0 ;;
+                esac
+            fi
         fi
+        echo "resident: ERROR: walltime margin reached without a verified live successor; keeping ticking until walltime ends"
     fi
     # deploy + operator knobs, fresh every iteration (exports reach the tick)
     . "$OUTERLOOP_HOME/scripts/tick_deploy.sh"
@@ -157,6 +186,8 @@ while :; do
     next=$(( (now / cadence_s + 1) * cadence_s ))
     wait=$((next - now))
     limit=$((end_epoch - margin_s - now))
+    # After a failed handover keep the normal cadence, capped by actual end.
+    [ "$limit" -le 0 ] && limit=$((end_epoch - now))
     [ "$limit" -lt "$wait" ] && wait="$limit"
     [ "$wait" -gt 0 ] && sleep "$wait"
 done
