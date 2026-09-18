@@ -181,7 +181,9 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     return ""
 
 
-def resume_author(record: object, fleet_model: str, fleet_backend: str = "") -> tuple[str, str, str]:
+def resume_author(
+    record: object, fleet_model: str, fleet_backend: str = ""
+) -> tuple[str, str, str]:
     """The (backend, model, key_file) a wake must reproduce for a parked
     run — all from the RECORD, not the current fleet.
 
@@ -196,7 +198,8 @@ def resume_author(record: object, fleet_model: str, fleet_backend: str = "") -> 
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     if backend == "claude":
-        fallback = fleet_model if fleet_backend == "claude" and fleet_model else default_claude_model()
+        same_fleet = fleet_backend == "claude" and bool(fleet_model)
+        fallback = fleet_model if same_fleet else default_claude_model()
     else:
         fallback = fleet_model
     model = getattr(record, "author_model", "") or fallback
