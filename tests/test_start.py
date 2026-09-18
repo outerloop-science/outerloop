@@ -314,6 +314,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(cli, "find_uv", lambda: ("/usr/bin/uv", ""))
     monkeypatch.setenv("OUTERLOOP_CLAUDE_BIN", sys.executable)
     monkeypatch.setenv("OUTERLOOP_CODEX_BIN", sys.executable)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-test-model")  # a configured deployment
     return tmp_path
 
 
@@ -645,6 +646,56 @@ def test_start_dry_run_allows_missing_recorded_binary(clean_env, monkeypatch, ca
     assert "outerloop.tick" in capsys.readouterr().out
 
 
+def test_missing_claude_model_resolution() -> None:
+    """The Claude model is required by a claude author without its own model, by
+    a claude panel lens without one, and by a provisioned steward lane; a
+    deployment with none of those, or with the setting, passes."""
+    from outerloop.cli import missing_claude_model
+
+    unset = "OUTERLOOP_CLAUDE_MODEL is not set"
+    assert missing_claude_model({}, {"OUTERLOOP_CLAUDE_MODEL": "claude-x"}) == ""
+    assert missing_claude_model({"OUTERLOOP_CLAUDE_MODEL": "claude-x"}, {}) == ""
+    # the defaults alone (claude author, verify,review panel) need it
+    problem = missing_claude_model({}, {})
+    assert unset in problem and "OUTERLOOP_CLAUDE_MODEL=<model>" in problem
+    assert "claude author" in problem and "verify, review" in problem and "steward" not in problem
+    # the author's own model covers the author; explicit lens models cover the panel
+    covered = {
+        "OUTERLOOP_AUTHOR_MODEL": "claude-author",
+        "OUTERLOOP_PANEL": "verify:claude:claude-v,review:codex:gpt-x",
+    }
+    assert missing_claude_model(covered, {}) == ""
+    assert "review" in missing_claude_model({**covered, "OUTERLOOP_PANEL": "review"}, {})
+    # a codex author with the panel off needs nothing; a provisioned steward does
+    codex = {"OUTERLOOP_AUTHOR_BACKEND": "codex", "OUTERLOOP_PANEL": ""}
+    assert missing_claude_model(codex, {}) == ""
+    assert "the steward" in missing_claude_model(codex, {"OUTERLOOP_STEWARD_KEY_FILE": "/k"})
+    # the shell wins over .env, including an explicit empty value
+    shell_cleared = {"OUTERLOOP_CLAUDE_MODEL": ""}
+    assert unset in missing_claude_model({"OUTERLOOP_CLAUDE_MODEL": "claude-x"}, shell_cleared)
+    # a malformed panel is the tick's diagnosis, not this one's
+    assert missing_claude_model({**codex, "OUTERLOOP_PANEL": "bogus"}, {}) == ""
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_start_refuses_without_the_claude_model(clean_env, monkeypatch, capsys, dry_run):
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.setattr(cli, "plan_start", lambda **kw: pytest.fail("must refuse before planning"))
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
+    monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must not exec"))
+    argv = ["start", "--local", *(["--dry-run"] if dry_run else [])]
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "OUTERLOOP_CLAUDE_MODEL is not set" in err
+    assert f"OUTERLOOP_CLAUDE_MODEL=<model> to {clean_env / 'absent.env'}" in err
+    # covered roles pass: the author names its model and every claude lens does too
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", "claude-author")
+    monkeypatch.setenv("OUTERLOOP_PANEL", "verify:claude:claude-v,review:claude:claude-r")
+    monkeypatch.setattr(cli, "plan_start", plan_start)
+    monkeypatch.setattr(cli, "_exec", lambda *a: 0)
+    assert main(argv) == 0
+
+
 def test_hermes_is_a_review_backend_not_an_author(tmp_path):
     problem = cli.missing_harness_binary({"OUTERLOOP_AUTHOR_BACKEND": "hermes"}, {})
     assert "unsupported author backend 'hermes'" in problem
@@ -855,6 +906,7 @@ def test_login_exec_exports_slurm_settings(clean_env, monkeypatch):
     settings = {key: "" for key in TICK_ENV_KEYS}
     settings.update(OUTERLOOP_QOS="priority", OUTERLOOP_APPTAINER_BIN="/apps/apptainer")
     settings.update(OUTERLOOP_CLAUDE_BIN=sys.executable, OUTERLOOP_CODEX_BIN=sys.executable)
+    settings.update(OUTERLOOP_CLAUDE_MODEL="claude-test-model")  # clean_env's shell value
     settings.update(
         OUTERLOOP_TICK_HOST="login", OUTERLOOP_ACCOUNT="acct", OUTERLOOP_PARTITION="cpu"
     )
