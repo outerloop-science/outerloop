@@ -91,7 +91,7 @@ ensure_successor() {
         case "$state" in
             PENDING|RUNNING) return 0 ;;
             "") state="GONE" ;;
-            CANCELLED|FAILED|TIMEOUT|NODE_FAIL|COMPLETED|OUT_OF_MEMORY|BOOT_FAIL|DEADLINE|PREEMPTED|REVOKED) ;;
+            CANCELLED|FAILED|TIMEOUT|NODE_FAIL|COMPLETED|OUT_OF_MEMORY|BOOT_FAIL|DEADLINE|PREEMPTED|REVOKED|SPECIAL_EXIT) ;;
             *)
                 echo "resident: successor $successor is $state; waiting before handover"
                 return 1 ;;

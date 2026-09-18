@@ -709,6 +709,7 @@ def test_without_a_record_a_failed_sync_keeps_the_checkout(tmp_path: Path) -> No
         "FAILED",
         "TIMEOUT",
         "NODE_FAIL",
+        "SPECIAL_EXIT",
         "QUERY_ERROR",
         "INVALID_ID",
     ],
