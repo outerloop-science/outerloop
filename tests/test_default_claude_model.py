@@ -191,7 +191,8 @@ def test_panel_lens_model(monkeypatch, tmp_path: Path, explicit):
     assert lenses[0].harness.model == (explicit or "claude-test-model")
     monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
     if explicit:
-        assert attempt._panel_lenses_from_args(args)[0][0].harness.model == explicit
+        judge = attempt._panel_lenses_from_args(args)[0][0].harness
+        assert isinstance(judge, ClaudeCodeHarness) and judge.model == explicit
     else:
         # the climb's panel error path (parser.error upstream), never a traceback
         with pytest.raises(ValueError, match=f"panel entry review:claude: {UNSET}"):
@@ -212,7 +213,8 @@ def test_review_and_verify_agents_skip_with_the_reason(monkeypatch, caplog, tmp_
     assert (harness, backend) == (None, "claude") and UNSET in why
     monkeypatch.setenv("REVIEW_MODEL", "claude-explicit")
     harness, why, _ = review_agent_cli.resolve_reviewer_harness(reviewer_spec())
-    assert why == "" and isinstance(harness, ClaudeCodeHarness)
+    assert why == ""
+    assert isinstance(harness, ClaudeCodeHarness)
     assert harness.model == "claude-explicit"
 
     monkeypatch.setenv("PR_REPO", "o/r")
