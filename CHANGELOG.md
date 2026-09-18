@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- `outerloop init` asks for the Claude model (`--claude-model`, else the shell's `OUTERLOOP_CLAUDE_MODEL`, else a required prompt) and writes it to `.env`. A focused `init --github-app` run preserves every existing `.env` setting it does not manage.
+
+### Changed
+
+- **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` (`outerloop start` refuses without it and names the line), and the review and verify agents on the claude backend read it from the `OUTERLOOP_CLAUDE_MODEL` Actions variable when no model input is given.
+
 ## [0.2.0] - 2026-09-18
 
 **Upgrade note.** After upgrading run `outerloop permissions --open`: the App needs `checks: read` and `actions: read` for check results to reach authors as messages. This release redesigns the run lifecycle. It adds three run states, one inbox, `end`, review top-ups, and wakes that run by default. It also removes the old `AUTORESEARCH_*` names.
