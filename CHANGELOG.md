@@ -6,6 +6,26 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
+
+Authors now use `message` for public posts, reminders to self and messages to
+live agents on the same target. Sibling messages keep a sent copy, and inbox
+headers name both parties with local message numbers. `--reply-to` links a
+response; `message --show` reads its chain. The kernel bounds delivery and
+reports refused messages. The old reply and note verbs are removed.
+
+Messages carry a global id, a context, a recipient and an optional reply reference;
+old inbox files read as before; the wake's headers name the sender.
+
+Local mode now shares workstation GPUs across jobs first come first served and runs
+launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
+overrides GPU detection; `0` disables allocation. Submissions still wait for all
+tasks to finish.
+
+### Added
+
 ## [0.2.0] - 2026-09-18
 
 **Upgrade note.** After upgrading run `outerloop permissions --open`: the App needs `checks: read` and `actions: read` for check results to reach authors as messages. This release redesigns the run lifecycle. It adds three run states, one inbox, `end`, review top-ups, and wakes that run by default. It also removes the old `AUTORESEARCH_*` names.
