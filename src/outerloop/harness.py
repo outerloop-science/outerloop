@@ -49,6 +49,11 @@ DEFAULT_TIMEOUT_S = 5400
 DEFAULT_MAX_TURNS = 120
 
 
+def default_claude_model() -> str:
+    """The deployment default for every Claude role."""
+    return os.environ.get("OUTERLOOP_CLAUDE_MODEL", "").strip() or "claude-opus-5"
+
+
 @dataclass(frozen=True)
 class SessionResult:
     """What happened in one session — everything the orchestrator needs to
@@ -162,6 +167,7 @@ class VertexConfig:
     # explicit path up front. "" only where a metadata server provides
     # credentials (GCE / workload identity).
     adc_file: str = ""
+    small_model: str = ""
 
     def env(self) -> dict[str, str]:
         out = {
@@ -169,6 +175,8 @@ class VertexConfig:
             "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
             "CLOUD_ML_REGION": self.region,
         }
+        if self.small_model:
+            out["ANTHROPIC_SMALL_FAST_MODEL"] = self.small_model
         if self.adc_file:
             out["GOOGLE_APPLICATION_CREDENTIALS"] = self.adc_file
         return out
@@ -193,6 +201,7 @@ def vertex_from_env() -> VertexConfig | None:
         project=project,
         region=os.environ.get("OUTERLOOP_VERTEX_REGION", "global").strip() or "global",
         adc_file=adc,
+        small_model=os.environ.get("OUTERLOOP_VERTEX_SMALL_MODEL", "").strip(),
     )
 
 
@@ -521,7 +530,7 @@ class ClaudeCodeHarness:
 
     api_key: str
     binary: str = "claude"
-    model: str = "claude-opus-5"
+    model: str = field(default_factory=default_claude_model)
     max_turns: int = DEFAULT_MAX_TURNS
     timeout_s: int = DEFAULT_TIMEOUT_S
     # The working set for code + running the repo's own tests. Note the env
@@ -645,6 +654,8 @@ class ClaudeCodeHarness:
                 env = session_env("", "ANTHROPIC_API_KEY", session_home)
                 del env["ANTHROPIC_API_KEY"]
                 vertex_env = dict(self.vertex.env())
+                if not self.vertex.small_model:
+                    vertex_env["ANTHROPIC_SMALL_FAST_MODEL"] = self.model
                 if self.container_image and self.vertex.adc_file:
                     vertex_env["GOOGLE_APPLICATION_CREDENTIALS"] = self.CONTAINER_ADC
                 env |= vertex_env

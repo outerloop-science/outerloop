@@ -22,6 +22,8 @@ tasks to finish.
 
 ### Added
 
+- `OUTERLOOP_CLAUDE_MODEL` configures the shared default for all Claude roles, including deployments whose Vertex project has access to a different model. `OUTERLOOP_AUTHOR_MODEL` still overrides the author default. Vertex auxiliary fast calls default to the session model, avoiding dependencies on models the project has not enabled; `OUTERLOOP_VERTEX_SMALL_MODEL` overrides that default.
+
 - `outerloop init` installs a missing author CLI and records its path; `--no-install-harness` opts out. Claude has a pinned, SHA256-verified installer.
 
 - `OUTERLOOP_TICK_HOST=login` (or `--tick-host login`) runs a niced foreground tick loop against Slurm, with one tick lease per state root.

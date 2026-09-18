@@ -446,7 +446,10 @@ tick does not service a target without it); `OUTERLOOP_GPU_PARTITION` (optionall
 comma-separated partition list lets Slurm start each job wherever it fits
 first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys); the author backend is
-`OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`, its key file
+`OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
+`OUTERLOOP_CLAUDE_MODEL` sets the default for all Claude roles (default:
+`claude-opus-5` when unset or blank); `OUTERLOOP_AUTHOR_MODEL` overrides it
+for the author. The author key file is
 `OUTERLOOP_<BACKEND>_KEY_FILE` (`OUTERLOOP_CLAUDE_KEY_FILE`,
 `OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to
 `~/.config/outerloop/<backend>_key`, 0600). A Codex author always runs contained,
@@ -609,6 +612,12 @@ OUTERLOOP_VERTEX_PROJECT=your-gcp-project   # presence flips vertex ON
 OUTERLOOP_VERTEX_REGION=global              # optional (default: global)
 OUTERLOOP_VERTEX_ADC=~/.config/outerloop/vertex_adc.json  # ADC file
 ```
+
+If your Vertex project has access to a different model, set
+`OUTERLOOP_CLAUDE_MODEL` in `~/.config/outerloop/.env` to that model ID.
+This sets the default for Claude authors, panel judges, reviewers, and stewards;
+an explicit role model or `OUTERLOOP_AUTHOR_MODEL` still takes precedence.
+`OUTERLOOP_VERTEX_SMALL_MODEL` selects Claude Code's auxiliary fast model and defaults to the session model.
 
 Enable the Claude models in the project's Model Garden, mint ADC
 (`gcloud auth application-default login` +

@@ -27,6 +27,7 @@ from outerloop.harness import (
     Harness,
     HermesHarness,
     SessionResult,
+    default_claude_model,
     vertex_from_env,
 )
 from outerloop.rolespec import RoleSpec
@@ -157,7 +158,7 @@ def build_harness(
     return ClaudeCodeHarness(
         api_key=api_key,
         binary=binary or "claude",
-        model=model or "claude-opus-5",
+        model=model or default_claude_model(),
         max_turns=spec.budget.max_turns,
         timeout_s=spec.budget.walltime_s,
         allowed_tools=tuple(tool for tool in spec.tools if tool in _NATIVE_TOOLS),

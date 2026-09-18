@@ -41,7 +41,7 @@ from outerloop.compute import (
     quote_command,
 )
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
-from outerloop.harness import DEFAULT_MAX_TURNS, redact
+from outerloop.harness import DEFAULT_MAX_TURNS, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
 from outerloop.limits import EffectiveLimits, effective_limits
 from outerloop.markers import has_marker, marker
@@ -2256,7 +2256,7 @@ def _author_config_error(spec: ServiceSpec) -> str:
     from outerloop.attempt import codex_author_config_error
 
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL") or "claude-opus-5"
+    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL") or default_claude_model()
     return codex_author_config_error(backend, model, spec.image)
 
 
