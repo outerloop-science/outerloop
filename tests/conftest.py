@@ -62,6 +62,14 @@ def _configured_bot_login(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _configured_claude_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OUTERLOOP_CLAUDE_MODEL is a required deployment setting with no code
+    default; tests run as a configured deployment unless they unset it to
+    exercise the refusal paths."""
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-test-model")
+
+
+@pytest.fixture(autouse=True)
 def _no_tick_lease_settle(monkeypatch):
     """The settle read-back after a fresh tick lease is a one-second sleep in
     production; tests that want it pass settle_s explicitly."""

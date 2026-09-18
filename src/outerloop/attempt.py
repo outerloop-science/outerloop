@@ -51,7 +51,14 @@ from outerloop.github import (
     ensure_regular_git_dir,
     git_identity,
 )
-from outerloop.harness import Harness, SessionResult, default_binary, default_claude_model, redact
+from outerloop.harness import (
+    ClaudeModelUnset,
+    Harness,
+    SessionResult,
+    default_binary,
+    default_claude_model,
+    redact,
+)
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
@@ -175,10 +182,21 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
         return "author-backend codex requires --image (it runs contained)"
     if not model or model.startswith("claude"):
         return (
-            "author-backend codex needs a codex/openai model "
-            f"(e.g. gpt-5.6-terra), not the claude default (got {model!r})"
+            "author-backend codex needs a codex/openai model in OUTERLOOP_AUTHOR_MODEL "
+            f"(e.g. gpt-5.6-terra), not a claude model or none (got {model!r})"
         )
     return ""
+
+
+def fleet_author_model(backend: str) -> str:
+    """The fleet author's model from the environment: OUTERLOOP_AUTHOR_MODEL, else
+    the deployment's Claude model for a claude author (ClaudeModelUnset when that
+    is missing too). Another backend without OUTERLOOP_AUTHOR_MODEL gets "", and
+    codex_author_config_error names the fix."""
+    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")
+    if not model and backend == "claude":
+        return default_claude_model()
+    return model
 
 
 def resume_author(
@@ -3059,7 +3077,7 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
                 hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
                 hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
             )
-        except ValueError as exc:
+        except (ValueError, ClaudeModelUnset) as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
     return tuple(lenses), tuple(dict.fromkeys(secrets))
@@ -4582,7 +4600,11 @@ def main() -> int:
         "(must be an absolute path).",
     )
     parser.add_argument(
-        "--model", default=os.environ.get("OUTERLOOP_AUTHOR_MODEL") or default_claude_model()
+        "--model",
+        default=None,
+        help="author model; default OUTERLOOP_AUTHOR_MODEL, else (claude author) the "
+        "deployment's OUTERLOOP_CLAUDE_MODEL — resolved after parsing, so an explicit "
+        "--model needs neither",
     )
     parser.add_argument(
         "--author-backend",
@@ -4649,6 +4671,13 @@ def main() -> int:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    if not args.model:
+        # resolved after parsing, never at parser build: a deployment without
+        # OUTERLOOP_CLAUDE_MODEL fails here with the fix named, not with a traceback
+        try:
+            args.model = fleet_author_model(args.author_backend)
+        except ClaudeModelUnset as exc:
+            parser.error(str(exc))
     if args.resume:
         _attach_run_log(run_dir_of(args.run_root, args.resume))
     if not args.image and not args.uncontained:
@@ -4695,9 +4724,15 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
-        wake_backend, wake_model, wake_key_file = resume_author(
-            _wake_record, args.model, args.author_backend
-        )
+        try:
+            wake_backend, wake_model, wake_key_file = resume_author(
+                _wake_record, args.model, args.author_backend
+            )
+        except ClaudeModelUnset as exc:
+            # a claude record without a model under a codex fleet needs the
+            # deployment's Claude model; release the lease this wake holds first
+            _release_own_lease(args.run_root, args.resume)
+            parser.error(f"parked run {args.resume}: {exc}")
         # an explicit --key-file still overrides (a manual re-run pinning a key)
         if args.key_file:
             wake_key_file = os.path.expanduser(args.key_file)

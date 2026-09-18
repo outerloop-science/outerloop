@@ -45,6 +45,7 @@ from outerloop.github import (
     is_own_login,
 )
 from outerloop.harness import (
+    ClaudeModelUnset,
     Harness,
     budget_exhausted,
     default_binary,
@@ -797,7 +798,12 @@ def main() -> int:
         help="run WITHOUT a container (dev only)",
     )
     parser.add_argument("--claude-bin", default=default_binary("claude"))
-    parser.add_argument("--model", default=default_claude_model())
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="steward model; default the deployment's OUTERLOOP_CLAUDE_MODEL (the steward "
+        "runs the claude backend), resolved after parsing",
+    )
     parser.add_argument("--max-turns", type=int, default=60)
     parser.add_argument("--session-minutes", type=int, default=60)
     parser.add_argument("--job-minutes", type=int, default=0)
@@ -812,6 +818,11 @@ def main() -> int:
     parser.add_argument("--work-order-b64", default="")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    if not args.model:
+        try:
+            args.model = default_claude_model()
+        except ClaudeModelUnset as exc:
+            parser.error(str(exc))
     if not args.image and not args.uncontained:
         parser.error("--image is required (or pass --uncontained explicitly, dev only)")
 

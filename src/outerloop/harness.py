@@ -49,9 +49,24 @@ DEFAULT_TIMEOUT_S = 5400
 DEFAULT_MAX_TURNS = 120
 
 
+class ClaudeModelUnset(RuntimeError):
+    """OUTERLOOP_CLAUDE_MODEL is unset or blank: a Claude-backed role has no model."""
+
+
+CLAUDE_MODEL_UNSET = (
+    "OUTERLOOP_CLAUDE_MODEL is not set: every Claude-backed role (author, panel judges, "
+    "steward) needs it; put OUTERLOOP_CLAUDE_MODEL=<model> in the deployment env"
+)
+
+
 def default_claude_model() -> str:
-    """The deployment default for every Claude role."""
-    return os.environ.get("OUTERLOOP_CLAUDE_MODEL", "").strip() or "claude-opus-5"
+    """The deployment's model for every Claude role — a required setting, never a
+    code default. Raises ClaudeModelUnset when OUTERLOOP_CLAUDE_MODEL is unset or
+    blank; callers resolve it at use time so an explicit model never needs it."""
+    model = os.environ.get("OUTERLOOP_CLAUDE_MODEL", "").strip()
+    if not model:
+        raise ClaudeModelUnset(CLAUDE_MODEL_UNSET)
+    return model
 
 
 @dataclass(frozen=True)
