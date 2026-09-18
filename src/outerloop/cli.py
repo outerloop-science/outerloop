@@ -58,6 +58,7 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
     "OUTERLOOP_CLAUDE_KEY_FILE",
+    "OUTERLOOP_STEWARD_KEY_FILE",
     "OUTERLOOP_VERTEX_PROJECT",
     "OUTERLOOP_VERTEX_REGION",
     "OUTERLOOP_VERTEX_ADC",
@@ -84,12 +85,14 @@ class StartError(Exception):
     """A start that cannot proceed; the message is the whole diagnosis."""
 
 
-def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -> dict[str, str]:
+def env_file_values(
+    path: Path = ENV_FILE, keys: tuple[str, ...] | None = START_KEYS
+) -> dict[str, str]:
     """`keys` from the operator's .env under the deploy step's trust rule: the
     file must be ours and not group/world-writable, or it is refused. Last
     assignment wins; surrounding quotes and a CR are stripped; a key set to
     an empty value is present (an off-switch), an absent key is absent.
-    No file: nothing."""
+    `keys=None` reads all assignments. No file: nothing."""
     try:
         st = path.stat()
     except OSError:
@@ -109,7 +112,7 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key not in keys:
+        if keys is not None and key not in keys:
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":

@@ -346,3 +346,55 @@ def test_no_literal_claude_model_in_the_package():
         if literal.search(line)
     ]
     assert hits == []
+
+
+@pytest.mark.parametrize("fleet_backend", ["claude", "codex"])
+def test_resume_cli_uses_pinned_model_without_deployment_model(
+    monkeypatch, tmp_path, fleet_backend
+):
+    import sys
+
+    from outerloop import runstate
+
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.delenv("OUTERLOOP_AUTHOR_MODEL", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "attempt",
+            "--resume",
+            "r",
+            "--run-root",
+            str(tmp_path),
+            "--uncontained",
+            "--author-backend",
+            fleet_backend,
+        ],
+    )
+    monkeypatch.setattr(attempt, "arm_sigterm_containment", lambda: None)
+    monkeypatch.setattr(attempt, "_attach_run_log", lambda *a: None)
+    monkeypatch.setattr(attempt, "_lease_held_by_another_job", lambda *a: "")
+    monkeypatch.setattr("outerloop.tick.dispatch_wake_armed", lambda *a: True)
+    monkeypatch.setattr(attempt, "resolve_bot_auth", lambda *a: SimpleNamespace(token=lambda: ""))
+    monkeypatch.setattr(
+        runstate,
+        "load_record",
+        lambda *a: SimpleNamespace(author_backend="claude", author_model="claude-pinned", stage={}),
+    )
+    seen = []
+
+    def capture_author(backend, model, image):
+        seen.append((backend, model))
+        return ""
+
+    monkeypatch.setattr(attempt, "codex_author_config_error", capture_author)
+    monkeypatch.setattr(attempt, "_panel_lenses_from_args", lambda *a: ((), ()))
+    monkeypatch.setattr(attempt, "_dispatch_settings", lambda *a: None)
+    monkeypatch.setattr(
+        attempt,
+        "resume_run",
+        lambda *a, **kw: SimpleNamespace(outcome="parked", pr_url="", report_path=""),
+    )
+    assert attempt.main() == 0
+    assert seen == [("claude", "claude-pinned")]

@@ -215,12 +215,13 @@ def resume_author(
     --key-file survives), falling back to the per-backend resolution for legacy
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
-    if backend == "claude":
-        same_fleet = fleet_backend == "claude" and bool(fleet_model)
-        fallback = fleet_model if same_fleet else default_claude_model()
-    else:
-        fallback = fleet_model
-    model = getattr(record, "author_model", "") or fallback
+    model = getattr(record, "author_model", "")
+    if not model:
+        if backend == "claude":
+            same_fleet = fleet_backend == "claude" and bool(fleet_model)
+            model = fleet_model if same_fleet else default_claude_model()
+        else:
+            model = fleet_model
     default_key = (
         os.environ.get("OUTERLOOP_STEWARD_KEY_FILE", str(CONFIG_DIR / "steward_key"))
         if str(getattr(record, "agent_id", "")).startswith("steward")
@@ -4671,7 +4672,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    if not args.model:
+    if not args.model and not args.resume:
         # resolved after parsing, never at parser build: a deployment without
         # OUTERLOOP_CLAUDE_MODEL fails here with the fix named, not with a traceback
         try:
@@ -4725,6 +4726,8 @@ def main() -> int:
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
         try:
+            if not getattr(_wake_record, "author_model", "") and not args.model:
+                args.model = fleet_author_model(args.author_backend)
             wake_backend, wake_model, wake_key_file = resume_author(
                 _wake_record, args.model, args.author_backend
             )

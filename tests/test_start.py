@@ -1094,3 +1094,26 @@ def test_missing_path_does_not_accept_a_cli_only_in_cwd(tmp_path, monkeypatch):
     shim(tmp_path, "claude", "exit 0\n")
     monkeypatch.chdir(tmp_path)
     assert cli.missing_harness_binary({}, {"PATH": str(tmp_path / "absent")})
+
+
+def test_start_sees_steward_key_from_env_file(clean_env, monkeypatch, capsys):
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.delenv("OUTERLOOP_STEWARD_KEY_FILE", raising=False)
+    path = env_file(
+        clean_env,
+        "OUTERLOOP_AUTHOR_BACKEND=codex\nOUTERLOOP_AUTHOR_MODEL=gpt-x\n"
+        "OUTERLOOP_PANEL=\nOUTERLOOP_STEWARD_KEY_FILE=/keys/steward\n",
+    )
+    monkeypatch.setattr(cli, "ENV_FILE", path)
+    exports = []
+
+    def capture_exec(cmd, env):
+        exports.append(env)
+        return 0
+
+    monkeypatch.setattr(cli, "_exec", capture_exec)
+    assert main(["start", "--local"]) == 2
+    assert "the steward" in capsys.readouterr().err
+    path.write_text(path.read_text() + "OUTERLOOP_CLAUDE_MODEL=claude-x\n")
+    assert main(["start", "--local"]) == 0
+    assert exports[-1]["OUTERLOOP_STEWARD_KEY_FILE"] == "/keys/steward"
