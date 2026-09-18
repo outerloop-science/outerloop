@@ -181,21 +181,25 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     return ""
 
 
-def resume_author(record: object, fleet_model: str) -> tuple[str, str, str]:
+def resume_author(record: object, fleet_model: str, fleet_backend: str = "") -> tuple[str, str, str]:
     """The (backend, model, key_file) a wake must reproduce for a parked
     run — all from the RECORD, not the current fleet.
 
     An empty backend is a legacy record (written before the field) and is
-    therefore CLAUDE, never the fleet default; the model pairs with that backend
-    (a claude backend falls back to the claude default, a codex backend to the
-    fleet model only as a last resort — codex records always carry their model);
-    the key file is the exact resolved path the run used (so an explicit
+    therefore CLAUDE, never the fleet default. A record without a model takes
+    the fleet model when the fleet runs the same backend (so the configured
+    author model applies to legacy claude records too); a claude record under a
+    codex fleet falls back to the claude default, and a codex record to the
+    fleet model only as a last resort (codex records always carry their model).
+    The key file is the exact resolved path the run used (so an explicit
     --key-file survives), falling back to the per-backend resolution for legacy
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
-    model = getattr(record, "author_model", "") or (
-        default_claude_model() if backend == "claude" else fleet_model
-    )
+    if backend == "claude":
+        fallback = fleet_model if fleet_backend == "claude" and fleet_model else default_claude_model()
+    else:
+        fallback = fleet_model
+    model = getattr(record, "author_model", "") or fallback
     default_key = (
         os.environ.get("OUTERLOOP_STEWARD_KEY_FILE", str(CONFIG_DIR / "steward_key"))
         if str(getattr(record, "agent_id", "")).startswith("steward")
@@ -4688,7 +4692,9 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
-        wake_backend, wake_model, wake_key_file = resume_author(_wake_record, args.model)
+        wake_backend, wake_model, wake_key_file = resume_author(
+            _wake_record, args.model, args.author_backend
+        )
         # an explicit --key-file still overrides (a manual re-run pinning a key)
         if args.key_file:
             wake_key_file = os.path.expanduser(args.key_file)

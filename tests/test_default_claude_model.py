@@ -26,7 +26,35 @@ def test_default_claude_model(monkeypatch, value, expected):
         monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", value)
     assert default_claude_model() == expected
     assert ClaudeCodeHarness(api_key="test").model == expected
-    assert attempt.resume_author(SimpleNamespace(), "fleet-model")[1] == expected
+    # a legacy claude record under a codex fleet takes the claude default ...
+    assert attempt.resume_author(SimpleNamespace(), "gpt-fleet", "codex")[1] == expected
+    # ... and under a claude fleet it takes the fleet's configured author model
+    assert attempt.resume_author(SimpleNamespace(), "claude-fleet", "claude")[1] == "claude-fleet"
+
+
+@pytest.mark.parametrize("author_override", ["", "claude-author-override"])
+def test_author_cli_default_claude_model(monkeypatch, author_override):
+    """The fresh-author CLI's --model default follows OUTERLOOP_CLAUDE_MODEL,
+    and OUTERLOOP_AUTHOR_MODEL still wins when set."""
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-opus-4-8")
+    if author_override:
+        monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", author_override)
+    else:
+        monkeypatch.delenv("OUTERLOOP_AUTHOR_MODEL", raising=False)
+    monkeypatch.setattr(attempt, "arm_sigterm_containment", lambda: None)
+    captured: dict[str, argparse.ArgumentParser] = {}
+
+    class Parsed(Exception):
+        pass
+
+    def capture(parser, *args, **kwargs):
+        captured["parser"] = parser
+        raise Parsed
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    with pytest.raises(Parsed):
+        attempt.main()
+    assert captured["parser"].get_default("model") == (author_override or "claude-opus-4-8")
 
 
 @pytest.mark.parametrize("explicit", ["", "claude-explicit"])
