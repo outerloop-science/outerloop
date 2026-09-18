@@ -398,3 +398,16 @@ def test_resume_cli_uses_pinned_model_without_deployment_model(
     )
     assert attempt.main() == 0
     assert seen == [("claude", "claude-pinned")]
+
+
+def test_legacy_claude_wake_honors_an_explicit_model_under_a_codex_fleet(monkeypatch):
+    """Round 2: a parked claude record without a saved model, a codex fleet, and an
+    operator who passed --model: the explicit model wins and the deployment's
+    Claude setting is not consulted."""
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "/k")
+    legacy = SimpleNamespace(author_backend="", author_model="", author_key_file="")
+    assert attempt.resume_author(legacy, "gpt-fleet", "codex", "claude-typed")[1] == "claude-typed"
+    # without an explicit model the claude default is still required
+    with pytest.raises(attempt.ClaudeModelUnset):
+        attempt.resume_author(legacy, "gpt-fleet", "codex")

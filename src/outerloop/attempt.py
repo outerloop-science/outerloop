@@ -200,24 +200,31 @@ def fleet_author_model(backend: str) -> str:
 
 
 def resume_author(
-    record: object, fleet_model: str, fleet_backend: str = ""
+    record: object,
+    fleet_model: str,
+    fleet_backend: str = "",
+    explicit_model: str = "",
 ) -> tuple[str, str, str]:
     """The (backend, model, key_file) a wake must reproduce for a parked
     run — all from the RECORD, not the current fleet.
 
     An empty backend is a legacy record (written before the field) and is
     therefore CLAUDE, never the fleet default. A record without a model takes
-    the fleet model when the fleet runs the same backend (so the configured
-    author model applies to legacy claude records too); a claude record under a
-    codex fleet falls back to the claude default, and a codex record to the
-    fleet model only as a last resort (codex records always carry their model).
+    a model the operator passed on the command line (`explicit_model`) first;
+    else the fleet model when the fleet runs the same backend (so the
+    configured author model applies to legacy claude records too); a claude
+    record under a codex fleet falls back to the claude default, and a codex
+    record to the fleet model only as a last resort (codex records always
+    carry their model).
     The key file is the exact resolved path the run used (so an explicit
     --key-file survives), falling back to the per-backend resolution for legacy
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     model = getattr(record, "author_model", "")
     if not model:
-        if backend == "claude":
+        if explicit_model:
+            model = explicit_model
+        elif backend == "claude":
             same_fleet = fleet_backend == "claude" and bool(fleet_model)
             model = fleet_model if same_fleet else default_claude_model()
         else:
@@ -4726,10 +4733,11 @@ def main() -> int:
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
         try:
+            explicit_model = args.model  # what the operator typed, before any env fill-in
             if not getattr(_wake_record, "author_model", "") and not args.model:
                 args.model = fleet_author_model(args.author_backend)
             wake_backend, wake_model, wake_key_file = resume_author(
-                _wake_record, args.model, args.author_backend
+                _wake_record, args.model, args.author_backend, explicit_model
             )
         except ClaudeModelUnset as exc:
             # a claude record without a model under a codex fleet needs the
