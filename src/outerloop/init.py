@@ -1,7 +1,7 @@
 """`outerloop init` — the guided setup.
 
-Collects placement (Slurm or local), the target repo, bot auth, and the
-author's model key, then writes `~/.config/outerloop/.env` (plus the credential
+Collects placement (Slurm or local), the target repo, bot auth, the Claude
+model, and the author's model key, then writes `~/.config/outerloop/.env` (plus the credential
 files), so a new adopter never hand-edits config or reasons about which
 `OUTERLOOP_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
@@ -54,6 +54,7 @@ class InitAnswers:
     partition: str = ""  # Slurm partition (optional; unset -> Slurm default)
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
+    claude_model: str = ""  # the model every Claude role runs (OUTERLOOP_CLAUDE_MODEL)
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
@@ -92,6 +93,8 @@ def render_env(
         # every own-comment filter and own-PR scan keys on this login; without
         # it the kernel assumes a default that is not this adopter's identity
         lines.append(f"OUTERLOOP_BOT_LOGIN={bot_login}")
+    if a.claude_model:
+        lines.append(f"OUTERLOOP_CLAUDE_MODEL={a.claude_model}")
     if a.author_backend:
         lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
@@ -439,6 +442,12 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
     )
+    # The Claude model is required, with no code default: a claude author reads
+    # it, and so do the default panel's judges and the steward. Flag, then the
+    # shell's OUTERLOOP_CLAUDE_MODEL, then a prompt on the full setup.
+    claude_model = args.claude_model or os.environ.get("OUTERLOOP_CLAUDE_MODEL", "").strip()
+    if not claude_model and ask_author:
+        claude_model = _ask("Claude model (author, panel judges, steward)", required=True)
     # An explicit --image is recorded here (absolute: jobs read it from their
     # own directory); the published one is fetched in main, after every check
     # that could still end the run.
@@ -451,6 +460,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition=partition,
         author_backend=backend,
         author_model=model,
+        claude_model=claude_model,
         image=image,
         author_bin=locate_harness(backend),
         uncontained=bool(args.no_image) and not image,
@@ -545,6 +555,7 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
     if problem:
         print("  next: outerloop permissions --open")
     print(f"wrote {env_path}")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
@@ -641,6 +652,7 @@ def _github_app_setup(
         render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
     )
     print(f"wrote {env_path}")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
@@ -684,6 +696,12 @@ def main(argv: list[str] | None = None) -> int:
         help="skip installing a missing author CLI",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
+    parser.add_argument(
+        "--claude-model",
+        dest="claude_model",
+        help="model for every Claude role (author, panel judges, steward): required, no "
+        "default; OUTERLOOP_CLAUDE_MODEL in the shell also counts",
+    )
     image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
     image_flags.add_argument(
         "--image",
@@ -721,6 +739,16 @@ def main(argv: list[str] | None = None) -> int:
     if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
         print(
             f"outerloop init: author backend must be one of {', '.join(AUTHOR_BACKENDS)}",
+            file=sys.stderr,
+        )
+        return 2
+    if not answers.claude_model and not args.github_app:
+        # the focused --github-app run is about auth (like the author config, the
+        # model is written there only when given); the full setup insists
+        print(
+            "outerloop init: --claude-model is required (or OUTERLOOP_CLAUDE_MODEL in the "
+            "shell): every Claude role reads it — the default verify/review panel judges, "
+            "a claude author, the steward — and there is no built-in default",
             file=sys.stderr,
         )
         return 2
@@ -857,10 +885,19 @@ def main(argv: list[str] | None = None) -> int:
             )
     else:
         print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
     return 0
+
+
+def _claude_model_hint(answers: InitAnswers) -> None:
+    if not answers.claude_model:
+        print(
+            "  OUTERLOOP_CLAUDE_MODEL not recorded — add OUTERLOOP_CLAUDE_MODEL=<model> to "
+            f"{CONFIG_DIR / ENV_FILE.name} before `outerloop start` (every Claude role reads it)"
+        )
 
 
 def _author_key_hint(answers: InitAnswers) -> None:

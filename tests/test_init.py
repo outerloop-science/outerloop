@@ -21,6 +21,53 @@ from outerloop.init import (
 )
 
 
+def test_render_env_writes_the_claude_model() -> None:
+    a = InitAnswers(compute="local", target="o/r", claude_model="claude-x", author_backend="codex")
+    env = render_env(a, "")
+    assert "\nOUTERLOOP_CLAUDE_MODEL=claude-x\n" in env
+    assert env.index("OUTERLOOP_CLAUDE_MODEL") < env.index("OUTERLOOP_AUTHOR_BACKEND")
+    assert "CLAUDE_MODEL" not in render_env(InitAnswers(compute="local", target="o/r"), "")
+
+
+def test_claude_model_is_required_flag_then_shell_then_prompt(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Every Claude role reads OUTERLOOP_CLAUDE_MODEL and there is no code
+    default, so the full setup insists on it: --claude-model, else the shell's
+    value, else a required prompt; --yes without either refuses."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 2
+    err = capsys.readouterr().err
+    assert "--claude-model is required" in err and "OUTERLOOP_CLAUDE_MODEL" in err
+    assert not (tmp_path / ".env").exists()
+    # a codex author still keeps the default (claude) panel: required all the same
+    assert init.main([*base, "--author-backend", "codex", "--author-model", "gpt-x"]) == 2
+    assert init.main([*base, "--claude-model", "claude-flag"]) == 0
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-flag\n" in (tmp_path / ".env").read_text()
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", " claude-shell ")
+    assert init.main(base) == 0
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-shell\n" in (tmp_path / ".env").read_text()
+    assert init.main([*base, "--claude-model", "claude-flag"]) == 0  # the flag wins
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-flag\n" in (tmp_path / ".env").read_text()
+    # interactive: asked (required) when neither flag nor shell has it
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    asked: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_ask(prompt: str, default: str = "", **kw: Any) -> str:
+        asked.append((prompt, kw))
+        return "claude-typed" if prompt.startswith("Claude model") else default
+
+    monkeypatch.setattr(init, "_ask", fake_ask)
+    monkeypatch.setattr(init.getpass, "getpass", lambda prompt: "")
+    argv = ["--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main([*argv, "--author-backend", "claude"]) == 0
+    assert [kw for prompt, kw in asked if prompt.startswith("Claude model")] == [{"required": True}]
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-typed\n" in (tmp_path / ".env").read_text()
+
+
 def test_render_env_slurm_full() -> None:
     a = InitAnswers(
         compute="slurm",
@@ -262,6 +309,7 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(init, "_ask", fake_ask)
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)  # nor for the Claude model
     monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "c")
     monkeypatch.setattr(
         appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
