@@ -39,7 +39,8 @@ on:
           knob.)
         type: string
         required: false
-        default: claude-opus-5
+        # No built-in default: empty falls back to the OUTERLOOP_CLAUDE_MODEL
+        # Actions variable (organization or repository level).
     secrets:
       anthropic_verifier_key:
         description: >-
@@ -161,6 +162,7 @@ jobs:
           REVIEW_BOT_LOGIN: ${{ inputs.bot_login }}
           OUTERLOOP_BOT_ALIASES: ${{ inputs.bot_aliases }}
           VERIFY_MODEL: ${{ inputs.model }}
+          OUTERLOOP_CLAUDE_MODEL: ${{ vars.OUTERLOOP_CLAUDE_MODEL }}
           # The parent of the two checkouts (pr-head/ and base/).
           VERIFY_CHECKOUT: ${{ github.workspace }}
           VERIFY_EMIT_FILE: ${{ runner.temp }}/verdict.json
