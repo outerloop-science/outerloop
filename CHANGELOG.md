@@ -6,7 +6,30 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
 - Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
+
+Authors now use `message` for public posts, reminders to self and messages to
+live agents on the same target. Sibling messages keep a sent copy, and inbox
+headers name both parties with local message numbers. `--reply-to` links a
+response; `message --show` reads its chain. The kernel bounds delivery and
+reports refused messages. The old reply and note verbs are removed.
+
+Messages carry a global id, a context, a recipient and an optional reply reference;
+old inbox files read as before; the wake's headers name the sender.
+
+Local mode now shares workstation GPUs across jobs first come first served and runs
+launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
+overrides GPU detection; `0` disables allocation. Submissions still wait for all
+tasks to finish.
+
+### Added
+- Authors can post replies through `reply` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Review edits are measured and published only on submit, using the same remaining GPU budget as other author work.
+
+## [0.2.0] - 2026-09-18
+
+**Upgrade note.** After upgrading run `outerloop permissions --open`: the App needs `checks: read` and `actions: read` for check results to reach authors as messages. This release redesigns the run lifecycle. It adds three run states, one inbox, `end`, review top-ups, and wakes that run by default. It also removes the old `AUTORESEARCH_*` names.
 
 Authors now use `message` for public posts, reminders to self and messages to
 live agents on the same target. Sibling messages keep a sent copy, and inbox
@@ -83,7 +106,7 @@ tasks to finish.
 
 - Submit works in review and fast-forwards the PR after a confirmed auto-merge disarm; the measured number is posted first, even if publication is refused. Each review leg measures against its freshly fetched base. Verdicts, findings and publish refusals reach the author as messages. A reply staged during a review leg suppresses its final-text comment. A failed submitted park ends as negative-result only when no author session can resume to receive its verdict; its report and notebook are saved and its issue claim released. Sessions without the tool (no launcher or no resume support) are still measured at finish and may end on the verdict by design. Submit needs no prior launch or report. A session offered submit that stops without it ends unmeasured, or returns to review if it has a PR. Legacy follow-up re-measures retire on their next wake and release their snapshots.
 
-- Authors can post replies through `reply` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Review edits are measured and published only on submit, using the same remaining GPU budget as other author work.
+- Authors can post replies through `message` and launch experiments or sleep while a PR is in review, using the run’s remaining budget. Comments and base moves received while parked reach the author at its next wake. Replies are kept in an outbox for retries, review launches check committed edits, and closing a run holds its wake lease. Review edits are measured and published only on submit, using the same remaining GPU budget as other author work.
 
 - Wake messages now use one inbox and one renderer. Launch results, gate verdicts, panel findings, review comments and base moves reach the session in the same fenced format, from files kept beside the run's record. Advisory panel findings now reach the author alongside blocking ones. The sibling view is refreshed at every wake of a parked author session. The kernel's wake text states facts; the research advice it used to carry is gone.
 
