@@ -36,7 +36,7 @@ def _install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             f'n=$(wc -l < "{shimlog}/sbatch" | tr -d " ")\necho "$((500 + n))"\n'
         ),
         "scancel": f'#!/bin/sh\necho "$1" >> "{shimlog}/scancel"\n',
-        "squeue": "#!/bin/sh\nexit 0\n",  # nothing of ours queued
+        "squeue": '#!/bin/sh\ncase "$*" in *"-j "*) echo PENDING;; esac\n',
         "scontrol": '#!/bin/sh\necho "JobId=42 EndTime=2030-01-01T00:00:00 JobState=RUNNING"\n',
         "timeout": '#!/bin/sh\nshift 2\nexec "$@"\n',  # --kill-after=.. 15m cmd...
         # uv: `sync` is a no-op; `run ... tick` is the fake tick — it counts
@@ -282,7 +282,8 @@ echo "$((500 + n))"
     assert proc.returncode == 0, proc.stderr
     assert len((shimlog / "sbatch").read_text().splitlines()) == 5
     log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
-    assert "submit failed at handover; retrying" in log
+    assert "submit failed; retrying next iteration" in log
+    assert (shimlog / "ticks").read_text().count("tick") == 1
     assert "handing over to successor 505" in log
 
 
@@ -696,3 +697,112 @@ def test_without_a_record_a_failed_sync_keeps_the_checkout(tmp_path: Path) -> No
     proc, gitlog = _deploy(tmp_path, head="NEW", sync_fails_once=True)
     assert "reset" not in gitlog
     assert "uv sync failed; environment unchanged" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "PENDING",
+        "RUNNING",
+        "",
+        "CANCELLED",
+        "FAILED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "SPECIAL_EXIT",
+        "QUERY_ERROR",
+        "INVALID_ID",
+    ],
+)
+def test_resident_checks_successor_each_tick_and_records_replacement(
+    tmp_path: Path, state: str
+) -> None:
+    home, root, bindir, shimlog = _install(tmp_path)
+    (bindir / "squeue").write_text(
+        f'''#!/bin/sh
+case "$*" in
+  *"-j 501 "*)
+    case "{state}" in
+      QUERY_ERROR) echo "scheduler unavailable" >&2; exit 1 ;;
+      INVALID_ID) echo "slurm_load_jobs error: Invalid job id specified" >&2; exit 1 ;;
+      *) echo "{state}" ;;
+    esac ;;
+  *"-j "*) echo PENDING ;;
+esac
+'''
+    )
+    # Three ticks: observe the original, then observe the recorded replacement
+    # again without submitting a second replacement. No shim-change resubmit.
+    (bindir / "uv").write_text(
+        f'''#!/bin/sh
+[ "$1" = run ] || exit 0
+echo tick >> "{shimlog}/ticks"
+[ "$(wc -l < "{shimlog}/ticks")" -ge 3 ] && touch "{root}/PAUSE"
+exit 0
+'''
+    )
+    proc = _run_chain(home, _resident_env(home, root, bindir, OUTERLOOP_QOS="priority"))
+    assert proc.returncode == 0, proc.stderr
+    healthy = state in ("PENDING", "RUNNING", "QUERY_ERROR")
+    submissions = (shimlog / "sbatch").read_text().splitlines()
+    assert len(submissions) == (1 if healthy else 2)
+    assert all(line == submissions[0] for line in submissions)
+    for flag in (
+        "--dependency=afterany:42,singleton",
+        "--account=acct",
+        "--partition=cpu_short",
+        "--qos=priority",
+        "--export=ALL",
+    ):
+        assert flag in submissions[0]
+    assert (shimlog / "scancel").read_text().split() == (["501"] if healthy else ["502"])
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    if healthy:
+        assert "vanished" not in log
+    else:
+        vanished_state = "GONE" if state in ("", "INVALID_ID") else state
+        assert log.count(f"successor 501 vanished ({vanished_state}); requeued as 502") == 1
+
+
+@pytest.mark.parametrize("submit_fails", [True, False])
+def test_resident_recovery_at_margin(tmp_path: Path, submit_fails: bool) -> None:
+    home, root, bindir, shimlog = _install(tmp_path)
+    # Start outside the margin; the first tick advances the clock into it.
+    (bindir / "scontrol").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "date").write_text(
+        f'''#!/bin/sh
+if [ "$1" = +%s ]; then
+    if [ -e "{shimlog}/ticks" ]; then echo 22000; else echo 1000; fi
+else exec /bin/date "$@"; fi
+'''
+    )
+    (bindir / "date").chmod(0o755)
+    (bindir / "squeue").write_text('#!/bin/sh\ncase "$*" in *"-j 502 "*) echo PENDING;; esac\n')
+    (bindir / "sbatch").write_text(
+        f'''#!/bin/sh
+echo "$@" >> "{shimlog}/sbatch"
+n=$(wc -l < "{shimlog}/sbatch")
+[ "$n" -gt 1 ] && [ "{submit_fails}" = True ] && exit 1
+echo "$((500 + n))"
+'''
+    )
+    (bindir / "uv").write_text(
+        f'''#!/bin/sh
+[ "$1" = run ] || exit 0
+echo tick >> "{shimlog}/ticks"
+[ "$(wc -l < "{shimlog}/ticks")" -ge 3 ] && touch "{root}/PAUSE"
+exit 0
+'''
+    )
+    proc = _run_chain(home, _resident_env(home, root, bindir, OUTERLOOP_RESIDENT_RETRY_S="0"))
+    assert proc.returncode == 0, proc.stderr
+    assert (shimlog / "ticks").read_text().count("tick") == (3 if submit_fails else 1)
+    assert len((shimlog / "sbatch").read_text().splitlines()) == (7 if submit_fails else 2)
+    log = next(root.joinpath("logs").glob("tick-*.log")).read_text()
+    if submit_fails:
+        assert "ERROR: successor 501 submit failed" in log
+        assert "keeping ticking until walltime ends" in log
+        assert "handing over" not in log
+    else:
+        assert "successor 501 vanished (GONE); requeued as 502" in log
+        assert "handing over to successor 502" in log
