@@ -451,12 +451,14 @@ first; `OUTERLOOP_PANEL` names the verify/review lenses (with
 `OUTERLOOP_PANEL_*_KEY_FILE` for their keys; a lens that names no backend
 runs on the author's backend, so a codex deployment gets codex judges by
 default, and a lens that names no model runs the author's model when it
-shares the author's backend, else that backend's default); the author backend is
+shares the author's backend, and must name an explicit model on any other
+backend); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
 `OUTERLOOP_CLAUDE_MODEL` names the model for every Claude role (author,
-panel judges, steward) and is required whenever the deployment runs one:
-there is no built-in default, and `start` refuses without it, naming the
-line to add; `OUTERLOOP_AUTHOR_MODEL` overrides it for the author. The
+panel judges, steward) when no explicit or inherited model covers that role:
+there is no built-in default, and `start` refuses when a role needs it, naming
+the line to add; `OUTERLOOP_AUTHOR_MODEL` overrides it for the author and
+same-backend judges. The
 author key file is
 `OUTERLOOP_<BACKEND>_KEY_FILE` (`OUTERLOOP_CLAUDE_KEY_FILE`,
 `OUTERLOOP_CODEX_KEY_FILE`; `init` writes the key to

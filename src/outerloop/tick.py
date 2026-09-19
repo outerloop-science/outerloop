@@ -2266,7 +2266,7 @@ def _author_config_error(spec: ServiceSpec) -> str:
 def _panel_preflight_error(spec: ServiceSpec) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
-    OWN rules (parse_lenses for the grammar and claude-only backend;
+    OWN rules (resolve_lenses for grammar and author/model inheritance;
     FileTokenProvider for exists/mode-600/non-empty), so preflight and climb
     cannot disagree.
 
@@ -2279,11 +2279,13 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
     try:
         from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
         from outerloop.github import FileTokenProvider
-        from outerloop.panel import parse_lenses
+        from outerloop.panel import resolve_lenses
 
         try:
-            lenses = parse_lenses(
-                spec.panel, os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude"
+            lenses = resolve_lenses(
+                spec.panel,
+                os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude",
+                os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
             )
         except ValueError as exc:
             return str(exc)

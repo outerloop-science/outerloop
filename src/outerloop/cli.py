@@ -433,19 +433,13 @@ def missing_panel_model(values: dict[str, str], environ: Mapping[str, str]) -> s
     panel = DEFAULT_PANEL if panel is None else panel.strip()
     if not panel:
         return ""
-    from outerloop.panel import parse_lenses
+    from outerloop.panel import resolve_lenses
 
     try:
-        lenses = parse_lenses(panel, backend)
-    except ValueError:
-        return ""  # a malformed panel is the tick's own diagnosis
-    bad = [f"{kind}:{on}" for kind, on, model in lenses if not model and on != backend]
-    if not bad:
-        return ""
-    return (
-        f"panel lens(es) {', '.join(bad)} name no model and do not run on the author's "
-        f"backend ({backend}); write each as kind:backend:<model> in OUTERLOOP_PANEL"
-    )
+        resolve_lenses(panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ))
+    except ValueError as exc:
+        return str(exc)
+    return ""
 
 
 def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
@@ -464,20 +458,15 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
     panel = _configured("OUTERLOOP_PANEL", values, environ)
     panel = DEFAULT_PANEL if panel is None else panel.strip()
     if panel:
-        from outerloop.panel import parse_lenses
+        from outerloop.panel import resolve_lenses
 
         try:
-            lenses = parse_lenses(panel, backend)
+            lenses = resolve_lenses(
+                panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+            )
         except ValueError:
-            lenses = ()  # a malformed panel is the tick's own diagnosis
-        # a claude lens without a model inherits a claude author's model; under
-        # any other author it needs the shared Claude setting (a non-claude lens
-        # without a model is refused by missing_panel_model)
-        unnamed = [
-            kind
-            for kind, on, model in lenses
-            if on == "claude" and not model and backend != "claude"
-        ]
+            lenses = ()  # missing_panel_model reports invalid panel configuration
+        unnamed = [kind for kind, on, model in lenses if on == "claude" and not model]
         if unnamed:
             roles.append(
                 f"the claude panel judge(s) {', '.join(unnamed)} (no model in OUTERLOOP_PANEL)"

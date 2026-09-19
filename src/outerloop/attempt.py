@@ -3007,7 +3007,9 @@ def _judge_lens_key(
     return role_key(raw, author_backend)
 
 
-def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str, ...]]:
+def _panel_lenses_from_args(
+    args: Any, *, author_backend: str | None = None, author_model: str | None = None
+) -> tuple[tuple[PanelLens, ...], tuple[str, ...]]:
     """Build the verification-panel lenses from the CLI args (empty `--panel`
     disables it), returning `(lenses, panel_secrets)` — the ONE owner of
     panel credentials: each backend's judge key is read only when a lens uses
@@ -3021,30 +3023,14 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
 
     if not args.panel.strip():
         return (), ()
-    from outerloop.panel import parse_lenses
+    from outerloop.panel import resolve_lenses
     from outerloop.roles import reviewer_spec
 
-    author_backend = getattr(args, "author_backend", "") or "claude"
-    author_model = getattr(args, "model", "") or ""
-    parsed = parse_lenses(args.panel, author_backend)
-    # a lens that names no model runs the author's model when it runs the
-    # author's backend (one deployment, one model unless told otherwise);
-    # on any other backend the model must be named: no judge runs on a
-    # model nobody chose
-    resolved = []
-    for kind, backend, model in parsed:
-        if not model:
-            if backend == author_backend:
-                # inherit, even when the author itself runs its CLI's default
-                model = author_model
-            else:
-                raise ValueError(
-                    f"panel lens {kind}:{backend} names no model and does not run on the "
-                    f"author's backend ({author_backend}); write it as "
-                    f"{kind}:{backend}:<model> in OUTERLOOP_PANEL"
-                )
-        resolved.append((kind, backend, model))
-    parsed = tuple(resolved)
+    if author_backend is None:
+        author_backend = getattr(args, "author_backend", "") or "claude"
+    if author_model is None:
+        author_model = getattr(args, "model", "") or ""
+    parsed = resolve_lenses(args.panel, author_backend, author_model)
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
     panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
@@ -3097,10 +3083,8 @@ def _panel_lenses_from_args(args: Any) -> tuple[tuple[PanelLens, ...], tuple[str
                 model=model or None,
                 # ALWAYS contained: the panel runs on the climb host next to key
                 # files, and a judge now holds a shell (codex `danger-full-access`),
-                # so it must run inside the image. `parse_lenses` gates panel
-                # backends to those containable here (claude today); passing the
-                # image unconditionally means codex is safe the moment it is
-                # enabled, never accidentally uncontained.
+                # so it must run inside the image. The shared resolver admits
+                # only backends that can be contained here.
                 container_image=args.image,
                 hermes_repo=Path(hermes_repo_env) if hermes_repo_env else None,
                 hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", "openrouter"),
@@ -4778,7 +4762,11 @@ def main() -> int:
         # dispatched improvement is not published unverified.
         try:
             wake_lenses, wake_panel_secrets = (
-                ((), ()) if args.panel_skip else _panel_lenses_from_args(args)
+                ((), ())
+                if args.panel_skip
+                else _panel_lenses_from_args(
+                    args, author_backend=wake_backend, author_model=wake_model
+                )
             )
         except ValueError as exc:
             # this wake holds the run's lease; a panel misconfiguration must not
@@ -4919,7 +4907,9 @@ def main() -> int:
     # Pre-PR panel lenses: judge sessions on the verifier's own key (separate
     # identity from the author). kind[:backend[:model]]; claude by default.
     try:
-        panel_lenses, panel_secrets = _panel_lenses_from_args(args)
+        panel_lenses, panel_secrets = _panel_lenses_from_args(
+            args, author_backend=args.author_backend, author_model=args.model
+        )
     except ValueError as exc:
         parser.error(str(exc))
 

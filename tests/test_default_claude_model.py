@@ -371,6 +371,8 @@ def test_resume_cli_uses_pinned_model_without_deployment_model(
             "--uncontained",
             "--author-backend",
             fleet_backend,
+            "--panel",
+            "verify,review",
         ],
     )
     monkeypatch.setattr(attempt, "arm_sigterm_containment", lambda: None)
@@ -390,7 +392,18 @@ def test_resume_cli_uses_pinned_model_without_deployment_model(
         return ""
 
     monkeypatch.setattr(attempt, "codex_author_config_error", capture_author)
-    monkeypatch.setattr(attempt, "_panel_lenses_from_args", lambda *a: ((), ()))
+    monkeypatch.setattr(attempt, "role_key", lambda *a: "panel-key")
+    real_panel = attempt._panel_lenses_from_args
+
+    def capture_panel(args, **kwargs):
+        lenses, secrets = real_panel(args, **kwargs)
+        assert len(lenses) == 2
+        for lens in lenses:
+            assert isinstance(lens.harness, ClaudeCodeHarness)
+            assert lens.harness.model == "claude-pinned"
+        return lenses, secrets
+
+    monkeypatch.setattr(attempt, "_panel_lenses_from_args", capture_panel)
     monkeypatch.setattr(attempt, "_dispatch_settings", lambda *a: None)
     monkeypatch.setattr(
         attempt,
@@ -444,7 +457,7 @@ def test_bare_panel_lenses_follow_the_author_backend(monkeypatch, tmp_path):
 
 def test_model_less_panel_lens_inherits_the_author_model_on_the_same_backend(monkeypatch, tmp_path):
     """`review:codex` under a codex author runs on the author's model; an explicit
-    lens model wins; a claude lens under a codex author uses the Claude setting."""
+    lens model wins; a claude lens under a codex author must name its model."""
     monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-deploy")
     monkeypatch.setattr(attempt, "role_key", lambda *args: "test-key")
     monkeypatch.setattr(
@@ -505,3 +518,60 @@ def test_start_refuses_a_model_less_lens_off_the_author_backend():
     assert "review:codex" in cli.missing_panel_model(
         {}, {**claude, "OUTERLOOP_PANEL": "verify,review:codex"}
     )
+
+
+@pytest.mark.parametrize(
+    "backend,model,panel",
+    [
+        ("claude", "claude-author", "review"),
+        ("claude", "claude-author", "review:claude"),
+        ("codex", "gpt-author", "review:claude"),
+    ],
+)
+def test_panel_preflight_climb_resolution_parity(monkeypatch, tmp_path, backend, model, panel):
+    from outerloop import cli
+    from outerloop.tick import ServiceSpec, _panel_preflight_error
+
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", backend)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", model)
+    key = tmp_path / "panel-key"
+    key.write_text("judge-key")
+    key.chmod(0o600)
+    spec = ServiceSpec(
+        target="org/repo",
+        account="a",
+        partition="p",
+        run_root=tmp_path,
+        home=tmp_path,
+        image="",
+        panel=panel,
+        panel_key_file=str(key),
+    )
+    args = SimpleNamespace(
+        panel=panel,
+        author_backend=backend,
+        model=model,
+        panel_key_file=str(key),
+        image="",
+        claude_bin="claude",
+        codex_bin="codex",
+    )
+    problem = _panel_preflight_error(spec)
+    settings = {
+        "OUTERLOOP_AUTHOR_BACKEND": backend,
+        "OUTERLOOP_AUTHOR_MODEL": model,
+        "OUTERLOOP_PANEL": panel,
+    }
+    assert cli.missing_panel_model({}, settings) == problem
+    if backend == "codex":
+        with pytest.raises(ValueError) as exc:
+            attempt._panel_lenses_from_args(args)
+        assert str(exc.value) == problem
+        assert "review:claude:<model> in OUTERLOOP_PANEL" in problem
+    else:
+        assert problem == ""
+        assert cli.missing_claude_model({}, settings) == ""
+        lenses, _ = attempt._panel_lenses_from_args(args)
+        assert isinstance(lenses[0].harness, ClaudeCodeHarness)
+        assert lenses[0].harness.model == model
