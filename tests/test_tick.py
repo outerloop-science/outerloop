@@ -1916,7 +1916,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     assert "claude backend" not in err
     # a hermes lens preflights the shelled-judge rules (image first)
     assert "requires a real container image" in _panel_preflight_error(
-        make(panel="verify:hermes", panel_key_file=str(good))
+        make(panel="verify:hermes:judge-model", panel_key_file=str(good))
     )
     # a codex lens preflights the image requirement too (climb parity)
     judge = tmp_path / "panel_codex_key"

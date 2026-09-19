@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from outerloop.github import EnvTokenProvider, GitHubClient
-from outerloop.harness import Harness
+from outerloop.harness import ClaudeModelUnset, Harness
 from outerloop.review_agent import (
     emit_envelope,
     run_agent_review,
@@ -98,15 +98,19 @@ def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
                 "(gpt-5.6-terra, no openai/ prefix)",
                 backend,
             )
-    harness = build_harness(
-        api_key,
-        spec,
-        backend=backend,
-        binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
-        model=review_model or None,
-        hermes_repo=hermes_repo,
-        hermes_provider=provider,
-    )
+    try:
+        harness = build_harness(
+            api_key,
+            spec,
+            backend=backend,
+            binary=os.environ.get("REVIEW_BINARY") or None,  # else the backend default on PATH
+            model=review_model or None,
+            hermes_repo=hermes_repo,
+            hermes_provider=provider,
+        )
+    except ClaudeModelUnset as exc:
+        # the claude backend has no built-in model: REVIEW_MODEL or OUTERLOOP_CLAUDE_MODEL
+        return None, str(exc), backend
     return harness, "", backend
 
 

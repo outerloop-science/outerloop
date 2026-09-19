@@ -934,7 +934,12 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
     monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", "/c")
 
     legacy = SimpleNamespace(author_backend="", author_model="", author_key_file="")
-    assert resume_author(legacy, fleet_model="gpt-5.6-terra") == ("claude", "claude-opus-5", "/h")
+    # the deployment's Claude model (conftest: claude-test-model), never a code default
+    assert resume_author(legacy, fleet_model="gpt-5.6-terra") == (
+        "claude",
+        "claude-test-model",
+        "/h",
+    )
     claude_rec = SimpleNamespace(
         author_backend="claude", author_model="claude-opus-5", author_key_file=""
     )
@@ -956,7 +961,7 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
         author_backend="codex", author_model="gpt-5.6-terra", author_key_file="/custom/key"
     )
     assert resume_author(pinned, fleet_model="x") == ("codex", "gpt-5.6-terra", "/custom/key")
-    assert resume_author(None, fleet_model="x") == ("claude", "claude-opus-5", "/h")
+    assert resume_author(None, fleet_model="x") == ("claude", "claude-test-model", "/h")
 
 
 def test_codex_author_config_error() -> None:
@@ -966,8 +971,8 @@ def test_codex_author_config_error() -> None:
     assert codex_author_config_error("claude", "claude-opus-5", "") == ""
     assert codex_author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
     assert "requires --image" in codex_author_config_error("codex", "gpt-5.6-terra", "")
-    assert "claude default" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
-    assert "claude default" in codex_author_config_error("codex", "", "img.sif")
+    assert "codex/openai model" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
+    assert "codex/openai model" in codex_author_config_error("codex", "", "img.sif")
     # an unknown backend (typo'd env default) is rejected, not silently accepted
     assert "unknown author backend" in codex_author_config_error("hermes", "m", "img.sif")
 
@@ -6271,3 +6276,38 @@ def test_bless_guard_reasons(rounds, blocking, degraded, merge, reason):
     assert _bless_decision(
         cast(Any, None), result, SimpleNamespace(merge=merge), "main", "base"
     ) == ("", reason)
+
+
+def test_wake_releases_its_lease_when_panel_setup_fails(tmp_path, monkeypatch):
+    """Round 3 of #409: a --resume wake whose panel is misconfigured exits through
+    parser.error; the run's lease must be released first, not left to the TTL."""
+    import argparse
+
+    from outerloop import attempt
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        attempt, "_release_own_lease", lambda root, run_id: calls.append((root, run_id))
+    )
+    monkeypatch.setattr(
+        attempt,
+        "_panel_lenses_from_args",
+        lambda args: (_ for _ in ()).throw(ValueError("bad panel")),
+    )
+    parser = argparse.ArgumentParser()
+
+    class Exit(Exception):
+        pass
+
+    def fake_error(msg):
+        raise Exit(msg)
+
+    monkeypatch.setattr(parser, "error", fake_error)
+    args = argparse.Namespace(panel_skip=False, run_root=tmp_path, resume="run-1")
+    with pytest.raises(Exit, match="bad panel"):
+        try:
+            attempt._panel_lenses_from_args(args)
+        except ValueError as exc:
+            attempt._release_own_lease(args.run_root, args.resume)
+            parser.error(str(exc))
+    assert calls == [(tmp_path, "run-1")]

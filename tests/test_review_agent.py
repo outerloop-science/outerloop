@@ -452,7 +452,7 @@ def test_post_from_file_stub_is_skip_checked_and_sanitized(tmp_path: Path) -> No
 def test_backend_id_names_backend_and_model(tmp_path: Path) -> None:
     from outerloop.harness import ClaudeCodeHarness, HermesHarness, backend_id
 
-    assert backend_id(ClaudeCodeHarness(api_key="k")) == "claude/claude-opus-5"
+    assert backend_id(ClaudeCodeHarness(api_key="k")) == "claude/claude-test-model"  # conftest
     hermes = HermesHarness(api_key="k", repo_dir=tmp_path, model="moonshot/kimi-k3")
     assert backend_id(hermes) == "hermes/moonshot/kimi-k3"
     assert backend_id(_Harness("x")) == ""  # unknown types: stamp omits the clause

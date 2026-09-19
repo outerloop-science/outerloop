@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from outerloop.harness import SessionResult
 from outerloop.panel import PanelLens, run_panel
 from outerloop.review import PullRequest
@@ -140,3 +142,40 @@ def test_advisory_details_survive_the_panel_read(tmp_path):
     assert len(verdict.findings) == 1
     assert verdict.findings[0].summary == "readability"
     assert verdict.findings[0].detail == "name the constant"
+
+
+@pytest.mark.parametrize(
+    "backend,model",
+    [("claude", "claude-author"), ("codex", "gpt-author"), ("claude", ""), ("codex", "")],
+)
+def test_resolve_lenses_inherits_author(backend, model):
+    from outerloop.panel import resolve_lenses
+
+    assert resolve_lenses("verify,review", backend, model) == (
+        ("verify", backend, model),
+        ("review", backend, model),
+    )
+    assert resolve_lenses(f"review:{backend}", backend, model) == (("review", backend, model),)
+
+
+def test_resolve_lenses_explicit_models():
+    from outerloop.panel import resolve_lenses
+
+    assert resolve_lenses("verify:claude:judge,review:codex:other", "claude", "author") == (
+        ("verify", "claude", "judge"),
+        ("review", "codex", "other"),
+    )
+
+
+@pytest.mark.parametrize(
+    "author,judge", [("codex", "claude"), ("claude", "codex"), ("claude", "hermes")]
+)
+def test_resolve_lenses_refuses_model_less_other_backend(author, judge):
+    from outerloop.panel import resolve_lenses
+
+    with pytest.raises(ValueError) as exc:
+        resolve_lenses(f"review:{judge}", author, "author-model")
+    assert str(exc.value) == (
+        f"panel lens review:{judge} names no model and does not run on the "
+        f"author's backend ({author}); write it as review:{judge}:<model> in OUTERLOOP_PANEL"
+    )

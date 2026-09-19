@@ -35,9 +35,12 @@ log = logging.getLogger(__name__)
 LENS_KINDS = ("verify", "review")
 
 
-def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
+def parse_lenses(panel: str, default_backend: str = "claude") -> tuple[tuple[str, str, str], ...]:
     """Parse a panel spec — comma-separated ``kind[:backend[:model]]`` — into
-    (kind, backend, model) triples, or raise ValueError.
+    (kind, backend, model) triples, or raise ValueError. A lens that names no
+    backend takes `default_backend`: callers pass the author's backend, so a
+    codex deployment gets codex judges by default and a claude deployment
+    claude judges, and no deployment is asked for a model it never chose.
 
     One owner for the grammar: the climb CLI turns the error into
     parser.error, and the tick preflights the SAME rules before claiming an
@@ -54,7 +57,7 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
         entry = raw.strip()
         kind, _, rest = entry.partition(":")
         backend, _, model = rest.partition(":")
-        backend = backend or "claude"
+        backend = backend or (default_backend or "claude")
         if kind not in LENS_KINDS:
             raise ValueError(f"panel entry {entry!r}: unknown kind (use {LENS_KINDS})")
         if backend not in ("claude", "codex", "hermes"):
@@ -63,6 +66,35 @@ def parse_lenses(panel: str) -> tuple[tuple[str, str, str], ...]:
             )
         entries.append((kind, backend, model))
     return tuple(entries)
+
+
+def resolve_lenses(
+    panel: str, author_backend: str, author_model: str
+) -> tuple[tuple[str, str, str], ...]:
+    """Resolve lenses against their author; other backends require an explicit model.
+
+    An empty inherited Claude model is left for the caller to resolve with
+    default_claude_model(), which diagnoses a missing deployment setting.
+    """
+    parsed = parse_lenses(panel, author_backend)
+    # a lens that names no model runs the author's model when it runs the
+    # author's backend (one deployment, one model unless told otherwise);
+    # on any other backend the model must be named: no judge runs on a
+    # model nobody chose
+    resolved = []
+    for kind, backend, model in parsed:
+        if not model:
+            if backend == author_backend:
+                # inherit, even when the author itself runs its CLI's default
+                model = author_model
+            else:
+                raise ValueError(
+                    f"panel lens {kind}:{backend} names no model and does not run on the "
+                    f"author's backend ({author_backend}); write it as "
+                    f"{kind}:{backend}:<model> in OUTERLOOP_PANEL"
+                )
+        resolved.append((kind, backend, model))
+    return tuple(resolved)
 
 
 def panel_read_minutes(panel: str) -> int:

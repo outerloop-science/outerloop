@@ -58,6 +58,7 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
     "OUTERLOOP_CLAUDE_KEY_FILE",
+    "OUTERLOOP_STEWARD_KEY_FILE",
     "OUTERLOOP_VERTEX_PROJECT",
     "OUTERLOOP_VERTEX_REGION",
     "OUTERLOOP_VERTEX_ADC",
@@ -84,12 +85,14 @@ class StartError(Exception):
     """A start that cannot proceed; the message is the whole diagnosis."""
 
 
-def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -> dict[str, str]:
+def env_file_values(
+    path: Path = ENV_FILE, keys: tuple[str, ...] | None = START_KEYS
+) -> dict[str, str]:
     """`keys` from the operator's .env under the deploy step's trust rule: the
     file must be ours and not group/world-writable, or it is refused. Last
     assignment wins; surrounding quotes and a CR are stripped; a key set to
     an empty value is present (an off-switch), an absent key is absent.
-    No file: nothing."""
+    `keys=None` reads all assignments. No file: nothing."""
     try:
         st = path.stat()
     except OSError:
@@ -109,7 +112,7 @@ def env_file_values(path: Path = ENV_FILE, keys: tuple[str, ...] = START_KEYS) -
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key not in keys:
+        if keys is not None and key not in keys:
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
@@ -410,6 +413,75 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
     return ""
 
 
+DEFAULT_PANEL = "verify,review"  # the tick's default when OUTERLOOP_PANEL is absent
+
+
+def _configured(key: str, values: Mapping[str, str], environ: Mapping[str, str]) -> str | None:
+    """`key`'s setting with presence kept: None when neither the process
+    environment nor .env has it (a present empty value is an off-switch)."""
+    if key in environ:
+        return environ[key]
+    return values.get(key)
+
+
+def missing_panel_model(values: dict[str, str], environ: Mapping[str, str]) -> str:
+    """Refuse a panel lens that names no model and does not run on the author's
+    backend: it would run on whatever that backend's CLI defaults to, a model
+    nobody chose. Empty when every lens has a model or inherits the author's."""
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    panel = _configured("OUTERLOOP_PANEL", values, environ)
+    panel = DEFAULT_PANEL if panel is None else panel.strip()
+    if not panel:
+        return ""
+    from outerloop.panel import resolve_lenses
+
+    try:
+        resolve_lenses(panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ))
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
+    """Why this start would run a Claude role with no model ("" when it won't).
+    OUTERLOOP_CLAUDE_MODEL is a required deployment setting, never a code
+    default: it is needed by a claude author without its own OUTERLOOP_AUTHOR_MODEL,
+    by a panel lens on the claude backend without an explicit model, and by the
+    steward lane (always claude) once its key is provisioned. Reads the settings
+    the way the tick will: the process environment wins over .env."""
+    if _setting_of("OUTERLOOP_CLAUDE_MODEL", values, environ):
+        return ""
+    roles: list[str] = []
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    if backend == "claude" and not _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ):
+        roles.append("the claude author (no OUTERLOOP_AUTHOR_MODEL)")
+    panel = _configured("OUTERLOOP_PANEL", values, environ)
+    panel = DEFAULT_PANEL if panel is None else panel.strip()
+    if panel:
+        from outerloop.panel import resolve_lenses
+
+        try:
+            lenses = resolve_lenses(
+                panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+            )
+        except ValueError:
+            lenses = ()  # missing_panel_model reports invalid panel configuration
+        unnamed = [kind for kind, on, model in lenses if on == "claude" and not model]
+        if unnamed:
+            roles.append(
+                f"the claude panel judge(s) {', '.join(unnamed)} (no model in OUTERLOOP_PANEL)"
+            )
+    if _setting_of("OUTERLOOP_STEWARD_KEY_FILE", values, environ):
+        roles.append("the steward")
+    if not roles:
+        return ""
+    return (
+        "OUTERLOOP_CLAUDE_MODEL is not set, but this deployment runs Claude roles: "
+        f"{'; '.join(roles)}. Add the line OUTERLOOP_CLAUDE_MODEL=<model> to {ENV_FILE} "
+        "(or export it in the shell) and start again"
+    )
+
+
 APP_PERMISSION_KEYS = ("OUTERLOOP_GITHUB_APP_FILE", "OUTERLOOP_TARGET", "OUTERLOOP_PAT_FILE")
 
 
@@ -478,6 +550,9 @@ def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
+        # the model check holds for --dry-run too: it is configuration, not a host lookup
+        problem = problem or missing_claude_model(values, os.environ)
+        problem = problem or missing_panel_model(values, os.environ)
         if problem:
             raise StartError(problem)
         from_file = values

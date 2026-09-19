@@ -1,7 +1,7 @@
 """`outerloop init` — the guided setup.
 
-Collects placement (Slurm or local), the target repo, bot auth, and the
-author's model key, then writes `~/.config/outerloop/.env` (plus the credential
+Collects placement (Slurm or local), the target repo, bot auth, the Claude
+model, and the author's model key, then writes `~/.config/outerloop/.env` (plus the credential
 files), so a new adopter never hand-edits config or reasons about which
 `OUTERLOOP_*` keys to set. Flags fill
 answers non-interactively; anything left out is prompted for (a secret via
@@ -27,11 +27,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from outerloop.cli import ENV_FILE
+from outerloop.cli import ENV_FILE, StartError, env_file_values
 from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
@@ -54,14 +54,23 @@ class InitAnswers:
     partition: str = ""  # Slurm partition (optional; unset -> Slurm default)
     author_backend: str = ""  # optional: the climbing author's harness
     author_model: str = ""  # optional
+    claude_model: str = ""  # the model every Claude role runs (OUTERLOOP_CLAUDE_MODEL)
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
     author_bin: str = ""  # the author harness binary (claude/codex), absolute, when found
 
+    # Existing deployment values untouched by a focused GitHub App update.
+    preserved_env: dict[str, str] = field(default_factory=dict)
+
 
 def render_env(
-    a: InitAnswers, pat_file: str = "", *, app_file: str = "", bot_login: str = ""
+    a: InitAnswers,
+    pat_file: str = "",
+    *,
+    app_file: str = "",
+    bot_login: str = "",
+    existing_text: str = "",
 ) -> str:
     """The `.env` body for these answers — only the keys that have a value, so
     the file stays minimal and every line means something. Ordered placement →
@@ -92,6 +101,8 @@ def render_env(
         # every own-comment filter and own-PR scan keys on this login; without
         # it the kernel assumes a default that is not this adopter's identity
         lines.append(f"OUTERLOOP_BOT_LOGIN={bot_login}")
+    if a.claude_model:
+        lines.append(f"OUTERLOOP_CLAUDE_MODEL={a.claude_model}")
     if a.author_backend:
         lines.append(f"OUTERLOOP_AUTHOR_BACKEND={a.author_backend}")
     if a.author_model:
@@ -100,7 +111,34 @@ def render_env(
         lines.append(f"{author_key_env(a.author_backend)}={a.author_key_file}")
     if a.author_bin:
         lines.append(f"{author_bin_env(a.author_backend)}={a.author_bin}")
-    return "\n".join(lines) + "\n"
+    # A focused auth update preserves every setting it does not explicitly manage.
+    values = dict(line.split("=", 1) for line in lines)
+    values.update(a.preserved_env)
+    if not existing_text:
+        return "".join(f"{key}={value}\n" for key, value in values.items())
+    # Rewriting a hand-edited file: keep its comments, blank lines and order;
+    # replace managed values in place, drop keys no longer set, append new ones.
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in existing_text.splitlines():
+        key, sep, _ = raw.partition("=")
+        key = key.strip()
+        if not sep or not key or key.startswith("#"):
+            out.append(raw)
+            continue
+        if key in values and key not in seen:
+            out.append(f"{key}={values[key]}")
+        seen.add(key)
+    out.extend(f"{key}={value}" for key, value in values.items() if key not in seen)
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _existing_env() -> str:
+    """The current `.env` text, or "" when there is none (a fresh setup)."""
+    try:
+        return (CONFIG_DIR / ENV_FILE.name).read_text()
+    except OSError:
+        return ""
 
 
 def author_bin_env(backend: str) -> str:
@@ -416,6 +454,48 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     """Merge flags with prompts (when interactive) into answers + a PAT-file
     path. `args.pat_file` names an existing file; otherwise, interactively, a
     pasted token is returned separately to be written 0600."""
+    preserved: dict[str, str] = {}
+    if args.github_app:
+        preserved = env_file_values(CONFIG_DIR / ENV_FILE.name, keys=None)
+        existing = preserved.copy()
+        explicit_image = args.image
+        # Flags, then shell, then the working deployment. Keep unknown keys too.
+        for attr in (
+            "compute",
+            "target",
+            "root",
+            "account",
+            "partition",
+            "author_backend",
+            "author_model",
+            "claude_model",
+            "image",
+        ):
+            key = f"OUTERLOOP_{attr.upper()}"
+            flag = getattr(args, attr)
+            if attr == "claude_model":
+                flag = (flag or "").strip()
+            shell = os.environ.get(key, "").strip()
+            if flag or shell:
+                preserved.pop(key, None)
+                # Placement remains useful when switching back to Slurm, even
+                # though render_env omits it for a local deployment.
+                if attr in ("root", "account", "partition") and key in existing:
+                    preserved[key] = flag or shell
+            setattr(args, attr, flag or shell or existing.get(key, ""))
+        if args.no_image and not explicit_image:
+            args.image = ""
+            preserved.pop("OUTERLOOP_IMAGE", None)
+        elif existing.get("OUTERLOOP_IMAGE") == "" and not args.image:
+            args.no_image = True
+        backend = args.author_backend or "claude"
+        for key in (author_key_env(backend), author_bin_env(backend)):
+            if os.environ.get(key):
+                preserved[key] = os.environ[key]
+        if args.author_key_file:
+            preserved.pop(author_key_env(backend), None)
+        for key in ("OUTERLOOP_PAT_FILE", "OUTERLOOP_GITHUB_APP_FILE", "OUTERLOOP_BOT_LOGIN"):
+            preserved.pop(key, None)
     compute = args.compute or (_ask("Compute: slurm or local", "slurm") if interactive else "slurm")
     compute = compute.lower()
     target = args.target or (_ask("Target repo (owner/repo)", required=True) if interactive else "")
@@ -439,6 +519,14 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
     )
+    # The Claude model is required, with no code default: a claude author reads
+    # it, and so do the default panel's judges and the steward. Flag, then the
+    # shell's OUTERLOOP_CLAUDE_MODEL, then a prompt on the full setup.
+    claude_model = (args.claude_model or "").strip() or os.environ.get(
+        "OUTERLOOP_CLAUDE_MODEL", ""
+    ).strip()
+    if not claude_model and ask_author:
+        claude_model = _ask("Claude model (author, panel judges, steward)", required=True)
     # An explicit --image is recorded here (absolute: jobs read it from their
     # own directory); the published one is fetched in main, after every check
     # that could still end the run.
@@ -451,9 +539,12 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
         partition=partition,
         author_backend=backend,
         author_model=model,
+        claude_model=claude_model,
         image=image,
-        author_bin=locate_harness(backend),
+        author_key_file=preserved.get(author_key_env(backend), ""),
+        author_bin=preserved.get(author_bin_env(backend), "") or locate_harness(backend),
         uncontained=bool(args.no_image) and not image,
+        preserved_env=preserved,
     )
     return answers, (args.pat_file or "")
 
@@ -538,13 +629,19 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
     except Exception as exc:
         problem, fatal = f"could not read the App credentials: {exc}", False
     env_path = CONFIG_DIR / ENV_FILE.name
-    write_private(env_path, render_env(answers, app_file=str(app_json), bot_login=f"{slug}[bot]"))
+    write_private(
+        env_path,
+        render_env(
+            answers, app_file=str(app_json), bot_login=f"{slug}[bot]", existing_text=_existing_env()
+        ),
+    )
     if fatal:
         return _app_failure(answers, slug, problem)
     print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
     if problem:
         print("  next: outerloop permissions --open")
     print(f"wrote {env_path}")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
@@ -620,7 +717,12 @@ def _github_app_setup(
         if fatal:
             write_private(
                 CONFIG_DIR / ENV_FILE.name,
-                render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+                render_env(
+                    answers,
+                    app_file=str(app_json),
+                    bot_login=f"{conversion['slug']}[bot]",
+                    existing_text=_existing_env(),
+                ),
             )
             return _app_failure(answers, str(conversion["slug"]), problem)
         print(f"  auth check: {'ok' if not problem else 'WARNING — ' + problem}")
@@ -630,7 +732,12 @@ def _github_app_setup(
         # the credentials are kept; nothing can run until the App is installed
         write_private(
             CONFIG_DIR / ENV_FILE.name,
-            render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+            render_env(
+                answers,
+                app_file=str(app_json),
+                bot_login=f"{conversion['slug']}[bot]",
+                existing_text=_existing_env(),
+            ),
         )
         return _app_failure(
             answers, str(conversion["slug"]), f"the App is not installed on {answers.target}"
@@ -638,9 +745,15 @@ def _github_app_setup(
     env_path = CONFIG_DIR / ENV_FILE.name
     write_private(
         env_path,
-        render_env(answers, app_file=str(app_json), bot_login=f"{conversion['slug']}[bot]"),
+        render_env(
+            answers,
+            app_file=str(app_json),
+            bot_login=f"{conversion['slug']}[bot]",
+            existing_text=_existing_env(),
+        ),
     )
     print(f"wrote {env_path}")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
@@ -684,6 +797,12 @@ def main(argv: list[str] | None = None) -> int:
         help="skip installing a missing author CLI",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
+    parser.add_argument(
+        "--claude-model",
+        dest="claude_model",
+        help="model for every Claude role (author, panel judges, steward): required, no "
+        "default; OUTERLOOP_CLAUDE_MODEL in the shell also counts",
+    )
     image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
     image_flags.add_argument(
         "--image",
@@ -710,7 +829,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[2:] if argv is None else argv)
     interactive = not args.yes
 
-    answers, pat_file = _collect(args, interactive)
+    try:
+        answers, pat_file = _collect(args, interactive)
+    except StartError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2
@@ -721,6 +844,16 @@ def main(argv: list[str] | None = None) -> int:
     if answers.author_backend and answers.author_backend not in AUTHOR_BACKENDS:
         print(
             f"outerloop init: author backend must be one of {', '.join(AUTHOR_BACKENDS)}",
+            file=sys.stderr,
+        )
+        return 2
+    if not answers.claude_model and not args.github_app:
+        # The focused --github-app run preserves existing deployment settings;
+        # only a full setup insists on configuring every Claude role.
+        print(
+            "outerloop init: --claude-model is required (or OUTERLOOP_CLAUDE_MODEL in the "
+            "shell): every Claude role reads it — the default verify/review panel judges, "
+            "a claude author, the steward — and there is no built-in default",
             file=sys.stderr,
         )
         return 2
@@ -857,10 +990,19 @@ def main(argv: list[str] | None = None) -> int:
             )
     else:
         print("  no PAT set — add OUTERLOOP_PAT_FILE before the agents can open PRs")
+    _claude_model_hint(answers)
     _author_key_hint(answers)
     _harness_hint(answers)
     print("next: outerloop start")
     return 0
+
+
+def _claude_model_hint(answers: InitAnswers) -> None:
+    if not answers.claude_model:
+        print(
+            "  OUTERLOOP_CLAUDE_MODEL not recorded — add OUTERLOOP_CLAUDE_MODEL=<model> to "
+            f"{CONFIG_DIR / ENV_FILE.name} before `outerloop start` (every Claude role reads it)"
+        )
 
 
 def _author_key_hint(answers: InitAnswers) -> None:

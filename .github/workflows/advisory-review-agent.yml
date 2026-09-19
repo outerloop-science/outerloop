@@ -46,8 +46,9 @@ on:
         default: claude
       model:
         description: >-
-          Model for the session. Empty uses the backend default
-          (claude-opus-5 for claude; the backend's own default otherwise).
+          Model for the session. Empty uses the OUTERLOOP_CLAUDE_MODEL
+          Actions variable for claude (no built-in default; the backend's
+          own default otherwise).
           For hermes pass an OpenRouter id — except with
           hermes_provider: openai, which REQUIRES the provider-native id
           (gpt-5.6-terra, no openai/ prefix).
@@ -245,6 +246,7 @@ jobs:
         env:
           REVIEW_BACKEND: ${{ inputs.backend }}
           REVIEW_MODEL: ${{ inputs.model }}
+          OUTERLOOP_CLAUDE_MODEL: ${{ vars.OUTERLOOP_CLAUDE_MODEL }}
           # ONLY the chosen backend's key enters the session process tree: a
           # shell/file-reading backend must not be able to lift a sibling
           # backend's key via /proc (terra's blocking finding, #94 round 1)

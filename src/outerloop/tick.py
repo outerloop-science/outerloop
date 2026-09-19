@@ -41,7 +41,7 @@ from outerloop.compute import (
     quote_command,
 )
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
-from outerloop.harness import DEFAULT_MAX_TURNS, default_claude_model, redact
+from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
 from outerloop.limits import EffectiveLimits, effective_limits
 from outerloop.markers import has_marker, marker
@@ -2253,17 +2253,20 @@ def _author_config_error(spec: ServiceSpec) -> str:
     (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
-    from outerloop.attempt import codex_author_config_error
+    from outerloop.attempt import codex_author_config_error, fleet_author_model
 
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL") or default_claude_model()
+    try:
+        model = fleet_author_model(backend)
+    except ClaudeModelUnset as exc:
+        return str(exc)
     return codex_author_config_error(backend, model, spec.image)
 
 
 def _panel_preflight_error(spec: ServiceSpec) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
-    OWN rules (parse_lenses for the grammar and claude-only backend;
+    OWN rules (resolve_lenses for grammar and author/model inheritance;
     FileTokenProvider for exists/mode-600/non-empty), so preflight and climb
     cannot disagree.
 
@@ -2276,10 +2279,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
     try:
         from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
         from outerloop.github import FileTokenProvider
-        from outerloop.panel import parse_lenses
+        from outerloop.panel import resolve_lenses
 
         try:
-            lenses = parse_lenses(spec.panel)
+            lenses = resolve_lenses(
+                spec.panel,
+                os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude",
+                os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
+            )
         except ValueError as exc:
             return str(exc)
         # non-claude (shelled) lenses: mirror the climb's rules exactly, per
@@ -2343,6 +2350,12 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply
+        if any(not model for _, backend, model in lenses if backend == "claude"):
+            # a claude lens without its own model runs the deployment's
+            try:
+                default_claude_model()
+            except ClaudeModelUnset as exc:
+                return str(exc)
         path = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         if not path.is_absolute():
             # the climb runs from a flight directory, not the tick's cwd — a
@@ -2687,6 +2700,11 @@ def service_steward(
                 "and the steward job has no GPU allocation",
                 task.benchmark,
             )
+            return None
+        try:
+            default_claude_model()  # the steward runs the claude backend
+        except ClaudeModelUnset as exc:
+            log.error("stewardship on %s not launched: %s", task.benchmark, exc)
             return None
         if dry_run:
             return (f"steward-issue-{task.number}", "dry-run")

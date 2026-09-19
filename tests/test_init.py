@@ -21,6 +21,53 @@ from outerloop.init import (
 )
 
 
+def test_render_env_writes_the_claude_model() -> None:
+    a = InitAnswers(compute="local", target="o/r", claude_model="claude-x", author_backend="codex")
+    env = render_env(a, "")
+    assert "\nOUTERLOOP_CLAUDE_MODEL=claude-x\n" in env
+    assert env.index("OUTERLOOP_CLAUDE_MODEL") < env.index("OUTERLOOP_AUTHOR_BACKEND")
+    assert "CLAUDE_MODEL" not in render_env(InitAnswers(compute="local", target="o/r"), "")
+
+
+def test_claude_model_is_required_flag_then_shell_then_prompt(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Every Claude role reads OUTERLOOP_CLAUDE_MODEL and there is no code
+    default, so the full setup insists on it: --claude-model, else the shell's
+    value, else a required prompt; --yes without either refuses."""
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 2
+    err = capsys.readouterr().err
+    assert "--claude-model is required" in err and "OUTERLOOP_CLAUDE_MODEL" in err
+    assert not (tmp_path / ".env").exists()
+    # a codex author still keeps the default (claude) panel: required all the same
+    assert init.main([*base, "--author-backend", "codex", "--author-model", "gpt-x"]) == 2
+    assert init.main([*base, "--claude-model", "claude-flag"]) == 0
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-flag\n" in (tmp_path / ".env").read_text()
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", " claude-shell ")
+    assert init.main(base) == 0
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-shell\n" in (tmp_path / ".env").read_text()
+    assert init.main([*base, "--claude-model", "claude-flag"]) == 0  # the flag wins
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-flag\n" in (tmp_path / ".env").read_text()
+    # interactive: asked (required) when neither flag nor shell has it
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    asked: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_ask(prompt: str, default: str = "", **kw: Any) -> str:
+        asked.append((prompt, kw))
+        return "claude-typed" if prompt.startswith("Claude model") else default
+
+    monkeypatch.setattr(init, "_ask", fake_ask)
+    monkeypatch.setattr(init.getpass, "getpass", lambda prompt: "")
+    argv = ["--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main([*argv, "--author-backend", "claude"]) == 0
+    assert [kw for prompt, kw in asked if prompt.startswith("Claude model")] == [{"required": True}]
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-typed\n" in (tmp_path / ".env").read_text()
+
+
 def test_render_env_slurm_full() -> None:
     a = InitAnswers(
         compute="slurm",
@@ -262,6 +309,7 @@ def test_github_app_run_asks_only_for_the_organization(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(init, "_ask", fake_ask)
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)  # nor for the Claude model
     monkeypatch.setattr(appmanifest, "request_manifest_code", lambda *a, **k: "c")
     monkeypatch.setattr(
         appmanifest, "convert_manifest", lambda code, **k: {"id": 1, "slug": "s", "pem": "p"}
@@ -912,3 +960,137 @@ def test_init_records_real_path_lookup(tmp_path, monkeypatch, backend):
         == 0
     )
     assert f"OUTERLOOP_{backend.upper()}_BIN={binary.resolve()}" in (tmp_path / ".env").read_text()
+
+
+@pytest.mark.parametrize("shell_model", ["", " claude-shell "])
+def test_whitespace_claude_model_is_missing(tmp_path, monkeypatch, shell_model):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "validate_pat", lambda *a: "")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", shell_model)
+    rc = init.main(
+        [
+            "--yes",
+            "--compute",
+            "local",
+            "--target",
+            "o/r",
+            "--pat-file",
+            "/p",
+            "--claude-model",
+            "   ",
+        ]
+    )
+    assert rc == (0 if shell_model else 2)
+    if shell_model:
+        assert "OUTERLOOP_CLAUDE_MODEL=claude-shell\n" in (tmp_path / ".env").read_text()
+    else:
+        assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.parametrize("compute", ["local", "slurm"])
+@pytest.mark.parametrize("model_source", ["existing", "shell", "flag"])
+def test_focused_github_app_preserves_deployment_env(tmp_path, monkeypatch, compute, model_source):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.delenv("OUTERLOOP_AUTHOR_MODEL", raising=False)
+    existing = {
+        "OUTERLOOP_COMPUTE": compute,
+        "OUTERLOOP_TARGET": "o/r",
+        "OUTERLOOP_ROOT": "/shared/state",
+        "OUTERLOOP_ACCOUNT": "acct",
+        "OUTERLOOP_PARTITION": "cpu",
+        "OUTERLOOP_CLAUDE_MODEL": "claude-x",
+        "OUTERLOOP_AUTHOR_MODEL": "gpt-pinned",
+        "OUTERLOOP_AUTHOR_BACKEND": "codex",
+        "OUTERLOOP_CODEX_BIN": "/custom/codex",
+        "OUTERLOOP_CODEX_KEY_FILE": "/custom/key",
+        "OUTERLOOP_IMAGE": "",
+        "OUTERLOOP_AUTO_UPDATE": "release",
+        "OUTERLOOP_PANEL": "",
+        "OUTERLOOP_STEWARD_KEY_FILE": "/custom/steward",
+        "CUSTOM_SETTING": "keep me",
+    }
+    for key in existing:
+        monkeypatch.delenv(key, raising=False)
+    path = tmp_path / ".env"
+    path.write_text(
+        "".join(f"{k}={v}\n" for k, v in existing.items()) + "OUTERLOOP_PAT_FILE=/old\n"
+    )
+    app_json = tmp_path / "github_app.myapp.json"
+    app_json.write_text(json.dumps({"app_id": 1, "installation_id": 7, "private_key": "/k.pem"}))
+    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
+    monkeypatch.setattr(
+        init, "app_permission_gaps", lambda *a: init.AppPermissionGaps((), "", "", "", known=True)
+    )
+    flags = []
+    if model_source == "shell":
+        monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-shell")
+        monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", "gpt-shell")
+        existing.update(OUTERLOOP_CLAUDE_MODEL="claude-shell", OUTERLOOP_AUTHOR_MODEL="gpt-shell")
+    elif model_source == "flag":
+        monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-shell")
+        flags = ["--claude-model", " claude-flag ", "--author-model", "gpt-flag"]
+        existing.update(OUTERLOOP_CLAUDE_MODEL="claude-flag", OUTERLOOP_AUTHOR_MODEL="gpt-flag")
+    assert init.main(["--yes", "--force", "--github-app", *flags]) == 0
+    result = dict(line.split("=", 1) for line in path.read_text().splitlines())
+    for key, value in existing.items():
+        assert result.get(key) == value, key
+    assert "OUTERLOOP_PAT_FILE" not in result
+    assert result["OUTERLOOP_GITHUB_APP_FILE"] == str(app_json)
+
+
+def test_whitespace_claude_model_prompts(tmp_path, monkeypatch):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_MODEL", raising=False)
+    monkeypatch.setattr(init, "validate_pat", lambda *a: "")
+    monkeypatch.setattr(init.getpass, "getpass", lambda *a: "")
+    asked = []
+
+    def ask(prompt, default="", **kw):
+        if prompt.startswith("Claude model"):
+            asked.append(kw)
+            return "claude-prompt"
+        return default
+
+    monkeypatch.setattr(init, "_ask", ask)
+    assert (
+        init.main(
+            ["--compute", "local", "--target", "o/r", "--pat-file", "/p", "--claude-model", "   "]
+        )
+        == 0
+    )
+    assert asked == [{"required": True}]
+    assert "OUTERLOOP_CLAUDE_MODEL=claude-prompt\n" in (tmp_path / ".env").read_text()
+
+
+def test_render_env_keeps_comments_and_order_of_a_hand_edited_file() -> None:
+    from outerloop.init import InitAnswers, render_env
+
+    existing = (
+        "# my deployment\n"
+        "OUTERLOOP_COMPUTE=slurm\n"
+        "OUTERLOOP_ROOT=/old/root\n"
+        "\n"
+        "# keep this key even though init does not manage it\n"
+        "OUTERLOOP_QOS=priority\n"
+        "OUTERLOOP_PAT_FILE=/gone\n"
+    )
+    answers = InitAnswers(
+        compute="slurm",
+        root="/new/root",
+        target="org/repo",
+        author_backend="claude",
+        author_model="m",
+        claude_model="m",
+        preserved_env={"OUTERLOOP_QOS": "priority"},
+    )
+    text = render_env(answers, app_file="/app.json", bot_login="x[bot]", existing_text=existing)
+    lines = text.splitlines()
+    assert lines[:3] == ["# my deployment", "OUTERLOOP_COMPUTE=slurm", "OUTERLOOP_ROOT=/new/root"]
+    assert "" in lines and "# keep this key even though init does not manage it" in lines
+    assert "OUTERLOOP_QOS=priority" in lines
+    assert not any(
+        line.startswith("OUTERLOOP_PAT_FILE=") for line in lines
+    )  # App auth replaces the PAT
+    assert "OUTERLOOP_GITHUB_APP_FILE=/app.json" in lines  # appended
+    assert text.endswith("\n") and "\n\n\n" not in text
