@@ -6660,6 +6660,82 @@ def test_rewound_base_checkpoints_instead_of_gating(tmp_path, monkeypatch, wake)
     )
 
 
+def test_line_wake_refreshes_preflight_tip_after_its_fetch(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.roles import author_spec
+
+    state, run_id = _write_parked_line_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    record = load_record(state, run_id)
+    save_record(
+        state,
+        replace(
+            record,
+            stage={**record.stage, "phase": "author-sleep", "syscall_launches": []},
+        ),
+        1_000_000.0,
+    )
+    fresh_tips = []
+    real_base_advanced = climb_mod._line_base_advanced
+
+    def advance_before_fetch(ws, base_branch, base_sha):
+        # resume_run already fetched and captured the old origin tip.
+        old_tip = ws.git("rev-parse", f"origin/{base_branch}").strip()
+        fresh_tip = ws.git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit-tree",
+            f"{old_tip}^{{tree}}",
+            "-p",
+            old_tip,
+            "-m",
+            "base advances",
+        ).strip()
+        ws.git("push", "origin", f"{fresh_tip}:refs/heads/{base_branch}")
+        fresh_tips.append(fresh_tip)
+        assert real_base_advanced(ws, base_branch, base_sha) == fresh_tip
+        return fresh_tip
+
+    seen = []
+
+    def author_leg(config, contract, workspace, harness, measurer, base_sha, snapshot, **kw):
+        assert base_sha == fresh_tips[0]
+        _git(
+            workspace,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "merge",
+            "--no-edit",
+            fresh_tips[0],
+        )
+        preflight = kw["submit_preflight"]()
+        assert preflight.status == "ready"
+        seen.append(preflight.status)
+        return AttemptResult(outcome="no-improvement")
+
+    monkeypatch.setattr(climb_mod, "_line_base_advanced", advance_before_fetch)
+    monkeypatch.setattr(climb_mod, "attempt_once", author_leg)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert seen == ["ready"]
+
+
 def test_non_pr_line_wake_preserves_measurement_base(tmp_path, monkeypatch):
     from dataclasses import replace
 

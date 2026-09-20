@@ -1567,6 +1567,8 @@ def _wake_author_sleep(
     parked: RunParked | None = None
     kept_ref = ""
     try:
+        # The line's base check can fetch again after resume_run captured its pin.
+        pinned_tip = _rev(ws, f"refs/remotes/origin/{base_branch}") or pinned_tip
         result = run_author_leg(
             config,
             contract_text,
