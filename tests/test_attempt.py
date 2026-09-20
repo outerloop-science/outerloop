@@ -5141,27 +5141,27 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     (root / "agent_memory" / "note.md").write_text("x\n")
 
     ws = Workspace(root=root)
-    assert _paths_changed_from_base(ws, base_sha, True) == ["train.py"]
+    assert _paths_changed_from_base(ws, [base_sha], True) == ["train.py"]
     # the real call sites pass the base BRANCH ref; an unresolvable ref falls
     # back (here to the same base) rather than crashing
     git("update-ref", "refs/remotes/origin/main", base_sha)
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/main", True) == ["train.py"]
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True, fallback=base_sha) == [
+    assert _paths_changed_from_base(ws, ["refs/remotes/origin/main"], True) == ["train.py"]
+    assert _paths_changed_from_base(ws, ["refs/remotes/origin/nope"], True, fallback=base_sha) == [
         "train.py"
     ]
     # falling back to HEAD restores the old staged-vs-HEAD reading
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True) == [
+    assert _paths_changed_from_base(ws, ["refs/remotes/origin/nope"], True) == [
         "BENCHMARKS.md",
         "train.py",
     ]
     # memory not excluded (lines off): an ordinary path; the ledger still drops
-    assert _paths_changed_from_base(ws, base_sha, False) == ["agent_memory/note.md", "train.py"]
+    assert _paths_changed_from_base(ws, [base_sha], False) == ["agent_memory/note.md", "train.py"]
     # nothing staged against HEAD -> nothing, even though HEAD differs from base
     (root / "BENCHMARKS.md").write_text("best 8640\n")
     (root / "train.py").write_text("warmdown = 2048\n")
     (root / "agent_memory" / "note.md").unlink()
     (root / "agent_memory").rmdir()
-    assert _paths_changed_from_base(ws, base_sha, True) == []
+    assert _paths_changed_from_base(ws, [base_sha], True) == []
 
 
 def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path) -> None:
@@ -5199,7 +5199,7 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
         ws.git("status")  # EVERY kernel git call refuses
     with pytest.raises(GitError, match="altered by the session"):
-        _paths_changed_from_base(ws, base, False)
+        _paths_changed_from_base(ws, [base], False)
     os.unlink(pack)
     pack.mkdir()
     for f in elsewhere.iterdir():
@@ -6311,3 +6311,37 @@ def test_wake_releases_its_lease_when_panel_setup_fails(tmp_path, monkeypatch):
             attempt._release_own_lease(args.run_root, args.resume)
             parser.error(str(exc))
     assert calls == [(tmp_path, "run-1")]
+
+
+def test_changed_paths_intersect_bases(tmp_path: Path) -> None:
+    from outerloop.attempt import _paths_changed_from_base, submission_paths
+    from outerloop.github import Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    _git(root, "init", "-q")
+    for name in ("ledger", "code", "deleted", "unchanged"):
+        (root / name).write_text("A\n")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "A")
+    base_a = _git(root, "rev-parse", "HEAD").strip()
+    for name in ("ledger", "code", "unchanged"):
+        (root / name).write_text("B\n")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B")
+    base_b = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "checkout", "--detach", base_a)
+    (root / "ledger").write_text("B\n")
+    (root / "code").write_text("session\n")
+    (root / "new").write_text("new\n")
+    (root / "deleted").unlink()
+    ws = Workspace(root=root)
+    expected = ["code", "deleted", "new"]
+    bases = [base_a, "refs/remotes/origin/missing", base_b]
+    assert _paths_changed_from_base(ws, bases, False) == expected
+    assert submission_paths(ws, bases, False) == expected
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "session")
+    candidate = _git(root, "rev-parse", "HEAD").strip()
+    assert _paths_changed_from_base(ws, bases, False) == []
+    assert submission_paths(ws, bases, False, candidate) == expected

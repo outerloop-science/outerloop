@@ -1440,3 +1440,72 @@ def test_terminal_releases_snapshot_when_notebook_fails(review_run, monkeypatch,
     assert released == ["refs/test/snapshot"]
     assert load_record(root, "tsp-r1").state == ENDED
     assert "notebook unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("edit_ledger", [False, True])
+def test_review_folded_base_scope(review_run, monkeypatch, edit_ledger):
+    from outerloop.syscall_cli import main
+
+    root, bare = review_run
+    workspace = run_dir(root, "tsp-r1") / "ws"
+    head = _git(workspace, "rev-parse", "HEAD").strip()
+    seed = bare.parent / "seed"
+    (seed / "BENCHMARKS.md").write_text("main's ledger\n")
+    _git(seed, "add", "-A")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ledger")
+    _git(seed, "push", str(bare), "main")
+    launched = []
+
+    def launcher(*args, **kwargs):
+        def launch(sha, request):
+            launched.append(sha)
+            return "123"
+
+        return launch
+
+    monkeypatch.setattr("outerloop.attempt._make_launcher", launcher)
+
+    class FoldingHarness(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            _git(workspace, "reset", "--mixed", "origin/main")
+            _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
+            (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
+            if edit_ledger:
+                (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
+            assert (
+                main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
+                == 0
+            )
+            assert main(["sleep"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    github = FakeGitHub(pr={"state": "open", "head": {"sha": head}})
+    outcome = wake_review(root, "tsp-r1", FoldingHarness(), github)
+    assert outcome.action == ("scope-violation" if edit_ledger else "parked")
+    assert bool(launched) is not edit_ledger
+
+
+@pytest.mark.parametrize("outcome", ["scope-violation", "session-error"])
+def test_review_terminal_note_redacted_and_deduplicated(review_run, monkeypatch, outcome):
+    from outerloop.inbox import pending, thread_for
+    from outerloop.orchestrator import AttemptResult
+
+    root, _ = review_run
+    note = "out-of-scope paths at launch: private-sk-x.txt"
+    monkeypatch.setattr(
+        "outerloop.attempt.run_author_leg",
+        lambda *args, **kwargs: AttemptResult(outcome=outcome, note=note),
+    )
+    github = FakeGitHub()
+    for _ in range(2):
+        result = respond(root, github)
+        assert result.action == outcome
+    record = load_record(root, "tsp-r1")
+    notes = [m for m in pending(run_dir(root, "tsp-r1"), 0) if m.key.startswith("terminal:")]
+    assert len(notes) == 1
+    message = notes[0]
+    assert message.kind == "note" and message.source == "kernel"
+    assert message.thread == thread_for(record)
+    assert "sk-x" not in message.payload["text"]
+    assert "out-of-scope paths at launch: private-" in message.payload["text"]
+    assert record.state == PARKED

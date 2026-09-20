@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
+
 - Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.
 
 - Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
