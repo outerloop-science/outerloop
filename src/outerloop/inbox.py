@@ -666,8 +666,21 @@ def gather_github_messages(
                 break
             positions[source] = cid
         advance_github_positions(directory, {source: positions.get(source, since)})
-    base = str((pr.get("base") or {}).get("sha") or "")
-    if base and base != record.stage.get("base_sha"):
+    base_ref = str((pr.get("base") or {}).get("ref") or "")
+    tip = ""
+    if base_ref:
+        try:
+            tip = github.branch_sha(record.target, base_ref)
+        except GitHubError as exc:
+            # Omit the response body and path, which may contain credentials.
+            log.warning("cannot read PR base branch tip (GitHub status %s)", exc.status)
+    if tip and tip != record.stage.get("base_sha"):
+        text = f"The base branch advanced to {tip}."
+        if pr.get("mergeable_state") == "dirty":
+            text += (
+                " GitHub reports conflicts with the base; "
+                f"fold origin/{base_ref} into your branch and submit again."
+            )
         append(
             directory,
             Message(
@@ -676,10 +689,13 @@ def gather_github_messages(
                 "git",
                 thread_for(record),
                 now,
-                f"base:{base}",
-                {"text": f"The PR base moved to {base}.", "base_sha": base},
+                f"base:{tip}",
+                {"text": text, "base_sha": tip},
             ),
         )
+    elif tip and pr.get("mergeable_state") == "dirty":
+        # a stale mergeable_state, or a force-pushed head; nothing to wake for
+        log.debug("GitHub reports conflicts with an unchanged PR base branch tip")
     head = str((pr.get("head") or {}).get("sha") or "")
     if head:
         known = _keys(directory)

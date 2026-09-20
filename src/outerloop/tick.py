@@ -613,11 +613,12 @@ def _merge_blessed_pr(
     now: float,
     bot_login: str = "",
 ) -> None:
+    from outerloop.github import GitHubError
     from outerloop.inbox import wake_pending
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def why_not(record: RunRecord, pr: dict, dial: str) -> str:
+    def why_not(record: RunRecord, pr: dict, dial: str, tip: str) -> str:
         """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
@@ -632,12 +633,12 @@ def _merge_blessed_pr(
             (wake_pending(run_dir(root, record.run_id), record), "a message waits for the author"),
             (pr.get("state") != "open" or bool(pr.get("merged")), "the PR is not open"),
             (bool(pr.get("draft")), "the PR is a draft"),
-            (pr.get("mergeable_state") != "clean", f"GitHub says {pr.get('mergeable_state')}"),
             (head != record.auto_blessed_head, f"the head {head[:8]} is not the blessed one"),
             (
-                (pr.get("base") or {}).get("sha", "") != record.stage.get("base_sha"),
-                "the base moved",
+                tip != record.stage.get("base_sha"),
+                f"the base moved to {tip[:8]}",
             ),
+            (pr.get("mergeable_state") != "clean", f"GitHub says {pr.get('mergeable_state')}"),
             (dial != "auto", "the base contract is not auto"),
         )
         return next((reason for failed, reason in checks if failed), "")
@@ -651,7 +652,19 @@ def _merge_blessed_pr(
         record = load_record(root, record.run_id)
         pr = github.get_pull_request(record.target, number)
         dial = _base_dial(github, record.target, pr, None)
-        reason = why_not(record, pr, dial)
+        base_ref = str((pr.get("base") or {}).get("ref") or "")
+        if not base_ref:
+            log.warning("cannot merge PR without a base branch ref")
+            return
+        try:
+            tip = github.branch_sha(record.target, base_ref)
+        except GitHubError as exc:
+            log.warning("cannot read PR base branch tip (GitHub status %s)", exc.status)
+            return
+        if not tip:
+            log.warning("cannot merge PR without a base branch tip")
+            return
+        reason = why_not(record, pr, dial, tip)
         if reason:
             from outerloop.github import is_own_login
             from outerloop.markers import has_marker, legacy_marker, marker

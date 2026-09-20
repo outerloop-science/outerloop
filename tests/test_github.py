@@ -42,6 +42,23 @@ def test_default_branch_and_headers(provider: FileTokenProvider) -> None:
     assert request.get_header("Authorization") == "Bearer github_pat_test123"
 
 
+def test_branch_sha_reads_current_ref(provider: FileTokenProvider) -> None:
+    transport = FakeTransport([{"object": {"sha": "new-tip"}}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.branch_sha("org/repo", "release/next") == "new-tip"
+    assert transport.requests[0].get_method() == "GET"
+    assert transport.requests[0].full_url == (
+        "https://api.github.com/repos/org/repo/git/ref/heads/release%2Fnext"
+    )
+
+
+@pytest.mark.parametrize("response", [None, [], {}, {"object": {}}, {"object": {"sha": ""}}])
+def test_branch_sha_rejects_missing_tip(provider: FileTokenProvider, response) -> None:
+    client = GitHubClient(auth=provider, transport=FakeTransport([response]))
+    with pytest.raises(GitHubError):
+        client.branch_sha("org/repo", "main")
+
+
 def test_get_file_decodes_base64(provider: FileTokenProvider) -> None:
     content = base64.b64encode(b"benchmarks: []\n").decode()
     transport = FakeTransport([{"type": "file", "encoding": "base64", "content": content}])

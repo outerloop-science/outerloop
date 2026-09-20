@@ -910,6 +910,9 @@ def test_review_submit_parks_and_delivers_verdict(
     save_record(root, replace(record, stage={"base_sha": head}), NOW)
 
     class GitHub(FakeGitHub):
+        def branch_sha(self, repo, branch):
+            return _git(_bare, "rev-parse", f"refs/heads/{branch}").strip()
+
         def disable_auto_merge(self, *args):
             return True
 
@@ -1092,6 +1095,9 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
     monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: Measurer())
 
     class GitHub(FakeGitHub):
+        def branch_sha(self, repo, branch):
+            return _git(bare, "rev-parse", f"refs/heads/{branch}").strip()
+
         def disable_auto_merge(self, *args):
             return True
 
@@ -1190,6 +1196,9 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
     monkeypatch.setattr("outerloop.attempt.publish", capture_publish)
 
     class GitHub(FakeGitHub):
+        def branch_sha(self, repo, branch):
+            return _git(bare, "rev-parse", f"refs/heads/{branch}").strip()
+
         def disable_auto_merge(self, *args):
             return True
 
