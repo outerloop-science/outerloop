@@ -271,6 +271,26 @@ class GitHubClient:
             raise GitHubError(200, path, "missing branch SHA")
         return sha
 
+    def compare(self, repo: str, base: str, head: str) -> dict:
+        """Compare a head with a base using GitHub's commit ancestry."""
+        base_ref = urllib.parse.quote(base, safe="")
+        head_ref = urllib.parse.quote(head, safe="")
+        path = f"/repos/{urllib.parse.quote(repo)}/compare/{base_ref}...{head_ref}"
+        data = self._expect_dict(self._request("GET", path), path)
+        status, ahead, behind = data.get("status"), data.get("ahead_by"), data.get("behind_by")
+        if (
+            not isinstance(status, str)
+            or status not in ("ahead", "behind", "diverged", "identical")
+            or type(ahead) is not int
+            or type(behind) is not int
+        ):
+            raise GitHubError(200, path, "invalid comparison")
+        return {"status": status, "ahead_by": ahead, "behind_by": behind}
+
+    def head_contains(self, repo: str, base: str, head: str) -> bool:
+        """Whether the head contains the base tip."""
+        return self.compare(repo, base, head)["status"] in ("ahead", "identical")
+
     def get_file(self, repo: str, path: str, ref: str) -> str:
         """Fetch a file's text at a ref — used to read contracts from the
         default branch, never from PR branches."""

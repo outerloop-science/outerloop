@@ -2480,6 +2480,7 @@ def resume_run(
 
     if record.pr_url and stage.get("phase") == "author-sleep":
         base_branch = str(stage.get("base_branch") or base_branch)
+        # base_sha is the wake-time pin; merge and inbox checks use ancestry.
         stage = {**stage, "base_sha": ws.git("rev-parse", f"origin/{base_branch}").strip()}
         record = dc_replace(record, stage=stage)
 

@@ -59,6 +59,63 @@ def test_branch_sha_rejects_missing_tip(provider: FileTokenProvider, response) -
         client.branch_sha("org/repo", "main")
 
 
+@pytest.mark.parametrize("status", ["ahead", "behind", "diverged", "identical"])
+def test_compare_and_head_contains(provider: FileTokenProvider, status) -> None:
+    response = {"status": status, "ahead_by": 2, "behind_by": 3, "commits": []}
+    transport = FakeTransport([response, response])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.compare("org/repo", "release/next", "head") == {
+        "status": status,
+        "ahead_by": 2,
+        "behind_by": 3,
+    }
+    assert client.head_contains("org/repo", "release/next", "head") == (
+        status in ("ahead", "identical")
+    )
+    assert transport.requests[0].get_method() == "GET"
+    assert transport.requests[0].full_url == (
+        "https://api.github.com/repos/org/repo/compare/release%2Fnext...head"
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        [],
+        {},
+        {"status": 1, "ahead_by": 0, "behind_by": 0},
+        {"status": "unknown", "ahead_by": 0, "behind_by": 0},
+        {"status": "ahead", "ahead_by": "2", "behind_by": 0},
+        {"status": "ahead", "ahead_by": True, "behind_by": 0},
+        {"status": "ahead", "ahead_by": 2, "behind_by": None},
+        {"status": "ahead", "ahead_by": 2, "behind_by": False},
+    ],
+)
+def test_compare_rejects_malformed_body(provider: FileTokenProvider, response) -> None:
+    client = GitHubClient(auth=provider, transport=FakeTransport([response]))
+    with pytest.raises(GitHubError):
+        client.head_contains("org/repo", "base", "head")
+
+
+def test_compare_surfaces_unavailable(provider: FileTokenProvider, monkeypatch) -> None:
+    import io
+    import urllib.error
+    from email.message import Message
+
+    def unavailable(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 500, "unavailable", Message(), io.BytesIO(b"temporarily unavailable")
+        )
+
+    from outerloop.github import AUTH_SAFE_OPENER
+
+    monkeypatch.setattr(AUTH_SAFE_OPENER, "open", unavailable)
+    with pytest.raises(GitHubError) as error:
+        GitHubClient(auth=provider).head_contains("org/repo", "base", "head")
+    assert error.value.status == 500
+
+
 def test_get_file_decodes_base64(provider: FileTokenProvider) -> None:
     content = base64.b64encode(b"benchmarks: []\n").decode()
     transport = FakeTransport([{"type": "file", "encoding": "base64", "content": content}])

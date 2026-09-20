@@ -3840,6 +3840,9 @@ def test_sweep_pr_events_use_one_wake(tmp_path, event, agent):
     )
 
     class GitHub:
+        def head_contains(self, repo, base, head):
+            return base != "new"
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             return "new" if event == "base" else "old"
@@ -3848,8 +3851,12 @@ def test_sweep_pr_events_use_one_wake(tmp_path, event, agent):
             return {
                 "state": "closed" if event == "closed" else "open",
                 "merged": event == "merged",
+                "head": {"sha": "head"},
                 "base": {"sha": "old", "ref": "main"},
             }
+
+        def list_check_runs(self, *args):
+            return []
 
         def list_comments(self, *args):
             return (
@@ -3957,6 +3964,9 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         def __init__(self):
             self.merged = []
 
+        def head_contains(self, repo, base, head):
+            return base != "moved"
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             lease = read_lease(tmp_path, record.run_id)
@@ -4034,7 +4044,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         "head": "a message waits for the author",
         "unclean": "GitHub says blocked",
         "base": "a message waits for the author",
-        "base-race": "the base moved to moved",
+        "base-race": "the head head does not contain the base tip moved",
         "manual": "the base contract is not auto",
         "steward": "a steward's PR",
     }
@@ -4178,6 +4188,9 @@ def test_check_message_wakes_only_on_failure(tmp_path, conclusion):
     )
 
     class GitHub:
+        def head_contains(self, repo, base, head):
+            return True
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             return "base"
@@ -4243,6 +4256,9 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
     )
 
     class GitHub:
+        def head_contains(self, repo, base, head):
+            return True
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             return "base"
@@ -4309,11 +4325,23 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
 
 
 @pytest.mark.parametrize(
-    "changed", ["", "running", "unblessed", "job", "wake", "base", "tip-error", "tip-empty"]
+    "changed",
+    [
+        "",
+        "running",
+        "unblessed",
+        "job",
+        "wake",
+        "base",
+        "tip-error",
+        "tip-empty",
+        "compare-error",
+        "stale-pin",
+    ],
 )
 def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, changed):
     from outerloop import tick
-    from outerloop.github import GitHubError
+    from outerloop.github import GitHubClient, GitHubError
     from outerloop.inbox import Message, append
     from outerloop.runstate import run_dir
 
@@ -4330,7 +4358,9 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, cha
     def acquire(root, run_id, holder, job, now):
         events.append("acquire")
         updated = record
-        if changed == "running":
+        if changed == "stale-pin":
+            updated = replace(record, stage={"base_sha": "old"})
+        elif changed == "running":
             updated = replace(record, state="running")
         elif changed == "unblessed":
             updated = replace(record, auto_blessed_head="")
@@ -4355,6 +4385,20 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, cha
     }
 
     class GitHub:
+        head_contains = GitHubClient.head_contains
+
+        def compare(self, repo, base, head):
+            assert events == ["acquire"]
+            assert (repo, base, head) == (
+                "org/repo",
+                "new-tip-123456" if changed == "base" else "base",
+                "head",
+            )
+            events.append("compare")
+            if changed == "compare-error":
+                raise GitHubError(500, "/secret-path", "secret-response")
+            return {"status": "diverged" if changed == "base" else "ahead"}
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             assert events == ["acquire"]
@@ -4372,18 +4416,27 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, cha
             return ["SQUASH"]
 
         def merge_pull(self, *a, **k):
-            assert events == ["acquire"]
+            assert events == ["acquire", "compare"]
             events.append("merge")
 
     caplog.set_level("INFO")
     tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
-    assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+    expected = ["acquire"]
+    if changed not in ("unblessed", "tip-error", "tip-empty"):
+        expected.append("compare")
+    if changed in ("", "stale-pin"):
+        expected.append("merge")
+    assert events == [*expected, "release"]
 
     if changed == "base":
-        assert "the base moved to new-tip-" in caplog.text
+        assert "the head head does not contain the base tip new-tip-" in caplog.text
         assert "GitHub says dirty" not in caplog.text
     if changed == "tip-error":
         assert "cannot read PR base branch tip" in caplog.text
+        assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
+
+    if changed == "compare-error":
+        assert "cannot compare PR head with base tip (GitHub status 500)" in caplog.text
         assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
 
 
@@ -4472,6 +4525,9 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
     pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base", "ref": "main"}}
 
     class GitHub:
+        def head_contains(self, repo, base, head):
+            return True
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "main")
             return "base"

@@ -618,7 +618,7 @@ def _merge_blessed_pr(
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
-    def why_not(record: RunRecord, pr: dict, dial: str, tip: str) -> str:
+    def why_not(record: RunRecord, pr: dict, dial: str, tip: str, contains_base: bool) -> str:
         """Return the first reason this PR cannot be merged now, or "" when it can."""
         head = str((pr.get("head") or {}).get("sha", ""))
         checks = (
@@ -635,8 +635,8 @@ def _merge_blessed_pr(
             (bool(pr.get("draft")), "the PR is a draft"),
             (head != record.auto_blessed_head, f"the head {head[:8]} is not the blessed one"),
             (
-                tip != record.stage.get("base_sha"),
-                f"the base moved to {tip[:8]}",
+                not contains_base,
+                f"the head {head[:8]} does not contain the base tip {tip[:8]}",
             ),
             (pr.get("mergeable_state") != "clean", f"GitHub says {pr.get('mergeable_state')}"),
             (dial != "auto", "the base contract is not auto"),
@@ -664,7 +664,14 @@ def _merge_blessed_pr(
         if not tip:
             log.warning("cannot merge PR without a base branch tip")
             return
-        reason = why_not(record, pr, dial, tip)
+        try:
+            contains_base = bool(record.auto_blessed_head) and github.head_contains(
+                record.target, tip, record.auto_blessed_head
+            )
+        except GitHubError as exc:
+            log.warning("cannot compare PR head with base tip (GitHub status %s)", exc.status)
+            return
+        reason = why_not(record, pr, dial, tip, contains_base)
         if reason:
             from outerloop.github import is_own_login
             from outerloop.markers import has_marker, legacy_marker, marker
