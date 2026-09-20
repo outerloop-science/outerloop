@@ -634,9 +634,10 @@ def _park_run(
         stage["gpu_hours_used"] = parked.gpu_hours_used
         if parked.judged is not None:
             # the gate's last negative rides the park: a wake that ends on the
-            # same tree reuses it instead of measuring again
-            judged_sha, verdict = parked.judged
+            # same base and tree reuses it instead of measuring again
+            judged_base, judged_sha, verdict = parked.judged
             stage["judged"] = {
+                "base_sha": judged_base,
                 "sha": judged_sha,
                 "outcome": verdict.outcome,
                 "baseline": verdict.baseline,
@@ -1271,7 +1272,7 @@ def _wake_author_sleep(
     panel_lenses: tuple[PanelLens, ...],
     issue_number: int,
     eval_minutes: int | None,
-    judged: tuple[str, AttemptResult] | None = None,
+    judged: tuple[str, str, AttemptResult] | None = None,
 ) -> AttemptOutcome:
     """Wake a syscall park and resume the AUTHOR: deliver the launches' results
     into the sandbox, resume the SAME session through the climb's resume-entry
@@ -1515,8 +1516,7 @@ def _wake_author_sleep(
 
     # The wake's climb IO: measures go through the DISPATCHED measurer (this is
     # a wake job with bounded walltime — the gate's evals run as their own jobs
-    # and park the run as a CANDIDATE); snapshots parent on base (same as the
-    # first pass: the clone was at base).
+    # and park the run as a CANDIDATE). Seals retain the session's HEAD ancestry.
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
     change_bases = [base_sha]
@@ -1530,7 +1530,7 @@ def _wake_author_sleep(
     def snapshot() -> str:
         snap = snapshot_tree(
             ws,
-            ws.git("rev-parse", "HEAD").strip() if record.pr_url else base_sha,
+            ws.git("rev-parse", "HEAD").strip(),
             exclude=LINE_MEMORY_PATHS if wake_line else (),
             author=config.bot_login,
         )
@@ -1657,16 +1657,17 @@ def _wake_author_sleep(
     return _end(result, drop_refs=[sleep_ref])
 
 
-def _stage_judged(record: RunRecord) -> tuple[str, AttemptResult] | None:
+def _stage_judged(record: RunRecord) -> tuple[str, str, AttemptResult] | None:
     """The gate verdict a park carried (written by `_park_run`), or None."""
     j = (record.stage or {}).get("judged")
-    if not isinstance(j, dict) or not j.get("sha"):
+    if not isinstance(j, dict) or not j.get("sha") or not j.get("base_sha"):
         return None
 
     def num(v: object) -> float | None:
         return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
 
     return (
+        str(j["base_sha"]),
         str(j["sha"]),
         AttemptResult(
             outcome=str(j.get("outcome") or "no-improvement"),
@@ -2706,7 +2707,7 @@ def resume_run(
         )
 
     def _wake_author(
-        message: Message, judged: tuple[str, AttemptResult] | None = None
+        message: Message, judged: tuple[str, str, AttemptResult] | None = None
     ) -> AttemptOutcome:
         # resume the submitted park's author with the gate/panel feedback
         # leading its wake text; the candidate ref is this park's held snapshot
@@ -2932,10 +2933,8 @@ def resume_run(
                 },
                 origin=record.run_id,
             ),
-            # the verdict rides the resume: the same tree, sealed again after
-            # the author concludes, is not measured twice; only an explicit
-            # resubmit runs an errored eval again
-            judged=(candidate_sha, result),
+            # Retain the measurement base along with the candidate verdict.
+            judged=(base_sha, candidate_sha, result),
         )
 
     if submitted_park:
@@ -3610,12 +3609,20 @@ def publish(
             assert result.candidate is not None
             title = (result.submit_report or "").splitlines()
             summary = redact(title[0].strip(), secrets) if title else ""
+            try:
+                common = ws.git("merge-base", base_sha, head).strip()
+            except Exception as exc:
+                return refuse(
+                    f"Publish refused: cannot confirm PR base ancestry: {redact(str(exc), secrets)}"
+                )
+            parents = ["-p", head]
+            if common != base_sha:
+                parents += ["-p", base_sha]
             pushed_sha = ws.git(
                 *git_identity(config.bot_login),
                 "commit-tree",
                 ws.git("rev-parse", f"{result.candidate_sha}^{{tree}}").strip(),
-                "-p",
-                head,
+                *parents,
                 "-m",
                 f"agent: {summary or 'submitted change'} "
                 f"({bench.metric}={fmt_metric(result.candidate, bench.display_digits)})",
@@ -4267,7 +4274,7 @@ def live_attempt(
         def snapshot() -> str:
             snap = snapshot_tree(
                 ws,
-                pre_session_sha,
+                ws.git("rev-parse", "HEAD").strip(),
                 exclude=LINE_MEMORY_PATHS if lines_active else (),
                 author=config.bot_login,
             )

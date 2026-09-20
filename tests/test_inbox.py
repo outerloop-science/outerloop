@@ -671,7 +671,7 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty, status):
         assert f"does not contain the current base tip {tip}" in messages[0].payload["text"]
         assert ("conflicts" in messages[0].payload["text"]) == dirty
         assert (
-            "fold origin/release/next into your branch, re-run, and submit again"
+            "fold origin/release/next into your branch, inspect the result, and submit directly"
             in messages[0].payload["text"]
         )
     if tip == "error":
@@ -953,3 +953,22 @@ def test_github_comment_association_reaches_wake_header(tmp_path):
     text = render_inbox(messages, budgets="budget")
     assert "alice (GitHub, member) -> you |" in text
     assert "github-actions[bot] (GitHub, none) -> you |" in text
+
+
+@pytest.mark.parametrize("base", ["main", "release/next"])
+def test_base_moved_advises_direct_submit(base):
+    from outerloop.inbox import base_moved_text
+
+    assert base_moved_text("tip123", base) == (
+        "Your head does not contain the current base tip tip123; "
+        f"fold origin/{base} into your branch, inspect the result, and submit directly. "
+        "The gate measures the folded candidate. Re-run your own experiment only if "
+        f"what landed in {base} changes your hypothesis."
+    )
+
+
+def test_base_moved_preserves_conflict_suffix_and_dedupe(tmp_path, caplog):
+    test_check_log_and_base_tip_messages(tmp_path, caplog, "new", True, "diverged")
+    message = next(m for m in pending(tmp_path, 0) if m.kind == "base-moved")
+    assert message.source == "git"
+    assert message.payload["text"].endswith(" GitHub reports conflicts with the base.")

@@ -136,15 +136,14 @@ class RunParked(Exception):
         submitted: bool = False,
         gpu_hours_used: float = 0.0,
         eval_minutes: int | None = None,
-        judged: tuple[str, AttemptResult] | None = None,
+        judged: tuple[str, str, AttemptResult] | None = None,
         launch_afterany: str = "",
     ):
         self.phase = phase
         # the author's launch jobs alone (a candidate park's `afterany` also
         # carries the gate's evals): the wake reconciles their charge
         self.launch_afterany = launch_afterany
-        # the gate's last negative and the tree it judged, carried across an
-        # author-sleep so a wake ending on that tree reuses the verdict
+        # Carry the negative's base and candidate across an author sleep.
         self.judged = judged
         self.afterany = afterany
         self.base_sha = base_sha
@@ -1203,7 +1202,7 @@ def attempt_once(
     sleeps_used: int = 0,
     gpu_hours_used: float = 0.0,
     tree_of: Callable[[str], str] | None = None,
-    judged: tuple[str, AttemptResult] | None = None,
+    judged: tuple[str, str, AttemptResult] | None = None,
     on_replies: Callable[[tuple[dict, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
     review_topup: bool = False,
@@ -1469,11 +1468,8 @@ def attempt_once(
     baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
-    # the gate's last negative and the sealed tree it judged: sealing the same
-    # content again (the author concluded, or resubmitted untouched) reuses
-    # that verdict rather than paying for a second, identical measurement
-    # (`judged` is the wake's: the parked candidate the gate turned down)
-    failed_gate: tuple[str, AttemptResult] | None = judged
+    # Reuse a negative only for the same measurement base and candidate tree.
+    failed_gate: tuple[str, str, AttemptResult] | None = judged
     tree = tree_of or (lambda sha: sha)
 
     def _resume(message: Message) -> AttemptResult | None:
@@ -1588,7 +1584,7 @@ def attempt_once(
                 return AttemptResult(
                     outcome="no-improvement",
                     session=session,
-                    note=(failed_gate[1].note or failed_gate[1].outcome)
+                    note=(failed_gate[2].note or failed_gate[2].outcome)
                     if failed_gate
                     else "ended without a submit",
                 )
@@ -1769,19 +1765,19 @@ def attempt_once(
                 panel_transcript="\n\n".join(panel_sections),
                 panel_rounds=panel_reads,
             )
-        # the tree the gate already judged, sealed again: the verdict stands
-        # when the author concluded, or resubmitted an unchanged tree after a
-        # real negative. After an ERRORED eval only a resubmit runs it again.
+        # The same base and tree retain their verdict. An explicit resubmit
+        # can retry an errored eval.
         unchanged = (
             failed_gate is not None
-            and tree(failed_gate[0]) == tree(candidate_sha)
-            and not (failed_gate[1].outcome == "eval-error" and submitted is not None)
+            and failed_gate[0] == base_sha
+            and tree(failed_gate[1]) == tree(candidate_sha)
+            and not (failed_gate[2].outcome == "eval-error" and submitted is not None)
         )
         try:
             if unchanged:
                 assert failed_gate is not None
                 gpu_hours_used -= evals_charge  # nothing ran
-                outcome: AttemptResult | MeasureOK = failed_gate[1]
+                outcome: AttemptResult | MeasureOK = failed_gate[2]
             elif not measured:
                 # No submitted paths: return the refusal without spending evals.
                 gpu_hours_used -= evals_charge
@@ -1875,7 +1871,7 @@ def attempt_once(
                 # eval that errored — is FEEDBACK to the author: it revises and
                 # resubmits, or concludes honestly (buildout Phase B) — never a
                 # silent terminal. Rounds stay bounded by sleep_k.
-                failed_gate = (candidate_sha, outcome)
+                failed_gate = (base_sha, candidate_sha, outcome)
                 verdict_text = (
                     f"{outcome.note or outcome.outcome} "
                     f"(baseline {outcome.baseline}, candidate {outcome.candidate})."

@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
+
 - Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
 
 - Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.
