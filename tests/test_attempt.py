@@ -6440,3 +6440,131 @@ def test_measurable_seal_preserves_session_fold(tmp_path, monkeypatch, wake):
         )
     assert outcome.outcome == "no-improvement"
     assert len(seen) == 1
+
+
+def _stale_submit_roundtrip(tmp_path, monkeypatch, *, line):
+    from outerloop.measure import DispatchSettings, MeasurementPending
+    from outerloop.roles import author_spec
+
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT_LINES if line else CONTRACT_SYSCALLS)
+    seed = tmp_path / "seed"
+    fresh = []
+    line_refs = []
+
+    class MovingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            line_refs.append(_git(target, "for-each-ref", "refs/heads/agents/"))
+            # Move the origin only after the author has begun its first leg.
+            (seed / ".outerloop.yaml").write_text(
+                (CONTRACT_LINES if line else CONTRACT_SYSCALLS).replace("depth_k: 3", "depth_k: 2")
+                + "\n# refreshed contract\n"
+            )
+            _git(seed, "add", "-A")
+            _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base moved")
+            _git(seed, "push", str(target), "main")
+            fresh.append(_git(seed, "rev-parse", "HEAD").strip())
+            return super().run(brief_text, workspace, resume_session_id)
+
+    github = FakeGitHub()
+    dispatch = _fake_dispatch()
+    outcome = live_attempt(
+        config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+        run_root=tmp_path / "state",
+        run_id="stale",
+        created="2026-09-20T00:00:00Z",
+        bot_auth=NoAuth(),
+        github=github,  # type: ignore[arg-type]
+        dispatch=dispatch,
+        now=1_000_000.0,
+        harness=MovingHarness(
+            edits={
+                "src/pilot/solvers/tsp.py": "candidate\n",
+                **({"AGENT_MEMORY.md": "remember this\n"} if line else {}),
+            },
+            submit=True,
+        ),
+    )
+    assert outcome.outcome == "parked" and not github.prs
+    state = tmp_path / "state"
+    record = load_record(state, "stale")
+    assert not record.pr_url and record.resume_session_id == "s1"
+    assert record.stage["base_sha"] == fresh[0]
+    assert record.stage["sleeps_used"] == 1 and record.stage["launches_used"] == 0
+    assert record.stage["gpu_hours_used"] == 0
+    wsroot = state / "runs" / "stale" / "ws"
+    retained = str(record.stage["candidate_ref"])
+    assert _git(wsroot, "rev-parse", retained).strip() == record.stage["candidate_sha"]
+    if line:
+        assert (wsroot / "AGENT_MEMORY.md").read_text() == "remember this\n"
+        assert "AGENT_MEMORY.md" not in _git(wsroot, "ls-tree", "-r", retained)
+        assert _git(target, "for-each-ref", "refs/heads/agents/") == line_refs[0]
+
+    # Wake must load the contract at the refreshed pin before the author runs.
+    import outerloop.attempt as attempt_module
+
+    original = attempt_module.run_author_leg
+    contracts = []
+
+    def author_leg(config, contract_text, *args, **kwargs):
+        contracts.append(contract_text)
+        return original(config, contract_text, *args, **kwargs)
+
+    monkeypatch.setattr(attempt_module, "run_author_leg", author_leg)
+    monkeypatch.setattr(
+        DispatchSettings,
+        "measurer",
+        lambda *a, **k: _FakeMeasurer(raise_exc=MeasurementPending(("101", "102"))),
+    )
+
+    class FoldingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert resume_session_id == "s1"
+            assert "no gate ran" in brief_text
+            # Preserve the session edits while incorporating the base.
+            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "stash", "-u")
+            _git(workspace, "merge", "--ff-only", "origin/main")
+            _git(workspace, "stash", "pop")
+            return super().run(brief_text, workspace, resume_session_id)
+
+    resumed = resume_run(
+        state,
+        "stale",
+        dispatch=dispatch,
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=FoldingHarness(edits={}, submit=True),
+        spec=author_spec(),
+    )
+    assert resumed.outcome == "parked"
+    assert contracts and "# refreshed contract" in contracts[0]
+    after = load_record(state, "stale")
+    assert after.stage["phase"] == "candidate" and after.stage["sleeps_used"] == 2
+    assert after.stage["launches_used"] == 0
+    assert _git(wsroot, "rev-parse", str(after.stage["candidate_ref"])).strip()
+    if line:
+        assert (wsroot / "AGENT_MEMORY.md").read_text() == "remember this\n"
+        assert _git(target, "for-each-ref", "refs/heads/agents/") == line_refs[0]
+
+    monkeypatch.setattr(
+        attempt_module,
+        "_submit_preflight",
+        lambda *a, **k: pytest.fail("preflight ran during gate collection"),
+    )
+    collected = resume_run(
+        state,
+        "stale",
+        dispatch=dispatch,
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_200.0,
+    )
+    assert collected.outcome == "parked"
+
+
+def test_stale_submit_first_pass_resumes(tmp_path, monkeypatch):
+    _stale_submit_roundtrip(tmp_path, monkeypatch, line=False)
+
+
+def test_stale_submit_line_preserves_memory(tmp_path, monkeypatch):
+    _stale_submit_roundtrip(tmp_path, monkeypatch, line=True)

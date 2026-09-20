@@ -25,7 +25,7 @@ from dataclasses import replace as dc_replace
 from fractions import Fraction
 from pathlib import Path
 from secrets import randbits
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from outerloop.image import apptainer_from_env
 
@@ -46,6 +46,7 @@ from outerloop.inbox import (
     AUTHOR_PROTOCOL,
     Message,
     append,
+    base_moved_text,
     budgets_line,
     panel_payload,
     render_inbox,
@@ -107,6 +108,13 @@ def managed_eval_env(name: str) -> bool:
 
 class EvalError(RuntimeError):
     """The benchmark command failed or produced no readable metric."""
+
+
+@dataclass(frozen=True)
+class SubmitPreflight:
+    status: Literal["ready", "unknown", "stale", "outdated-pin"]
+    tip: str = ""
+    base_branch: str = ""
 
 
 class RunParked(Exception):
@@ -1208,6 +1216,7 @@ def attempt_once(
     review_topup: bool = False,
     on_meter: Callable[[int, int, float], None] | None = None,
     scope_validator: Callable[[list[str], Contract], list[str]] = out_of_scope,
+    submit_preflight: Callable[[], SubmitPreflight] | None = None,
 ) -> AttemptResult:
     """One implement→evaluate→verify cycle in an existing clean workspace.
 
@@ -1235,6 +1244,10 @@ def attempt_once(
     set `panel_blocking_open` (the caller posts a DRAFT PR carrying them).
     The caller supplies the runner because the panel's checkouts are git work
     (this function owns no git).
+
+    `submit_preflight` lets the caller refresh Git ancestry and the measurement
+    pin after each validated submit, before cache lookup or compute charging.
+    A confirmed refusal consumes only a jobless checkpoint sleep.
 
     With `launcher` (author syscalls, research-loop-buildout.md Phase A), a
     session that ends having asked to launch-and-sleep parks this climb as
@@ -1596,6 +1609,15 @@ def attempt_once(
                 if launcher is None and not (on_stop and request.submit)
                 else ""
             )
+            preflight = (
+                submit_preflight()
+                if request.submit and not no_backend and submit_preflight is not None
+                else SubmitPreflight("ready")
+            )
+            stale_submit = preflight.status in ("stale", "outdated-pin")
+            if stale_submit:
+                # Budget only the effective checkpoint, never the rejected compute.
+                request = SyscallRequest(launches=())
             # suite siblings' paired evals are charged as if measured (the
             # suite phase decides at measurement; a budget over-charges)
             suite_gpus = tuple(b.gpus for b in contract.benchmarks if b.name != bench.name)
@@ -1637,6 +1659,76 @@ def attempt_once(
                 request, gpus=bench.gpus, max_concurrent_gpus=contract.budgets.max_concurrent_gpus
             )
             if not problem:
+                if stale_submit:
+                    violations = scope_validator(list(changed_paths()), contract)
+                    if violations:
+                        return AttemptResult(
+                            outcome="scope-violation",
+                            baseline=baseline,
+                            session=session,
+                            note=(
+                                "out-of-scope paths at checkpoint: "
+                                + ", ".join(sorted(violations)[:10])
+                            ),
+                            run_seed=run_seed,
+                        )
+                    sha = snapshot()
+                    sleeps_used += 1
+                    if preflight.status == "stale":
+                        append(
+                            inbox_dir,
+                            Message(
+                                0,
+                                "base-moved",
+                                "git",
+                                inbox_thread,
+                                time.time(),
+                                f"base:{preflight.tip}",
+                                {
+                                    "text": base_moved_text(preflight.tip, preflight.base_branch),
+                                    "base_sha": preflight.tip,
+                                },
+                                origin=inbox_dir.name,
+                            ),
+                        )
+                        receipt = "Your stale submit was checkpointed; no gate ran. "
+                    else:
+                        receipt = (
+                            f"Your candidate contains {preflight.tip}, but the gate was pinned to "
+                            f"{base_sha}; no gate ran. The checkpoint refreshes the pin; submit "
+                            "again after inspecting the updated context. "
+                        )
+                    append(
+                        inbox_dir,
+                        Message(
+                            0,
+                            "note",
+                            "kernel",
+                            inbox_thread,
+                            time.time(),
+                            f"refused:{preflight.tip}:{sleeps_used}",
+                            {
+                                "text": receipt + "No sibling launches ran; they were discarded "
+                                "and must be restaged."
+                            },
+                            origin=inbox_dir.name,
+                        ),
+                    )
+                    raise RunParked(
+                        phase="author-sleep",
+                        afterany="",
+                        submitted=False,
+                        base_sha=preflight.tip,
+                        seed=run_seed,
+                        suite_seed=suite_seed,
+                        candidate_sha=sha,
+                        session=session,
+                        syscall=request,
+                        launches_used=launches_used,
+                        sleeps_used=sleeps_used,
+                        gpu_hours_used=gpu_hours_used,
+                        judged=failed_gate,
+                    )
                 if request.submit:
                     # a submit rides the measurement below on the SEALED tree —
                     # "a launch whose job is the gate" (buildout Phase B). The
@@ -1698,6 +1790,14 @@ def attempt_once(
                     gpu_hours_used=gpu_hours_used,
                 )
             if refused_once or not _can_resume():
+                if stale_submit:
+                    return AttemptResult(
+                        outcome="no-improvement",
+                        baseline=baseline,
+                        session=session,
+                        note=f"Stale submit refused; no gate or sibling launches ran: {problem}",
+                        run_seed=run_seed,
+                    )
                 log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
                 break
             # the refusal burns no count (nothing was launched, nothing woke a

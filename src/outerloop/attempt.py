@@ -70,6 +70,7 @@ from outerloop.orchestrator import (
     Measurer,
     RunConfig,
     RunParked,
+    SubmitPreflight,
     _benchmark,
     attempt_once,
     benchmark_floor,
@@ -1220,6 +1221,9 @@ def run_author_leg(
         measurer,
         base_sha,
         snapshot,
+        submit_preflight=lambda: _submit_preflight(
+            ws, str(record.stage.get("base_branch") or "main"), base_sha, pr=bool(record.pr_url)
+        ),
         resume_session_id=record.resume_session_id,
         redact_secrets=secrets,
         inbox_dir=directory,
@@ -1986,6 +1990,29 @@ def _rev(ws: Workspace, ref: str, *, strict: bool = False) -> str:
         if strict:
             raise
         return ""
+
+
+def _submit_preflight(
+    ws: Workspace, base_branch: str, base_sha: str, *, pr: bool
+) -> SubmitPreflight:
+    """Refresh submit ancestry; ordinary Git failures do not assert staleness."""
+    ensure_regular_git_dir(ws.root)
+    try:
+        ws.fetch_origin()
+        tip = ws.git(
+            "rev-parse", "--verify", f"refs/remotes/origin/{base_branch}^{{commit}}"
+        ).strip()
+        head = ws.git("rev-parse", "--verify", "HEAD^{commit}").strip()
+        if ws.git("merge-base", tip, head).strip() != tip:
+            return SubmitPreflight("stale", tip, base_branch)
+        pin_current = base_sha == tip if pr else ws.git("merge-base", tip, base_sha).strip() == tip
+        return SubmitPreflight("ready" if pin_current else "outdated-pin", tip, base_branch)
+    except Exception as exc:
+        if isinstance(exc, GitError) and _is_git_tamper(exc):
+            raise
+        # Exception strings may contain authenticated URLs or subprocess output.
+        log.warning("submit preflight could not establish base freshness; proceeding")
+        return SubmitPreflight("unknown")
 
 
 def _is_ancestor(ws: Workspace, older: str, newer: str) -> bool:
@@ -4311,6 +4338,9 @@ def live_attempt(
                 measurer,
                 pre_session_sha,
                 snapshot,
+                submit_preflight=lambda: _submit_preflight(
+                    ws, base_branch, pre_session_sha, pr=False
+                ),
                 redact_secrets=secrets,
                 ruler=RULER,
                 changed_paths=changed_paths,
