@@ -440,12 +440,17 @@ Slurm bill the default association and pick the default partition),
 `OUTERLOOP_ROOT` locate the checkout and the state, `OUTERLOOP_IMAGE`
 the container, and `OUTERLOOP_PAT_FILE` the token when the identity is a PAT.
 The rest is re-read from `~/.config/outerloop/.env` by the resident
-chain each tick, so a change applies to every run started after the next
-cadence. A run already parked keeps the settings it started with until it
-ends: its wake jobs inherit their environment from the job that queued them,
-so one run never changes model, judges or billing midway. The login-node
-and local loops read the file once at start; restart the loop to apply a
-change there. The keys: `OUTERLOOP_TARGET`
+chain each tick and exported to every job that tick submits, so a change
+applies to every run started after the next cadence, and to a parked run
+the next time the sweep submits its wake (a deadline wake or a re-wake):
+judges, GPU account and partition, image and key files then come from the
+tick that queued the job. The one wake queued when a run parks, as the
+dependency of its own experiment, inherits the environment of the job that
+parked it. The author's backend and model are fixed per run in its record
+and never change midway. The cadence (`OUTERLOOP_CADENCE_MIN`) is read when
+the chain starts; change it and restart the chain. The login-node and local
+loops read the file once at start; restart the loop to apply a change there.
+The keys: `OUTERLOOP_TARGET`
 names the repo being climbed; `OUTERLOOP_GITHUB_APP_FILE` is the App from 2b
 (one identity or the other, never both); `OUTERLOOP_BOT_LOGIN` is the login the kernel
 posts as (`init` records it on both auth paths; there is no default, and the
