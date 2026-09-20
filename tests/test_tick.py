@@ -3840,11 +3840,15 @@ def test_sweep_pr_events_use_one_wake(tmp_path, event, agent):
     )
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
+            return "new" if event == "base" else "old"
+
         def get_pull_request(self, *args):
             return {
                 "state": "closed" if event == "closed" else "open",
                 "merged": event == "merged",
-                "base": {"sha": "new" if event == "base" else "old"},
+                "base": {"sha": "old", "ref": "main"},
             }
 
         def list_comments(self, *args):
@@ -3953,16 +3957,18 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         def __init__(self):
             self.merged = []
 
-        def get_pull_request(self, *args):
-            # base-race: the base moves between the sweep's read and the
-            # re-read under the lease, where the merge step must see it
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
             lease = read_lease(tmp_path, record.run_id)
             under_lease = lease is not None and lease.holder.startswith("tick:")
             moved = blocked == "base" or (blocked == "base-race" and under_lease)
+            return "moved" if moved else "base"
+
+        def get_pull_request(self, *args):
             return {
                 "state": "closed" if self.merged else "open",
                 "merged": bool(self.merged),
-                "base": {"sha": "moved" if moved else "base"},
+                "base": {"sha": "base", "ref": "main"},
                 "head": {"sha": "changed" if blocked == "head" else "head"},
                 "draft": blocked == "draft",
                 "mergeable_state": "blocked" if blocked == "unclean" else "clean",
@@ -4028,7 +4034,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         "head": "a message waits for the author",
         "unclean": "GitHub says blocked",
         "base": "a message waits for the author",
-        "base-race": "the base moved",
+        "base-race": "the base moved to moved",
         "manual": "the base contract is not auto",
         "steward": "a steward's PR",
     }
@@ -4172,8 +4178,16 @@ def test_check_message_wakes_only_on_failure(tmp_path, conclusion):
     )
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
+            return "base"
+
         def get_pull_request(self, *args):
-            return {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+            return {
+                "state": "open",
+                "head": {"sha": "head"},
+                "base": {"sha": "base", "ref": "main"},
+            }
 
         def list_comments(self, *args):
             return []
@@ -4229,6 +4243,10 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
     )
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
+            return "base"
+
         head = "human-1"
         armed = True
         disarms = 0
@@ -4237,7 +4255,7 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
             return {
                 "state": "open",
                 "head": {"sha": self.head},
-                "base": {"sha": "base"},
+                "base": {"sha": "base", "ref": "main"},
                 "auto_merge": {"enabled_by": {"login": armer}} if self.armed else None,
                 "mergeable_state": "clean",
             }
@@ -4290,9 +4308,12 @@ def test_auto_sweep_withdraws_arm_and_reports_each_head_once(
     assert messages[1].payload["head"] == "human-2"
 
 
-@pytest.mark.parametrize("changed", ["", "running", "unblessed", "job", "wake", "base"])
-def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
+@pytest.mark.parametrize(
+    "changed", ["", "running", "unblessed", "job", "wake", "base", "tip-error", "tip-empty"]
+)
+def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, changed):
     from outerloop import tick
+    from outerloop.github import GitHubError
     from outerloop.inbox import Message, append
     from outerloop.runstate import run_dir
 
@@ -4328,12 +4349,21 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
 
     pr = {
         "state": "open",
-        "mergeable_state": "clean",
+        "mergeable_state": "dirty" if changed == "base" else "clean",
         "head": {"sha": "head"},
-        "base": {"sha": "moved" if changed == "base" else "base"},
+        "base": {"sha": "base", "ref": "main"},
     }
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
+            assert events == ["acquire"]
+            if changed == "tip-error":
+                raise GitHubError(403, "/secret-path", "secret-response")
+            if changed == "tip-empty":
+                return ""
+            return "new-tip-123456" if changed == "base" else "base"
+
         def get_pull_request(self, repo, number):
             assert events == ["acquire"]  # re-read under the lease
             return pr
@@ -4345,8 +4375,16 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, changed):
             assert events == ["acquire"]
             events.append("merge")
 
+    caplog.set_level("INFO")
     tick._merge_blessed_pr(tmp_path, record, GitHub(), pr, "tick", NOW)
     assert events == (["acquire", "release"] if changed else ["acquire", "merge", "release"])
+
+    if changed == "base":
+        assert "the base moved to new-tip-" in caplog.text
+        assert "GitHub says dirty" not in caplog.text
+    if changed == "tip-error":
+        assert "cannot read PR base branch tip" in caplog.text
+        assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -4431,9 +4469,13 @@ def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
         pr_url="https://github.com/org/repo/pull/9",
         auto_bless_reason="base moved: origin/main new != measured old",
     )
-    pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+    pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base", "ref": "main"}}
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "main")
+            return "base"
+
         def __init__(self):
             self.comments = []
             self.posts = []

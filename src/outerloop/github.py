@@ -260,6 +260,17 @@ class GitHubClient:
         path = f"/repos/{urllib.parse.quote(repo)}"
         return str(self._expect_dict(self._request("GET", path), path)["default_branch"])
 
+    def branch_sha(self, repo: str, branch: str) -> str:
+        """Read the current branch tip, independently of a PR's recorded base."""
+        ref = urllib.parse.quote(branch, safe="")
+        path = f"/repos/{urllib.parse.quote(repo)}/git/ref/heads/{ref}"
+        data = self._expect_dict(self._request("GET", path), path)
+        obj = self._expect_dict(data.get("object"), path)
+        sha = obj.get("sha")
+        if not isinstance(sha, str) or not sha:
+            raise GitHubError(200, path, "missing branch SHA")
+        return sha
+
     def get_file(self, repo: str, path: str, ref: str) -> str:
         """Fetch a file's text at a ref — used to read contracts from the
         default branch, never from PR branches."""

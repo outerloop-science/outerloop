@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Wake PR authors when the base branch advances, including when conflicts block merging, using the current branch tip.
+
 - Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
 
 Authors now use `message` for public posts, reminders to self and messages to

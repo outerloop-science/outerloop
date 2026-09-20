@@ -583,9 +583,13 @@ def test_reply_waits_for_first_thread(tmp_path, caplog):
     assert deliver_messages(record, cast(GitHubClient, github), (), (), tmp_path) == 0
 
 
-def test_check_log_uses_the_job_named_by_details_url(tmp_path):
+@pytest.mark.parametrize(
+    "tip,dirty", [("base", False), ("base", True), ("new", False), ("new", True), ("error", True)]
+)
+def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty):
     """An Actions check run's id is its job id; when the details_url names
     the job, that number is used; otherwise the check run id is."""
+    from outerloop.github import GitHubError
     from outerloop.inbox import gather_github_messages
 
     record = RunRecord(
@@ -596,9 +600,19 @@ def test_check_log_uses_the_job_named_by_details_url(tmp_path):
         pr_url="https://github.com/org/repo/pull/9",
         stage={"base_sha": "base"},
     )
-    pr = {"head": {"sha": "abc"}, "base": {"sha": "base"}}
+    pr = {
+        "head": {"sha": "abc"},
+        "base": {"sha": "base", "ref": "release/next"},
+        "mergeable_state": "dirty" if dirty else "clean",
+    }
 
     class GitHub:
+        def branch_sha(self, repo, branch):
+            assert (repo, branch) == ("org/repo", "release/next")
+            if tip == "error":
+                raise GitHubError(403, "/secret-path", "secret-response")
+            return tip
+
         def __init__(self):
             self.jobs: list[int] = []
 
@@ -628,6 +642,23 @@ def test_check_log_uses_the_job_named_by_details_url(tmp_path):
     github = GitHub()
     gather_github_messages(tmp_path, record, cast(GitHubClient, github), "bot", 1, pr)
     assert github.jobs == [777, 6]
+
+    messages = [m for m in pending(tmp_path, 0) if m.kind == "base-moved"]
+    assert len(messages) == int(tip == "new")
+    if messages:
+        assert messages[0].key == "base:new"
+        assert messages[0].payload["base_sha"] == "new"
+        assert "base branch advanced to new" in messages[0].payload["text"]
+        assert ("conflicts" in messages[0].payload["text"]) == dirty
+        if dirty:
+            assert "fold origin/release/next" in messages[0].payload["text"]
+    if tip == "error":
+        assert "cannot read PR base branch tip" in caplog.text
+        assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
+    if tip == "base" and dirty:
+        assert "unchanged PR base" in caplog.text
+    gather_github_messages(tmp_path, record, cast(GitHubClient, github), "bot", 2, pr)
+    assert [m for m in pending(tmp_path, 0) if m.kind == "base-moved"] == messages
 
 
 def test_v1_envelope_reads_without_rewriting(tmp_path):
