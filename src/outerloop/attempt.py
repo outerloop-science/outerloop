@@ -21,7 +21,7 @@ import re
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
@@ -1305,6 +1305,24 @@ def _wake_author_sleep(
                     role="steward" if record.agent_id.startswith("steward") else "solver",
                 )
                 attempts = max(0, attempts - 1)
+            note = f"Your attempt ended with {result.outcome}: {result.note or result.outcome}"
+            if result.outcome == "scope-violation":
+                note += (
+                    ". Only in-scope paths may differ from the bases; "
+                    "restore the rest and submit again."
+                )
+            append(
+                run_dir,
+                Message(
+                    0,
+                    "note",
+                    "kernel",
+                    thread_for(record),
+                    now,
+                    f"terminal:{result.outcome}:{latest.stage.get('sleeps_used', 0)}",
+                    {"text": redact(note, secrets)},
+                ),
+            )
             save_record(
                 run_root,
                 dc_replace(
@@ -1501,10 +1519,13 @@ def _wake_author_sleep(
     # first pass: the clone was at base).
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
-    change_head = base_sha
+    change_bases = [base_sha]
     if record.pr_url:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-        change_head = str((pr.get("head") or {}).get("sha") or base_sha)
+        change_bases = [
+            str((pr.get("head") or {}).get("sha") or base_sha),
+            f"refs/remotes/origin/{base_branch}",
+        ]
 
     def snapshot() -> str:
         snap = snapshot_tree(
@@ -1517,7 +1538,7 @@ def _wake_author_sleep(
         return snap.commit
 
     def changed_paths() -> list[str]:
-        return submission_paths(ws, change_head, bool(wake_line))
+        return submission_paths(ws, change_bases, bool(wake_line))
 
     panel_runner = (
         build_panel_runner(
@@ -2201,59 +2222,58 @@ def _checkout_line(
     return line
 
 
+def _resolved_bases(ws: Workspace, bases: Sequence[str], fallback: str = "HEAD") -> list[str]:
+    commits = []
+    for base in bases:
+        try:
+            commits.append(ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip())
+        except GitError:
+            continue
+    return commits or [fallback]
+
+
 def submission_paths(
-    ws: Workspace, head: str, exclude_memory: bool, candidate_sha: str = ""
+    ws: Workspace, bases: Sequence[str], exclude_memory: bool, candidate_sha: str = ""
 ) -> list[str]:
-    """Paths carried by a submission, relative to its PR head or initial base."""
+    """Submission paths that differ from every base, including committed edits."""
+    commits = _resolved_bases(ws, bases)
     if not candidate_sha:
         ws.git("add", "-A")
     try:
-        revisions = (head, candidate_sha) if candidate_sha else ("--cached", head)
-        paths = ws.git("diff", "--name-only", "-z", *revisions).split("\0")
-        return [p for p in paths if p and not (exclude_memory and _is_line_memory(p))]
+        paths: set[str] | None = None
+        for base in commits:
+            revisions = (base, candidate_sha) if candidate_sha else ("--cached", base)
+            differs = set(ws.git("diff", "--name-only", "-z", *revisions).split("\0")) - {""}
+            paths = differs if paths is None else paths & differs
+        return sorted(p for p in paths or () if not (exclude_memory and _is_line_memory(p)))
     finally:
         if not candidate_sha:
             ws.git("reset")
 
 
 def _paths_changed_from_base(
-    ws: Workspace, base: str, exclude_memory: bool, fallback: str = "HEAD"
+    ws: Workspace, bases: Sequence[str], exclude_memory: bool, fallback: str = "HEAD"
 ) -> list[str]:
-    """The paths the session changed, measured against the BASE BRANCH head
-    (`base`, a commit-ish such as refs/remotes/origin/main), not HEAD. On a
-    research line HEAD can be behind main: a run starts by merging main in,
-    and when that merge conflicts it stays uncommitted, so the files git
-    auto-merged (the project's BENCHMARKS.md and results/leader.json) sit
-    staged against the stale HEAD while being identical to main. Those are
-    main's edits, not the agent's, and must not read as scope violations
-    (gpt-speedrun, 2026-09-03: agent-01's first run after its own win ended
-    scope-violation on exactly those two files). A path counts only when it
-    moved against HEAD AND differs from the base; new and deleted files
-    count. `fallback` is used when `base` does not resolve (no remote).
-    `exclude_memory` drops the line's memory files whenever lines are active
-    for the benchmark (a failed line checkout still keeps them out)."""
-    try:
-        base_commit = ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip()
-    except Exception:
-        base_commit = fallback
+    """Count staged changes against HEAD only when they differ from every base.
+
+    Folding main can stage its ledger edits against a stale HEAD. Content equal
+    to any base belongs to that base, not the session. New and deleted files
+    count when they differ from all bases; unresolved bases are skipped.
+    """
+    commits = _resolved_bases(ws, bases, fallback)
     ws.git("add", "-A")
     try:
         staged = ws.staged_paths()
         if not staged:
             return []
-        # index vs base, restricted to what moved against HEAD: a path identical
-        # to base drops out, a new or deleted file still counts
-        differs = {
-            entry
-            for entry in ws.git(
-                "diff", "--cached", "--name-only", "-z", base_commit, "--", *staged
-            ).split("\0")
-            if entry
-        }
+        differs = set(staged)
+        for base in commits:
+            differs.intersection_update(
+                ws.git("diff", "--cached", "--name-only", "-z", base, "--", *staged).split("\0")
+            )
     finally:
         ws.git("reset")
-    kept = [p for p in staged if p in differs]
-    return [p for p in kept if not (exclude_memory and _is_line_memory(p))]
+    return [p for p in staged if p in differs and not (exclude_memory and _is_line_memory(p))]
 
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
@@ -2519,13 +2539,16 @@ def resume_run(
     measurer = dispatch.measurer(
         run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
-    change_head = base_sha
+    change_bases = [base_sha]
     if record.pr_url:
         pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
-        change_head = str((pr.get("head") or {}).get("sha") or base_sha)
+        change_bases = [
+            str((pr.get("head") or {}).get("sha") or base_sha),
+            f"refs/remotes/origin/{base_branch}",
+        ]
     measured_paths = tuple(
         submission_paths(
-            ws, change_head, bool(_line_ref_for(bench, config.agent_id)), candidate_sha
+            ws, change_bases, bool(_line_ref_for(bench, config.agent_id)), candidate_sha
         )
     )
     seed = int(stage["seed"])  # type: ignore[call-overload]
@@ -3567,7 +3590,7 @@ def publish(
         if (
             not landed
             and head
-            and not submission_paths(ws, head, bool(line_ref), result.candidate_sha)
+            and not submission_paths(ws, [head], bool(line_ref), result.candidate_sha)
         ):
             return refuse("Publish refused: no code change; metric noise.")
         assert result.candidate is not None
@@ -4148,7 +4171,9 @@ def live_attempt(
         def changed_paths() -> list[str]:
             # against the base branch head, never the line tip a conflicted
             # merge can leave HEAD on (see _paths_changed_from_base)
-            return _paths_changed_from_base(ws, f"refs/remotes/origin/{base_branch}", lines_active)
+            return _paths_changed_from_base(
+                ws, [f"refs/remotes/origin/{base_branch}"], lines_active
+            )
 
         if issue_number:
             from outerloop.intake import CLAIM_MARKER
