@@ -590,6 +590,8 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty):
     """An Actions check run's id is its job id; when the details_url names
     the job, that number is used; otherwise the check run id is."""
     from outerloop.github import GitHubError
+
+    caplog.set_level("DEBUG", logger="outerloop.inbox")  # the unmoved-tip line is a debug line
     from outerloop.inbox import gather_github_messages
 
     record = RunRecord(
