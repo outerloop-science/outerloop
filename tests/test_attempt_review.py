@@ -913,6 +913,9 @@ def test_review_submit_parks_and_delivers_verdict(
         def branch_sha(self, repo, branch):
             return _git(_bare, "rev-parse", f"refs/heads/{branch}").strip()
 
+        def head_contains(self, repo, base, head):
+            return _git(_bare, "merge-base", base, head).strip() == base
+
         def disable_auto_merge(self, *args):
             return True
 
@@ -1098,6 +1101,9 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
         def branch_sha(self, repo, branch):
             return _git(bare, "rev-parse", f"refs/heads/{branch}").strip()
 
+        def head_contains(self, repo, base, head):
+            return _git(bare, "merge-base", base, head).strip() == base
+
         def disable_auto_merge(self, *args):
             return True
 
@@ -1198,6 +1204,9 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
     class GitHub(FakeGitHub):
         def branch_sha(self, repo, branch):
             return _git(bare, "rev-parse", f"refs/heads/{branch}").strip()
+
+        def head_contains(self, repo, base, head):
+            return _git(bare, "merge-base", base, head).strip() == base
 
         def disable_auto_merge(self, *args):
             return True

@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- Wake PR authors when the base branch advances, including when conflicts block merging, using the current branch tip.
+- Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.
 
 - Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
 

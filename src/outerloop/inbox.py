@@ -667,20 +667,27 @@ def gather_github_messages(
             positions[source] = cid
         advance_github_positions(directory, {source: positions.get(source, since)})
     base_ref = str((pr.get("base") or {}).get("ref") or "")
+    head = str((pr.get("head") or {}).get("sha") or "")
     tip = ""
+    stale = False
     if base_ref:
         try:
             tip = github.branch_sha(record.target, base_ref)
         except GitHubError as exc:
             # Omit the response body and path, which may contain credentials.
             log.warning("cannot read PR base branch tip (GitHub status %s)", exc.status)
-    if tip and tip != record.stage.get("base_sha"):
-        text = f"The base branch advanced to {tip}."
+    if tip and head:
+        try:
+            stale = not github.head_contains(record.target, tip, head)
+        except GitHubError as exc:
+            log.warning("cannot compare PR head with base tip (GitHub status %s)", exc.status)
+    if stale:
+        text = (
+            f"Your head does not contain the current base tip {tip}; "
+            f"fold origin/{base_ref} into your branch, re-run, and submit again."
+        )
         if pr.get("mergeable_state") == "dirty":
-            text += (
-                " GitHub reports conflicts with the base; "
-                f"fold origin/{base_ref} into your branch and submit again."
-            )
+            text += " GitHub reports conflicts with the base."
         append(
             directory,
             Message(
@@ -693,10 +700,6 @@ def gather_github_messages(
                 {"text": text, "base_sha": tip},
             ),
         )
-    elif tip and pr.get("mergeable_state") == "dirty":
-        # a stale mergeable_state, or a force-pushed head; nothing to wake for
-        log.debug("GitHub reports conflicts with an unchanged PR base branch tip")
-    head = str((pr.get("head") or {}).get("sha") or "")
     if head:
         known = _keys(directory)
         try:

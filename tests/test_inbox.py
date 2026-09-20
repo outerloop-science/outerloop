@@ -584,14 +584,24 @@ def test_reply_waits_for_first_thread(tmp_path, caplog):
 
 
 @pytest.mark.parametrize(
-    "tip,dirty", [("base", False), ("base", True), ("new", False), ("new", True), ("error", True)]
+    "tip,dirty,status",
+    [
+        ("base", False, "identical"),
+        ("base", True, "ahead"),
+        ("new", False, "behind"),
+        ("new", True, "diverged"),
+        ("new", False, "ahead"),
+        ("base", True, "diverged"),
+        ("error", True, "ahead"),
+        ("new", True, "error"),
+    ],
 )
-def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty):
+def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty, status):
     """An Actions check run's id is its job id; when the details_url names
     the job, that number is used; otherwise the check run id is."""
     from outerloop.github import GitHubError
 
-    caplog.set_level("DEBUG", logger="outerloop.inbox")  # the unmoved-tip line is a debug line
+    caplog.set_level("DEBUG", logger="outerloop.inbox")
     from outerloop.inbox import gather_github_messages
 
     record = RunRecord(
@@ -609,6 +619,14 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty):
     }
 
     class GitHub:
+        head_contains = GitHubClient.head_contains
+
+        def compare(self, repo, base, head):
+            assert (repo, base, head) == ("org/repo", tip, "abc")
+            if status == "error":
+                raise GitHubError(500, "/secret-path", "secret-response")
+            return {"status": status, "ahead_by": 2, "behind_by": 3}
+
         def branch_sha(self, repo, branch):
             assert (repo, branch) == ("org/repo", "release/next")
             if tip == "error":
@@ -646,19 +664,22 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty):
     assert github.jobs == [777, 6]
 
     messages = [m for m in pending(tmp_path, 0) if m.kind == "base-moved"]
-    assert len(messages) == int(tip == "new")
+    assert len(messages) == int(status in ("behind", "diverged"))
     if messages:
-        assert messages[0].key == "base:new"
-        assert messages[0].payload["base_sha"] == "new"
-        assert "base branch advanced to new" in messages[0].payload["text"]
+        assert messages[0].key == f"base:{tip}"
+        assert messages[0].payload["base_sha"] == tip
+        assert f"does not contain the current base tip {tip}" in messages[0].payload["text"]
         assert ("conflicts" in messages[0].payload["text"]) == dirty
-        if dirty:
-            assert "fold origin/release/next" in messages[0].payload["text"]
+        assert (
+            "fold origin/release/next into your branch, re-run, and submit again"
+            in messages[0].payload["text"]
+        )
     if tip == "error":
         assert "cannot read PR base branch tip" in caplog.text
         assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
-    if tip == "base" and dirty:
-        assert "unchanged PR base" in caplog.text
+    if status == "error":
+        assert "cannot compare PR head with base tip (GitHub status 500)" in caplog.text
+        assert "secret-path" not in caplog.text and "secret-response" not in caplog.text
     gather_github_messages(tmp_path, record, cast(GitHubClient, github), "bot", 2, pr)
     assert [m for m in pending(tmp_path, 0) if m.kind == "base-moved"] == messages
 
