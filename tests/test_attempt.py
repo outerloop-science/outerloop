@@ -452,19 +452,20 @@ def test_author_sleep_park_carries_the_gate_verdict(tmp_path) -> None:
         candidate_sha="c" * 40,
         session=_session("s9"),
         syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
-        judged=("d" * 40, verdict),
+        judged=("b" * 40, "d" * 40, verdict),
         launch_afterany="afterany:501",
     )
     _park_run(tmp_path, record, parked, "refs/dispatch/tok", eval_minutes=None, now=1000.0)
     r = load_record(tmp_path, "tsp-3")
     assert r.stage["judged"] == {
+        "base_sha": "b" * 40,
         "sha": "d" * 40,
         "outcome": "no-improvement",
         "baseline": 13.0,
         "candidate": 13.0,
         "note": "inside the floor",
     }
-    assert _stage_judged(r) == ("d" * 40, verdict)
+    assert _stage_judged(r) == ("b" * 40, "d" * 40, verdict)
     assert r.stage["launch_afterany"] == "afterany:501"
     bare = RunRecord(run_id="x", target="o/p", task_title="t", state="parked")
     assert _stage_judged(bare) is None
@@ -6345,3 +6346,97 @@ def test_changed_paths_intersect_bases(tmp_path: Path) -> None:
     candidate = _git(root, "rev-parse", "HEAD").strip()
     assert _paths_changed_from_base(ws, bases, False) == []
     assert submission_paths(ws, bases, False, candidate) == expected
+
+
+@pytest.mark.parametrize("wake", [False, True], ids=["first-pass", "non-pr-wake"])
+def test_measurable_seal_preserves_session_fold(tmp_path, monkeypatch, wake):
+    from dataclasses import replace
+
+    from outerloop.attempt import LINE_MEMORY_PATHS
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.roles import author_spec
+
+    seen = []
+
+    def author_leg(config, contract, workspace, harness, measurer, base_sha, snapshot, **kw):
+        # The session creates divergent history, then folds it before sealing.
+        start = _git(workspace, "rev-parse", "HEAD").strip()
+        _git(workspace, "checkout", "-f", "--detach", start)
+        (workspace / "src/pilot/solvers/main.py").write_text("new base content\n")
+        _git(workspace, "add", "src/pilot/solvers/main.py")
+        _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main")
+        tip = _git(workspace, "rev-parse", "HEAD").strip()
+        _git(workspace, "checkout", "--detach", start)
+        (workspace / "src/pilot/solvers/session.py").write_text("session change\n")
+        _git(workspace, "add", "src/pilot/solvers/session.py")
+        _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "session")
+        _git(
+            workspace,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "merge",
+            "--no-ff",
+            tip,
+            "-m",
+            "session fold",
+        )
+        folded = _git(workspace, "rev-parse", "HEAD").strip()
+        (workspace / "AGENT_MEMORY.md").write_text("private notebook\n")
+        (workspace / "agent_memory").mkdir(exist_ok=True)
+        (workspace / "agent_memory/new.md").write_text("private topic\n")
+        sealed = snapshot()
+        assert folded != base_sha
+        assert _git(workspace, "show", "-s", "--format=%P", sealed).strip() == folded
+        _git(workspace, "merge-base", "--is-ancestor", tip, sealed)
+        paths = _git(workspace, "ls-tree", "-r", "--name-only", sealed).splitlines()
+        assert all(
+            not any(p == m or p.startswith(m + "/") for m in LINE_MEMORY_PATHS) for p in paths
+        )
+        assert (workspace / "AGENT_MEMORY.md").read_text() == "private notebook\n"
+        seen.append(sealed)
+        return AttemptResult(outcome="no-improvement", candidate_sha=sealed)
+
+    monkeypatch.setattr(climb_mod, "attempt_once", author_leg)
+    if wake:
+        state, run_id = _write_parked_line_candidate(
+            tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+        )
+        record = load_record(state, run_id)
+        save_record(
+            state,
+            replace(
+                record,
+                stage={
+                    **record.stage,
+                    "phase": "author-sleep",
+                    "syscall_launches": [],
+                },
+            ),
+            1_000_000.0,
+        )
+        outcome = resume_run(
+            state,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100.0,
+            harness=ScriptedHarness(edits={}),
+            spec=author_spec(),
+        )
+    else:
+        _seed_target(tmp_path, monkeypatch, CONTRACT_LINES)
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+            run_root=tmp_path / "state",
+            run_id="seal-first",
+            harness=ScriptedHarness(edits={}),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-09-20T00:00:00Z",
+        )
+    assert outcome.outcome == "no-improvement"
+    assert len(seen) == 1

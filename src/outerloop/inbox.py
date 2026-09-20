@@ -612,6 +612,16 @@ def advance_github_positions(directory: Path, positions: dict[str, int]) -> None
             _write_at(fd, "positions.json", current)
 
 
+def base_moved_text(tip: str, base: str) -> str:
+    """Advice for a head that does not contain the current base tip."""
+    return (
+        f"Your head does not contain the current base tip {tip}; "
+        f"fold origin/{base} into your branch, inspect the result, and submit directly. "
+        "The gate measures the folded candidate. Re-run your own experiment only if "
+        f"what landed in {base} changes your hypothesis."
+    )
+
+
 def gather_github_messages(
     directory: Path,
     record: RunRecord,
@@ -682,10 +692,7 @@ def gather_github_messages(
         except GitHubError as exc:
             log.warning("cannot compare PR head with base tip (GitHub status %s)", exc.status)
     if stale:
-        text = (
-            f"Your head does not contain the current base tip {tip}; "
-            f"fold origin/{base_ref} into your branch, re-run, and submit again."
-        )
+        text = base_moved_text(tip, base_ref)
         if pr.get("mergeable_state") == "dirty":
             text += " GitHub reports conflicts with the base."
         append(

@@ -1509,3 +1509,130 @@ def test_review_terminal_note_redacted_and_deduplicated(review_run, monkeypatch,
     assert "sk-x" not in message.payload["text"]
     assert "out-of-scope paths at launch: private-" in message.payload["text"]
     assert record.state == PARKED
+
+
+def _publish_folded(review_run, monkeypatch, *, contained=False, refusal=""):
+    from outerloop.attempt import publish
+    from outerloop.contract import load_contract
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import GitError, Workspace
+    from outerloop.orchestrator import AttemptResult, RunConfig
+
+    root, bare = review_run
+    path = run_dir(root, "tsp-r1") / "ws"
+    ws = Workspace(root=path, url=str(bare))
+    original = ws.git("rev-parse", "HEAD").strip()
+
+    def commit(name):
+        ws.git("add", "-A")
+        ws.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name)
+        return ws.git("rev-parse", "HEAD").strip()
+
+    (path / "src/pilot/solvers/pr.py").write_text("prior PR change\n")
+    head = commit("PR")
+    ws.git("push", "origin", f"{head}:refs/heads/{PR_BRANCH}")
+    ws.git("checkout", "--detach", original)
+    (path / "docs/main-only.md").write_text("landed in main\n")
+    base = commit("main advanced")
+    ws.git("push", "origin", f"{base}:main")
+    ws.git("checkout", "--detach", head)
+    if refusal != "unfolded":
+        ws.git("-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-ff", base, "-m", "fold")
+    if contained:
+        head = ws.git("rev-parse", "HEAD").strip()
+        ws.git("push", "origin", f"{head}:refs/heads/{PR_BRANCH}")
+    (path / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    snap = snapshot_tree(ws, ws.git("rev-parse", "HEAD").strip())
+    if refusal == "moved-head":
+        (path / "src/pilot/solvers/human.py").write_text("human edit\n")
+        head = commit("human moved PR")
+        ws.git("push", "origin", f"{head}:refs/heads/{PR_BRANCH}")
+    if refusal == "moved-base":
+        ws.git("checkout", "-f", "--detach", base)
+        (path / "docs/later.md").write_text("later\n")
+        latest = commit("later base")
+        ws.git("push", "origin", f"{latest}:main")
+
+    class GitHub(FakeGitHub):
+        def disable_auto_merge(self, *args):
+            return True
+
+    github = GitHub(pr={"state": "open", "head": {"sha": head, "ref": PR_BRANCH}})
+    if refusal == "ancestry-error":
+        real_git = Workspace.git
+
+        def git(self, *args, **kwargs):
+            if args == ("merge-base", base, head):
+                raise GitError("secret ancestry failure")
+            return real_git(self, *args, **kwargs)
+
+        monkeypatch.setattr(Workspace, "git", git)
+    record = load_record(root, "tsp-r1")
+    outcome = publish(
+        result=AttemptResult(
+            outcome="improved",
+            baseline=14.0,
+            candidate=11.0,
+            candidate_sha=snap.commit,
+            measured_paths=("src/pilot/solvers/tsp.py",),
+        ),
+        ws=ws,
+        workspace=path,
+        run_root=root,
+        run_dir=path.parent,
+        run_id=record.run_id,
+        record=record,
+        config=RunConfig(target=record.target, benchmark="tsp", bot_login=BOT),
+        contract=load_contract(CONTRACT, "org/pilot"),
+        github=cast(GitHubClient, github),
+        now=NOW,
+        secrets=("secret",),
+        base_branch="main",
+        base_sha=base,
+        issue_number=0,
+        line_ref="",
+        date="2026-09-20",
+    )
+    pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
+    if refusal:
+        from outerloop.inbox import pending
+
+        assert outcome.outcome == "publish-refused"
+        assert pushed == head
+        assert not github.row_updates and not github.body_addenda
+        assert "secret" not in pending(path.parent, 0)[-1].payload["text"]
+        return
+    assert outcome.outcome == "improved"
+    journal = load_record(root, record.run_id).stage["publish"]
+    assert isinstance(journal, dict)
+    measured = journal["pushed_sha"]
+    assert _git(bare, "show", "-s", "--format=%P", measured).strip().split() == (
+        [head] if contained else [head, base]
+    )
+    assert _git(bare, "rev-parse", f"{measured}^{{tree}}").strip() == snap.tree
+    _git(bare, "merge-base", "--is-ancestor", base, pushed)
+    _git(bare, "merge-base", "--is-ancestor", head, pushed)
+    assert _git(bare, "rev-parse", f"{pushed}^").strip() == measured
+    diff = set(_git(bare, "diff", "--name-only", f"{base}...{pushed}").splitlines())
+    from outerloop.progress import PROGRESS_PATHS
+
+    assert {"src/pilot/solvers/pr.py", "src/pilot/solvers/tsp.py"} <= diff
+    assert diff <= {"src/pilot/solvers/pr.py", "src/pilot/solvers/tsp.py", *PROGRESS_PATHS}
+    assert diff & set(PROGRESS_PATHS)
+
+
+def test_publish_folded_candidate_retains_measured_base(review_run, monkeypatch):
+    _publish_folded(review_run, monkeypatch)
+
+
+def test_publish_uses_one_parent_when_base_already_contained(review_run, monkeypatch):
+    _publish_folded(review_run, monkeypatch, contained=True)
+
+
+def test_publish_folded_pr_diff_excludes_main_changes(review_run, monkeypatch):
+    _publish_folded(review_run, monkeypatch)
+
+
+@pytest.mark.parametrize("refusal", ["unfolded", "moved-head", "moved-base", "ancestry-error"])
+def test_publish_refuses_unfolded_candidate_or_moved_pr_head(review_run, monkeypatch, refusal):
+    _publish_folded(review_run, monkeypatch, refusal=refusal)

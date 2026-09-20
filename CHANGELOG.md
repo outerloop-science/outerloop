@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Advise direct submission after folding the base, preserve measured-base ancestry in PR updates and measurable seals, and key verdict reuse by base and candidate tree.
+
 - Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
 
 - Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.

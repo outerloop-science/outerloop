@@ -1924,7 +1924,11 @@ def test_a_report_less_resubmit_of_a_judged_tree_is_refused_too(tmp_path: Path) 
     from outerloop.orchestrator import AttemptResult
 
     _write_syscall(tmp_path, {"launches": [], "submit": True})
-    judged = ("cand1", AttemptResult(outcome="no-improvement", baseline=13.876, candidate=13.9))
+    judged = (
+        "base",
+        "cand1",
+        AttemptResult(outcome="no-improvement", baseline=13.876, candidate=13.9),
+    )
     result, harness, _ = run_climb(
         tmp_path,
         [13.876, 13.10],
@@ -1951,7 +1955,7 @@ def test_explicit_end_uses_report_and_last_verdict(tmp_path, judged_note):
             return ok_session("Final text is not the report.")
 
     judged = (
-        ("sealed", AttemptResult(outcome="no-improvement", note=judged_note))
+        ("base", "sealed", AttemptResult(outcome="no-improvement", note=judged_note))
         if judged_note
         else None
     )
@@ -2066,3 +2070,50 @@ def test_author_inbox_redacts_rendered_content(kind):
     prompt = _render_author_inbox([message], budgets="budget", redact_secrets=(secret,))
     assert secret not in prompt
     assert "[redacted]" in prompt
+
+
+def test_same_tree_new_base_runs_gate(tmp_path):
+    from outerloop.orchestrator import AttemptResult
+
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [13.0, 12.0],
+        judged=("old-base", "old-seal", AttemptResult(outcome="no-improvement")),
+        tree_of=lambda sha: "same-tree",
+    )
+    assert result.outcome == "improved"
+    assert len(evaluator.calls) == 2
+
+
+def test_same_tree_same_base_reuses_gate(tmp_path):
+    from outerloop.orchestrator import AttemptResult
+
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        judged=("base", "old-seal", AttemptResult(outcome="no-improvement", note="old verdict")),
+        tree_of=lambda sha: "same-tree",
+    )
+    assert result.outcome == "no-improvement"
+    assert result.note == "old verdict"
+    assert not evaluator.calls
+
+
+def test_legacy_judged_without_base_is_not_reused(tmp_path):
+    from outerloop.attempt import _stage_judged
+    from outerloop.runstate import RunRecord
+
+    record = RunRecord(
+        run_id="legacy",
+        target="org/pilot",
+        task_title="t",
+        state="parked",
+        stage={"judged": {"sha": "old-seal", "outcome": "no-improvement"}},
+    )
+    judged = _stage_judged(record)
+    assert judged is None
+    result, _, evaluator = run_climb(
+        tmp_path, [13.0, 12.0], judged=judged, tree_of=lambda sha: "same-tree"
+    )
+    assert result.outcome == "improved"
+    assert len(evaluator.calls) == 2
