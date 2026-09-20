@@ -668,7 +668,7 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty, status):
     if messages:
         assert messages[0].key == f"base:{tip}"
         assert messages[0].payload["base_sha"] == tip
-        assert f"base branch advanced to {tip}" in messages[0].payload["text"]
+        assert f"does not contain the current base tip {tip}" in messages[0].payload["text"]
         assert ("conflicts" in messages[0].payload["text"]) == dirty
         assert (
             "fold origin/release/next into your branch, re-run, and submit again"

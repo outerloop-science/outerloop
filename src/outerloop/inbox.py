@@ -683,7 +683,7 @@ def gather_github_messages(
             log.warning("cannot compare PR head with base tip (GitHub status %s)", exc.status)
     if stale:
         text = (
-            f"The base branch advanced to {tip} and your head does not contain it; "
+            f"Your head does not contain the current base tip {tip}; "
             f"fold origin/{base_ref} into your branch, re-run, and submit again."
         )
         if pr.get("mergeable_state") == "dirty":
