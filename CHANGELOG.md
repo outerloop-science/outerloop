@@ -8,9 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- Checkpoint stale submits before charging gate compute, discard sibling launches without running them, and notify the author.
-
-- Advise direct submission after folding the base, preserve measured-base ancestry in PR updates and measurable seals, and key verdict reuse by base and candidate tree.
+- After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
 
 - Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
 
