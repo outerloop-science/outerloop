@@ -2214,7 +2214,8 @@ def test_folded_submit_with_old_pin_checkpoints(tmp_path):
     messages = pending(tmp_path.parent / (tmp_path.name + "-run"), 0)
     assert not any(m.kind == "base-moved" for m in messages)
     assert any(
-        "contains tip, but the gate was pinned to base" in m.payload.get("text", "")
+        "contains tip, but the gate was pinned to a base tip that has since moved"
+        in m.payload.get("text", "")
         for m in messages
     )
 

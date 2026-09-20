@@ -1695,7 +1695,8 @@ def attempt_once(
                     else:
                         receipt = (
                             f"Your candidate contains {preflight.tip}, but the gate was pinned to "
-                            f"{base_sha}; no gate ran. The checkpoint refreshes the pin; submit "
+                            "a base tip that has since moved; no gate ran. "
+                            "The checkpoint refreshes the pin; submit "
                             "again after inspecting the updated context. "
                         )
                     append(

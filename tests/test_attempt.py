@@ -6568,3 +6568,156 @@ def test_stale_submit_first_pass_resumes(tmp_path, monkeypatch):
 
 def test_stale_submit_line_preserves_memory(tmp_path, monkeypatch):
     _stale_submit_roundtrip(tmp_path, monkeypatch, line=True)
+
+
+@pytest.mark.parametrize("wake", [False, True], ids=["first-pass", "non-pr-wake"])
+def test_rewound_base_checkpoints_instead_of_gating(tmp_path, monkeypatch, wake):
+    from outerloop.inbox import pending
+    from outerloop.measure import DispatchSettings
+    from outerloop.roles import author_spec
+
+    target = _seed_target(tmp_path, monkeypatch, CONTRACT_SYSCALLS)
+    monkeypatch.setattr(climb_mod, "target_clone_url", lambda target: str(tmp_path / "origin.git"))
+    seed = tmp_path / "seed"
+    tip = _git(seed, "rev-parse", "HEAD").strip()
+    _git(
+        seed,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "former base tip",
+    )
+    pin = _git(seed, "rev-parse", "HEAD").strip()
+    _git(seed, "push", str(target), "main")
+    measured = []
+
+    class NeverMeasured:
+        def results(self, measures):
+            measured.append(measures)
+            pytest.fail("rewound base dispatched a gate")
+
+    monkeypatch.setattr(DispatchSettings, "measurer", lambda *a, **k: NeverMeasured())
+
+    class RewindingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert _git(workspace, "rev-parse", "origin/main").strip() == pin
+            _git(seed, "push", "--force", str(target), f"{tip}:main")
+            return super().run(brief_text, workspace, resume_session_id)
+
+    class SleepingHarness(ScriptedHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            from outerloop.syscall_cli import main
+
+            assert main(["sleep"], root=workspace) == 0
+            return super().run(brief_text, workspace, resume_session_id)
+
+    harness = RewindingHarness(edits={"src/pilot/solvers/tsp.py": "candidate\n"}, submit=True)
+    state = tmp_path / "state"
+    github = FakeGitHub()
+    dispatch = _fake_dispatch()
+    outcome = live_attempt(
+        config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
+        run_root=state,
+        run_id="rewound",
+        created="2026-09-20T00:00:00Z",
+        bot_auth=NoAuth(),
+        github=github,  # type: ignore[arg-type]
+        dispatch=dispatch,
+        now=1_000_000.0,
+        harness=SleepingHarness(edits={}) if wake else harness,
+    )
+    before_sleeps = 0
+    if wake:
+        assert outcome.outcome == "parked"
+        before_sleeps = 1
+        assert load_record(state, "rewound").stage["sleeps_used"] == before_sleeps
+        outcome = resume_run(
+            state,
+            "rewound",
+            dispatch=dispatch,
+            github=github,  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100.0,
+            harness=harness,
+            spec=author_spec(),
+        )
+    assert outcome.outcome == "parked"
+    record = load_record(state, "rewound")
+    assert record.stage["phase"] == "author-sleep"
+    assert record.stage["base_sha"] == tip
+    assert record.stage["sleeps_used"] == before_sleeps + 1
+    assert not measured
+    assert record.stage["gpu_hours_used"] == 0
+    messages = pending(state / "runs" / "rewound", 0)
+    assert any(
+        m.key == f"refused:{tip}:{before_sleeps + 1}"
+        and "a base tip that has since moved; no gate ran" in m.payload.get("text", "")
+        for m in messages
+    )
+
+
+def test_non_pr_line_wake_preserves_measurement_base(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.roles import author_spec
+
+    state, run_id = _write_parked_line_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    record = load_record(state, run_id)
+    assert not record.pr_url
+    workspace = state / "runs" / run_id / "ws"
+    # The line's measurement base is ahead of main, which does not move at wake.
+    _git(
+        workspace,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "line progress",
+    )
+    line_tip = _git(workspace, "rev-parse", "HEAD").strip()
+    assert line_tip != record.stage["base_sha"]
+    save_record(
+        state,
+        replace(
+            record,
+            stage={
+                **record.stage,
+                "phase": "author-sleep",
+                "base_sha": line_tip,
+                "syscall_launches": [],
+            },
+        ),
+        1_000_000.0,
+    )
+    seen = []
+
+    def author_leg(config, contract, workspace, harness, measurer, base_sha, snapshot, **kw):
+        assert base_sha == line_tip
+        assert load_record(state, run_id).stage["base_sha"] == line_tip
+        assert kw["submit_preflight"]().status == "ready"
+        seen.append(base_sha)
+        return AttemptResult(outcome="no-improvement")
+
+    monkeypatch.setattr(climb_mod, "attempt_once", author_leg)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        harness=ScriptedHarness(edits={}),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "no-improvement"
+    assert seen == [line_tip]

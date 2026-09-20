@@ -351,6 +351,7 @@ def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, fail
             None,
             "HEAD",
             lambda: "unused",
+            pinned_tip="",
             run_root=root,
             record=record,
             ws=Workspace(root=ws),
@@ -1648,9 +1649,10 @@ def test_publish_refuses_unfolded_candidate_or_moved_pr_head(review_run, monkeyp
 
 
 @pytest.mark.parametrize("base", ["main", "release"])
-@pytest.mark.parametrize("history", ["equal", "ancestor", "divergent", "old-pin"])
-@pytest.mark.parametrize("pr", [False, True])
-def test_submit_fetch_detects_move_during_author_leg(review_run, base, history, pr):
+@pytest.mark.parametrize(
+    "history", ["equal", "ancestor", "divergent", "old-pin", "rewound", "unknown-pin"]
+)
+def test_submit_fetch_detects_move_during_author_leg(review_run, base, history):
     from outerloop.attempt import _submit_preflight
     from outerloop.github import Workspace
 
@@ -1683,9 +1685,18 @@ def test_submit_fetch_detects_move_during_author_leg(review_run, base, history, 
     if history == "ancestor":
         head = commit(tip, "candidate descends")
     _git(wsroot, "reset", "--hard", head)
-    pin = old if history in ("divergent", "old-pin") else (tip if pr else head)
-    result = _submit_preflight(Workspace(root=wsroot, url=str(bare)), base, pin, pr=pr)
-    expected = {"divergent": "stale", "old-pin": "outdated-pin"}.get(history, "ready")
+    pin = old if history in ("divergent", "old-pin") else tip
+    if history == "rewound":
+        pin = commit(tip, "former base tip")
+    if history == "unknown-pin":
+        pin = ""
+    result = _submit_preflight(Workspace(root=wsroot, url=str(bare)), base, pin)
+    expected = {
+        "divergent": "stale",
+        "old-pin": "outdated-pin",
+        "rewound": "outdated-pin",
+        "unknown-pin": "unknown",
+    }.get(history, "ready")
     assert result.status == expected and result.tip == tip and result.base_branch == base
     assert _git(wsroot, "rev-parse", f"origin/{base}").strip() == tip
 
@@ -1710,7 +1721,7 @@ def test_submit_preflight_git_failure_proceeds(tmp_path, caplog, operation):
     calls = []
 
     def preflight():
-        result = _submit_preflight(BrokenWorkspace(root=tmp_path), "main", "old", pr=True)
+        result = _submit_preflight(BrokenWorkspace(root=tmp_path), "main", "old")
         calls.append(result.status)
         return result
 
