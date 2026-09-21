@@ -2117,3 +2117,162 @@ def test_legacy_judged_without_base_is_not_reused(tmp_path):
     )
     assert result.outcome == "improved"
     assert len(evaluator.calls) == 2
+
+
+def _stale_checkpoint(tmp_path, **kwargs):
+    from outerloop.orchestrator import RunParked, SubmitPreflight
+
+    _write_syscall(
+        tmp_path,
+        {
+            "submit": True,
+            "report": "H: candidate",
+            "launches": [{"name": "probe", "command": "never run"}],
+        },
+    )
+    with pytest.raises(RunParked) as caught:
+        run_climb(
+            tmp_path,
+            [],
+            contract=DEEP_CONTRACT,
+            launcher=lambda *a: pytest.fail("launcher ran"),
+            panel_runner=lambda *a: pytest.fail("panel ran"),
+            submit_preflight=lambda: SubmitPreflight("stale", "fresh", "release"),
+            **kwargs,
+        )
+    return caught.value
+
+
+def test_stale_submit_checkpoint_has_no_compute_charge(tmp_path):
+    p = _stale_checkpoint(tmp_path, launches_used=3, gpu_hours_used=1.0)
+    assert (p.launches_used, p.sleeps_used, p.gpu_hours_used) == (3, 1, 1.0)
+    assert p.phase == "author-sleep" and p.afterany == "" and not p.submitted
+    assert p.base_sha == "fresh" and p.candidate_sha == "cand1" and p.session
+
+
+def test_stale_submit_discards_sibling_launches(tmp_path):
+    from outerloop.attempt import _park_run
+    from outerloop.inbox import pending
+    from outerloop.runstate import RunRecord, load_record
+
+    p = _stale_checkpoint(tmp_path)
+    assert p.syscall is not None and p.syscall.launches == () and not p.syscall.submit
+    record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
+    _park_run(tmp_path, record, p, "ref", None, 1000)
+    assert load_record(tmp_path, "test").stage["syscall_launches"] == []
+    messages = pending(tmp_path.parent / (tmp_path.name + "-run"), 0)
+    receipt = next(m for m in messages if m.key.startswith("refused:"))
+    assert "No sibling launches ran" in receipt.payload["text"]
+    assert "must be restaged" in receipt.payload["text"]
+
+
+def test_stale_submit_respects_sleep_cap(tmp_path):
+    from outerloop.orchestrator import SubmitPreflight
+
+    harness = _SeqHarness(["submit", "again"], submit_on=(1, 2))
+    meters = []
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        harness=harness,
+        contract=DEEP_CONTRACT,
+        sleeps_used=20,
+        launcher=lambda *a: pytest.fail("launch"),
+        submit_preflight=lambda: SubmitPreflight("stale", "fresh", "main"),
+        on_meter=lambda *counts: meters.append(counts),
+    )
+    assert result.outcome == "no-improvement" and "no gate" in result.note
+    assert not evaluator.calls
+    assert all(counts == (0, 20, 0.0) for counts in meters)
+
+
+def test_stale_submit_repeated_tip_still_delivers_receipt(tmp_path):
+    from outerloop.inbox import pending
+
+    _stale_checkpoint(tmp_path)
+    directory = tmp_path.parent / (tmp_path.name + "-run")
+    messages = pending(directory, 0)
+    last = messages[-1].seq
+    _stale_checkpoint(tmp_path, sleeps_used=1, inbox_seq=last)
+    assert len([m for m in pending(directory, 0) if m.key == "base:fresh"]) == 1
+    assert any(m.key == "refused:fresh:2" for m in pending(directory, last))
+
+
+def test_folded_submit_with_old_pin_checkpoints(tmp_path):
+    from outerloop.inbox import pending
+    from outerloop.orchestrator import RunParked, SubmitPreflight
+
+    _write_syscall(tmp_path, {"submit": True, "report": "H: folded"})
+    with pytest.raises(RunParked) as caught:
+        run_climb(
+            tmp_path,
+            [],
+            launcher=lambda *a: pytest.fail("launch"),
+            submit_preflight=lambda: SubmitPreflight("outdated-pin", "tip", "main"),
+        )
+    assert caught.value.base_sha == "tip"
+    messages = pending(tmp_path.parent / (tmp_path.name + "-run"), 0)
+    assert not any(m.kind == "base-moved" for m in messages)
+    assert any(
+        "contains tip, but the gate was pinned to a base tip that has since moved"
+        in m.payload.get("text", "")
+        for m in messages
+    )
+
+
+def test_stale_preflight_precedes_cache_and_compute_budget(tmp_path):
+    from outerloop.orchestrator import RunParked, SubmitPreflight
+
+    class NeverMeasured:
+        @property
+        def baseline_cache(self):
+            pytest.fail("cached baseline looked up")
+
+        def results(self, measures):
+            pytest.fail("measurement ran")
+
+    contract = DEEP_CONTRACT.replace(
+        "    direction: min\n",
+        "    direction: min\n    baseline: cached\n    min_delta: 0.01\n"
+        "    gpus: 1\n    eval_minutes: 60\n",
+    )
+    _write_syscall(
+        tmp_path,
+        {
+            "submit": True,
+            "report": "H: candidate",
+            "launches": [{"name": "probe", "command": "x", "minutes": 60}],
+        },
+    )
+    with pytest.raises(RunParked) as caught:
+        attempt_once(
+            CONFIG,
+            contract,
+            tmp_path,
+            FakeHarness(result=ok_session()),
+            NeverMeasured(),
+            "base",
+            lambda: "seal",
+            inbox_dir=tmp_path / "inbox",
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            launcher=lambda *a: pytest.fail("launch"),
+            launches_used=3,
+            gpu_hours_used=1.0,
+            submit_preflight=lambda: SubmitPreflight("stale", "tip", "main"),
+        )
+    assert caught.value.gpu_hours_used == 1.0 and caught.value.launches_used == 3
+
+
+def test_stale_checkpoint_checks_scope_before_sealing(tmp_path):
+    from outerloop.orchestrator import SubmitPreflight
+
+    _write_syscall(tmp_path, {"submit": True, "report": "H: candidate"})
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        changed=[".github/workflows/ci.yml"],
+        launcher=lambda *a: pytest.fail("launch"),
+        submit_preflight=lambda: SubmitPreflight("stale", "tip", "main"),
+    )
+    assert result.outcome == "scope-violation" and not evaluator.calls

@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A submit after the base moves is checkpointed before any gate compute runs. Staged experiments do not run. The author is told to fold the base and submit again, or that the gate pin was refreshed.
+
 - After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
 
 - Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.

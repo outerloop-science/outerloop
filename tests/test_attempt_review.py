@@ -351,6 +351,7 @@ def test_reply_syscall_posts_on_run_thread_once(review_run, pr_url, number, fail
             None,
             "HEAD",
             lambda: "unused",
+            pinned_tip="",
             run_root=root,
             record=record,
             ws=Workspace(root=ws),
@@ -1134,6 +1135,21 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
         now=NOW,
         dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
     )
+    if not contains_base:
+        assert outcome.action == "parked"
+        assert not measured and len(author.calls) == 1
+        latest = load_record(root, record.run_id)
+        assert latest.stage["phase"] == "author-sleep"
+        assert latest.stage["base_sha"] == base
+        assert latest.stage["sleeps_used"] == 1
+        assert latest.stage["gpu_hours_used"] == 0
+        assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
+        messages = pending(ws.parent, latest.inbox_seq)
+        assert any(
+            m.kind == "base-moved" and base in m.payload["text"] for m in pending(ws.parent, 0)
+        )
+        assert any(m.key == f"refused:{base}:1" for m in messages)
+        return
     assert outcome.action == "replied", outcome.note
     assert measured
     baseline = next(m for m in measured if m.name == "baseline")
@@ -1142,20 +1158,14 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
     latest = load_record(root, record.run_id)
     assert latest.stage["base_sha"] == base
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
-    if credited and contains_base:
+    if credited:
         assert outcome.note == "improved"
         _git(ws, "merge-base", "--is-ancestor", head, pushed)
         assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
     else:
         assert pushed == head
-        if credited:
-            refusal = pending(ws.parent, 0)[-1]
-            assert refusal.kind == "base-moved" and refusal.source == "git"
-            assert base in refusal.payload["text"]
-            assert refusal.payload["sealed_sha"] in refusal.payload["text"]
-        else:
-            assert len(author.calls) == 2
-            assert latest.state == PARKED
+        assert len(author.calls) == 2
+        assert latest.state == PARKED
 
 
 @pytest.mark.parametrize("edit", ["none", "working", "committed"])
@@ -1636,3 +1646,103 @@ def test_publish_folded_pr_diff_excludes_main_changes(review_run, monkeypatch):
 @pytest.mark.parametrize("refusal", ["unfolded", "moved-head", "moved-base", "ancestry-error"])
 def test_publish_refuses_unfolded_candidate_or_moved_pr_head(review_run, monkeypatch, refusal):
     _publish_folded(review_run, monkeypatch, refusal=refusal)
+
+
+@pytest.mark.parametrize("base", ["main", "release"])
+@pytest.mark.parametrize(
+    "history", ["equal", "ancestor", "divergent", "old-pin", "rewound", "unknown-pin"]
+)
+def test_submit_fetch_detects_move_during_author_leg(review_run, base, history):
+    from outerloop.attempt import _submit_preflight
+    from outerloop.github import Workspace
+
+    root, bare = review_run
+    wsroot = run_dir(root, "tsp-r1") / "ws"
+    old = _git(wsroot, "rev-parse", "HEAD").strip()
+    tree = _git(wsroot, "rev-parse", "HEAD^{tree}").strip()
+
+    def commit(parent, message):
+        return _git(
+            wsroot,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit-tree",
+            tree,
+            "-p",
+            parent,
+            "-m",
+            message,
+        ).strip()
+
+    tip = commit(old, "new base")
+    _git(wsroot, "push", str(bare), f"{tip}:refs/heads/{base}")
+    # The workspace's remote-tracking ref has not seen this move.
+    head = old if history == "divergent" else tip
+    if history == "divergent":
+        head = commit(old, "candidate diverges")
+    if history == "ancestor":
+        head = commit(tip, "candidate descends")
+    _git(wsroot, "reset", "--hard", head)
+    pin = old if history in ("divergent", "old-pin") else tip
+    if history == "rewound":
+        pin = commit(tip, "former base tip")
+    if history == "unknown-pin":
+        pin = ""
+    result = _submit_preflight(Workspace(root=wsroot, url=str(bare)), base, pin)
+    expected = {
+        "divergent": "stale",
+        "old-pin": "outdated-pin",
+        "rewound": "outdated-pin",
+        "unknown-pin": "unknown",
+    }.get(history, "ready")
+    assert result.status == expected and result.tip == tip and result.base_branch == base
+    assert _git(wsroot, "rev-parse", f"origin/{base}").strip() == tip
+
+
+@pytest.mark.parametrize("operation", ["fetch", "resolve", "merge-base"])
+def test_submit_preflight_git_failure_proceeds(tmp_path, caplog, operation):
+    from outerloop.attempt import _submit_preflight
+    from outerloop.github import Workspace
+    from test_orchestrator import _write_syscall
+
+    class BrokenWorkspace(Workspace):
+        def fetch_origin(self):
+            if operation == "fetch":
+                raise RuntimeError("secret-token")
+
+        def git(self, *args, **kwargs):
+            if (args[0] == "rev-parse" and operation == "resolve") or args[0] == "merge-base":
+                raise RuntimeError("secret-token")
+            return "tip"
+
+    _write_syscall(tmp_path, {"submit": True, "report": "H: test"})
+    calls = []
+
+    def preflight():
+        result = _submit_preflight(BrokenWorkspace(root=tmp_path), "main", "old")
+        calls.append(result.status)
+        return result
+
+    # A dispatched gate proves unknown freshness continues through measurement.
+    from outerloop.orchestrator import RunParked, attempt_once
+    from test_orchestrator import CONFIG, CONTRACT, FakeHarness, ParkingMeasurer, ok_session
+
+    with pytest.raises(RunParked) as caught:
+        attempt_once(
+            CONFIG,
+            CONTRACT,
+            tmp_path,
+            FakeHarness(result=ok_session()),
+            ParkingMeasurer(park_on_call=1),
+            "base",
+            lambda: "candidate",
+            inbox_dir=tmp_path / "inbox",
+            ruler="r",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            launcher=lambda *a: "",
+            submit_preflight=preflight,
+        )
+    assert caught.value.phase == "candidate"
+    assert calls == ["unknown"] and "secret-token" not in caplog.text

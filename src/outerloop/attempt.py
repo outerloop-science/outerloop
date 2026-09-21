@@ -70,6 +70,7 @@ from outerloop.orchestrator import (
     Measurer,
     RunConfig,
     RunParked,
+    SubmitPreflight,
     _benchmark,
     attempt_once,
     benchmark_floor,
@@ -1145,6 +1146,7 @@ def run_author_leg(
     base_sha: str,
     snapshot: Callable[[], str],
     *,
+    pinned_tip: str,
     run_root: Path,
     record: RunRecord,
     ws: Workspace,
@@ -1220,6 +1222,9 @@ def run_author_leg(
         measurer,
         base_sha,
         snapshot,
+        submit_preflight=lambda: _submit_preflight(
+            ws, str(record.stage.get("base_branch") or "main"), pinned_tip
+        ),
         resume_session_id=record.resume_session_id,
         redact_secrets=secrets,
         inbox_dir=directory,
@@ -1260,6 +1265,7 @@ def _wake_author_sleep(
     now: float,
     secrets: tuple[str, ...],
     base_branch: str,
+    pinned_tip: str,
     base_sha: str,
     sleep_ref: str,
     contract_text: str,
@@ -1561,6 +1567,8 @@ def _wake_author_sleep(
     parked: RunParked | None = None
     kept_ref = ""
     try:
+        # The line's base check can fetch again after resume_run captured its pin.
+        pinned_tip = _rev(ws, f"refs/remotes/origin/{base_branch}") or pinned_tip
         result = run_author_leg(
             config,
             contract_text,
@@ -1569,6 +1577,7 @@ def _wake_author_sleep(
             measurer,
             base_sha,
             snapshot,
+            pinned_tip=pinned_tip,
             run_root=run_root,
             record=record,
             ws=ws,
@@ -1986,6 +1995,29 @@ def _rev(ws: Workspace, ref: str, *, strict: bool = False) -> str:
         if strict:
             raise
         return ""
+
+
+def _submit_preflight(ws: Workspace, base_branch: str, pinned_tip: str) -> SubmitPreflight:
+    """Refresh submit ancestry; ordinary Git failures do not assert staleness."""
+    ensure_regular_git_dir(ws.root)
+    try:
+        ws.fetch_origin()
+        tip = ws.git(
+            "rev-parse", "--verify", f"refs/remotes/origin/{base_branch}^{{commit}}"
+        ).strip()
+        head = ws.git("rev-parse", "--verify", "HEAD^{commit}").strip()
+        if ws.git("merge-base", tip, head).strip() != tip:
+            return SubmitPreflight("stale", tip, base_branch)
+        if not pinned_tip:
+            return SubmitPreflight("unknown", tip, base_branch)
+        pin_current = pinned_tip == tip
+        return SubmitPreflight("ready" if pin_current else "outdated-pin", tip, base_branch)
+    except Exception as exc:
+        if isinstance(exc, GitError) and _is_git_tamper(exc):
+            raise
+        # Exception strings may contain authenticated URLs or subprocess output.
+        log.warning("submit preflight could not establish base freshness; proceeding")
+        return SubmitPreflight("unknown")
 
 
 def _is_ancestor(ws: Workspace, older: str, newer: str) -> bool:
@@ -2485,6 +2517,7 @@ def resume_run(
         ws.fetch_origin()
     except Exception as exc:
         log.warning("wake fetch failed for %s: %s", run_id, exc)
+    pinned_tip = _rev(ws, f"refs/remotes/origin/{stage.get('base_branch') or base_branch}")
 
     if record.pr_url and not stage.get("phase"):
         base_branch = str(stage.get("base_branch") or base_branch)
@@ -2575,6 +2608,7 @@ def resume_run(
             secrets=secrets,
             base_branch=base_branch,
             base_sha=base_sha,
+            pinned_tip=pinned_tip,
             sleep_ref=candidate_ref,
             contract_text=contract_text,
             contract=contract,
@@ -2725,6 +2759,7 @@ def resume_run(
             secrets=secrets,
             base_branch=base_branch,
             base_sha=base_sha,
+            pinned_tip=pinned_tip,
             sleep_ref=candidate_ref,
             contract_text=contract_text,
             contract=contract,
@@ -4221,6 +4256,8 @@ def live_attempt(
         # baseline was measured on — never origin/<base_branch>, which can
         # name a different branch than the clone's checkout
         pre_session_sha = ws.git("rev-parse", "HEAD").strip()
+        # A line head may be the measurement base; freshness tracks the base branch tip.
+        pinned_tip = _rev(ws, f"refs/remotes/origin/{base_branch}")
         panel_runner = (
             build_panel_runner(
                 ws,
@@ -4311,6 +4348,7 @@ def live_attempt(
                 measurer,
                 pre_session_sha,
                 snapshot,
+                submit_preflight=lambda: _submit_preflight(ws, base_branch, pinned_tip),
                 redact_secrets=secrets,
                 ruler=RULER,
                 changed_paths=changed_paths,
