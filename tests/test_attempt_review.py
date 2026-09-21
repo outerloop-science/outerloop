@@ -1454,6 +1454,18 @@ def test_terminal_releases_snapshot_when_notebook_fails(review_run, monkeypatch,
 
 @pytest.mark.parametrize("edit_ledger", [False, True])
 def test_review_folded_base_scope(review_run, monkeypatch, edit_ledger):
+    _author_folded_base_scope(review_run, monkeypatch, edit_ledger=edit_ledger)
+
+
+def test_author_wake_launch_after_base_moved_again_passes_scope(review_run, monkeypatch):
+    _author_folded_base_scope(review_run, monkeypatch, moved_again=True)
+
+
+def test_author_edit_to_out_of_scope_file_still_violates(review_run, monkeypatch):
+    _author_folded_base_scope(review_run, monkeypatch, moved_again=True, edit_ledger=True)
+
+
+def _author_folded_base_scope(review_run, monkeypatch, *, edit_ledger=False, moved_again=False):
     from outerloop.syscall_cli import main
 
     root, bare = review_run
@@ -1480,6 +1492,12 @@ def test_review_folded_base_scope(review_run, monkeypatch, edit_ledger):
             _git(workspace, "reset", "--mixed", "origin/main")
             _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
             (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
+            if moved_again:
+                (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
+                _git(seed, "add", "-A")
+                _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
+                _git(seed, "push", str(bare), "main")
+                _git(workspace, "fetch", "origin")
             if edit_ledger:
                 (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
             assert (

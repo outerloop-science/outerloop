@@ -1528,10 +1528,16 @@ def _wake_author_sleep(
     change_bases = [base_sha]
     if record.pr_url:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-        change_bases = [
-            str((pr.get("head") or {}).get("sha") or base_sha),
-            f"refs/remotes/origin/{base_branch}",
-        ]
+        # Include the tree's own base when main moved again after the fold.
+        change_bases = list(
+            dict.fromkeys(
+                [
+                    str((pr.get("head") or {}).get("sha") or base_sha),
+                    f"refs/remotes/origin/{base_branch}",
+                    base_sha,
+                ]
+            )
+        )
 
     def snapshot() -> str:
         snap = snapshot_tree(
@@ -2576,10 +2582,16 @@ def resume_run(
     change_bases = [base_sha]
     if record.pr_url:
         pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
-        change_bases = [
-            str((pr.get("head") or {}).get("sha") or base_sha),
-            f"refs/remotes/origin/{base_branch}",
-        ]
+        # Include the tree's own base when main moved again after the fold.
+        change_bases = list(
+            dict.fromkeys(
+                [
+                    str((pr.get("head") or {}).get("sha") or base_sha),
+                    f"refs/remotes/origin/{base_branch}",
+                    base_sha,
+                ]
+            )
+        )
     measured_paths = tuple(
         submission_paths(
             ws, change_bases, bool(_line_ref_for(bench, config.agent_id)), candidate_sha

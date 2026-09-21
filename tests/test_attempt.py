@@ -6797,3 +6797,88 @@ def test_non_pr_line_wake_preserves_measurement_base(tmp_path, monkeypatch):
     )
     assert outcome.outcome == "no-improvement"
     assert seen == [line_tip]
+
+
+def test_candidate_wake_after_two_base_moves_passes_scope(tmp_path, monkeypatch):
+    _candidate_wake_two_base_moves(tmp_path, monkeypatch, edit_ledger=False)
+
+
+def test_author_edit_to_out_of_scope_file_still_violates(tmp_path, monkeypatch):
+    _candidate_wake_two_base_moves(tmp_path, monkeypatch, edit_ledger=True)
+
+
+def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger):
+    import json
+    from dataclasses import replace
+
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, values={"baseline": 13.0, "candidate": 13.0}
+    )
+    record = load_record(state, run_id)
+    root = state / "runs" / run_id / "ws"
+    ws = Workspace(root=root)
+    _git(root, "reset", "--hard", str(record.stage["base_sha"]))
+    (root / "eval-cache.tmp").unlink()
+
+    def base_commit(label):
+        (root / "BENCHMARKS.md").write_text(f"kernel ledger {label}\n")
+        (root / "results").mkdir(exist_ok=True)
+        (root / "results/leader.json").write_text(json.dumps({"base": label}) + "\n")
+        _git(root, "add", "-A")
+        _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", label)
+        return _git(root, "rev-parse", "HEAD").strip()
+
+    head = base_commit("B0")
+    base = base_commit("B1")
+    (root / "src/pilot/solvers/tsp.py").write_text("author's candidate\n")
+    if edit_ledger:
+        (root / "BENCHMARKS.md").write_text("author's ledger\n")
+    snap = snapshot_tree(ws, base)
+    _git(root, "reset", "--hard", base)
+    base_commit("B2")
+    _git(root, "push", "origin", "HEAD:main")
+    save_record(
+        state,
+        replace(
+            record,
+            pr_url="https://github.com/org/pilot/pull/23",
+            stage={
+                **record.stage,
+                "base_sha": base,
+                "candidate_sha": snap.commit,
+                "candidate_ref": snap.ref,
+            },
+        ),
+        1_000_000.0,
+    )
+
+    class GitHub(CommentingGitHub):
+        def get_pull_request(self, repo, number):
+            return {"state": "open", "head": {"sha": head}}
+
+    real_resume = climb_mod.resume_attempt
+    seen = []
+
+    def resume(*args, **kwargs):
+        seen.append(kwargs["measured_paths"])
+        return real_resume(*args, **kwargs)
+
+    monkeypatch.setattr(climb_mod, "resume_attempt", resume)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=GitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    expected = (
+        ("BENCHMARKS.md", "src/pilot/solvers/tsp.py")
+        if edit_ledger
+        else ("src/pilot/solvers/tsp.py",)
+    )
+    assert seen == [expected]
+    assert outcome.outcome == ("scope-violation" if edit_ledger else "no-improvement")
