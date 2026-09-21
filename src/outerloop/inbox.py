@@ -390,6 +390,28 @@ def message_text(message: Message) -> str:
     return "\n".join(lines)
 
 
+_OLD_BASE_MOVED = (
+    "Your head does not contain the current base tip TIPTIP; fold origin/BASEBASE into "
+    "your branch, inspect the result, and submit directly. The gate measures the folded "
+    "candidate. Re-run your own experiment only if what landed in BASEBASE changes your "
+    "hypothesis."
+)
+
+
+def _legacy_base_moved(text: str) -> bool:
+    """A base-moved body written before quoted_text existed is trusted only
+    when it matches a wording those kernels used."""
+    for template in (_OLD_BASE_MOVED, base_moved_text("TIPTIP", "BASEBASE")):
+        pattern = (
+            re.escape(template)
+            .replace("TIPTIP", r"[0-9a-f]{7,40}")
+            .replace("BASEBASE", _REFNAME.pattern)
+        )
+        if re.fullmatch(pattern + r"( GitHub reports conflicts with the base\.)?", text):
+            return True
+    return False
+
+
 def kernel_text(message: Message) -> str:
     """Keep quoted output and older mixed bodies inside a data fence."""
     p = message.payload
@@ -399,14 +421,18 @@ def kernel_text(message: Message) -> str:
         if message.kind == "base-moved" and "What landed:\n" in text:
             text, quoted = text.split("What landed:\n", 1)
             text += "What landed:"
-        elif message.kind == "gate-verdict" or message.key.startswith(
-            (
-                "terminal:",
-                "refusal:",
-                "message-refused:",
-                "pacing:",
-                "panel-skip:",
-                "publish-refused:",
+        elif (
+            (message.kind == "base-moved" and not _legacy_base_moved(text))
+            or message.kind == "gate-verdict"
+            or message.key.startswith(
+                (
+                    "terminal:",
+                    "refusal:",
+                    "message-refused:",
+                    "pacing:",
+                    "panel-skip:",
+                    "publish-refused:",
+                )
             )
         ):
             text, quoted = "The kernel reported this result:", text
