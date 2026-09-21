@@ -384,7 +384,9 @@ def message_text(message: Message) -> str:
             )
         lines.append(str(p.get("text", "")))
     if p.get("quoted_text"):
-        lines.append(str(p["quoted_text"]))
+        quoted = str(p["quoted_text"])
+        fence = code_fence(quoted)
+        lines.append(f"Quoted data:\n{fence}\n{quoted}\n{fence}")
     return "\n".join(lines)
 
 
@@ -658,8 +660,16 @@ def base_moved_key(tip: str) -> str:
     return f"base:{tip}:2"
 
 
+_REFNAME = re.compile(r"[A-Za-z0-9._/-]{1,120}")
+
+
 def base_moved_text(tip: str, base: str) -> str:
-    """Advice for a head that does not contain the current base tip."""
+    """Advice for a head that does not contain the current base tip.
+
+    The branch name comes from GitHub and is rendered as the kernel's own
+    words, so anything but a plain ref name is replaced."""
+    if not _REFNAME.fullmatch(base):
+        base = "main"
     return (
         f"Your head does not contain the current base tip {tip}. Fold it: from a HEAD "
         f"that contains your PR head, run `git merge --no-edit origin/{base}`; that "
