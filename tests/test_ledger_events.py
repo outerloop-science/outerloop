@@ -347,3 +347,75 @@ def test_author_orientation_tolerates_corrupt_branch_ledger(content, monkeypatch
 
     monkeypatch.setattr(fake, "get_file", pinned_file)
     assert display_leader(github, "org/repo") == {}
+
+
+@pytest.mark.parametrize("crash", ["", "comment", "close", "record"])
+def test_author_withdrawal_retries_and_tombstones(tmp_path, monkeypatch, crash):
+    from fakes import RecordingDispatcher
+    from outerloop.attempt import withdraw_pr
+    from outerloop.markers import marker
+    from outerloop.tick import sweep
+    from test_tick import FakeSlurm
+
+    fake, github = client()
+    fake.pull_requests[1] = {"state": "open", "merged": False}
+    r = record(tmp_path)
+    saved = save_record
+    comment = fake.comment
+
+    def post(repo, number, body):
+        comment(repo, number, body)
+        if crash == "comment":
+            raise RuntimeError("crash after comment")
+
+    def close(repo, number):
+        fake.pull_requests[number]["state"] = "closed"
+        if crash == "close":
+            raise RuntimeError("crash after close")
+
+    def save(root, rec, now):
+        if crash == "record" and rec.ended():
+            raise RuntimeError("crash before terminal record")
+        return saved(root, rec, now)
+
+    monkeypatch.setattr(fake, "comment", post)
+    monkeypatch.setattr(fake, "close_issue", close, raising=False)
+    monkeypatch.setattr("outerloop.attempt.save_record", save)
+    if crash:
+        with pytest.raises(RuntimeError, match="crash"):
+            withdraw_pr(tmp_path, r, github, "Superseded secret-token", ("secret-token",))
+        assert not load_record(tmp_path, r.run_id).ended()
+    else:
+        assert withdraw_pr(tmp_path, r, github, "Superseded secret-token", ("secret-token",)) == ""
+    monkeypatch.setattr("outerloop.attempt.save_record", saved)
+    monkeypatch.setattr(fake, "comment", comment)
+    monkeypatch.setattr(
+        fake, "close_issue", lambda repo, number: fake.pull_requests[number].update(state="closed")
+    )
+    for _ in range(2):
+        sweep(tmp_path, FakeSlurm().compute(), RecordingDispatcher(), 3, github=github)
+    final = load_record(tmp_path, r.run_id)
+    assert final.ending == "rejected"
+    assert final.ending_note.startswith("Author withdrew: Superseded ")
+    assert "secret-token" not in final.ending_note
+    assert final.stage["launches_used"] == 7
+    assert len(fake.comments) == 1
+    assert fake.comments[0]["body"] == f"{marker('withdraw')}\n{final.ending_note}"
+    assert fake.ledger_files[pending().path] == "null\n"
+    assert final.ending_note in (tmp_path / "runs/run-1/report.md").read_text()
+
+
+@pytest.mark.parametrize("state", ["missing", "closed", "merged"])
+def test_kernel_refuses_withdraw_without_open_pr(tmp_path, state):
+    from outerloop.attempt import withdraw_pr
+
+    fake, github = client()
+    r = record(tmp_path)
+    if state == "missing":
+        r = replace(r, pr_url="")
+    else:
+        fake.pull_requests[1] = {"state": "closed", "merged": state == "merged"}
+    save_record(tmp_path, r, 1)
+    assert withdraw_pr(tmp_path, r, github, "Superseded") == "Withdrawal requires an open PR."
+    assert not fake.comments
+    assert "withdraw_reason" not in load_record(tmp_path, r.run_id).stage

@@ -453,7 +453,8 @@ def render(brief: SessionBrief) -> str:
             "and running the repo's checks before a submit avoids that round trip.",
             "A submit spends a sleep and its gate's GPU-hours, but no launch count. "
             "Stopping without a submit ends unmeasured; with a PR open it returns "
-            "to review. An edit in review is measured and pushed only on submit.",
+            "to review. An edit in review is measured and pushed only on submit. "
+            'Withdraw a superseded open PR with `end --withdraw "<reason>"`.',
         ]
     parts += [
         "",

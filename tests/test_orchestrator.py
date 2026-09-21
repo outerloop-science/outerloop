@@ -2265,3 +2265,34 @@ def test_stale_checkpoint_checks_scope_before_sealing(tmp_path):
         submit_preflight=lambda: SubmitPreflight("stale", "tip", "main"),
     )
     assert result.outcome == "scope-violation" and not evaluator.calls
+
+
+def test_withdraw_consumed_after_session_without_compute(tmp_path):
+    from outerloop.orchestrator import AttemptResult
+    from outerloop.syscall_cli import main
+
+    events: list[str] = []
+
+    class Author:
+        def run(self, brief_text, workspace, resume_session_id=None):
+            assert main(["end", "--withdraw", "Superseded"], root=workspace) == 0
+            assert not events
+            events.append("session ended")
+            return ok_session()
+
+    def withdraw(reason):
+        assert events == ["session ended"]
+        events.append(reason)
+        return ""
+
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        harness=Author(),
+        launcher=_fake_launcher([]),
+        on_withdraw=withdraw,
+        on_stop=lambda session: AttemptResult(outcome="review", session=session),
+    )
+    assert events == ["session ended", "Superseded"]
+    assert result.outcome == "review"
+    assert not evaluator.calls

@@ -6,6 +6,12 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Added
+
+- Authors can withdraw an open PR with `end --withdraw "<reason>"`.
+
+Upgrading: no action needed; old end requests and records remain valid, and the first tick retries any saved withdrawal before ending the run.
+
 ### Fixed
 
 - Authors can now merge a moved base with one merge commit, and parked runs receive the updated message once.

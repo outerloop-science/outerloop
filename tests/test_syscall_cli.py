@@ -771,3 +771,41 @@ def test_siblings_shows_hypothesis_and_pr_link(tmp_path) -> None:
     assert "agent-02 (parked): EMA weights reduce late-update noise." in out
     assert "in review: https://github.com/org/repo/pull/16" in out
     assert "agent-03 (running/author-sleep)" in out
+
+
+def test_withdraw_requires_open_pr(tmp_path, capsys):
+    from outerloop.syscall import install_tool, write_budget
+
+    install_tool(tmp_path)
+    for metadata in (None, {}, {"open_pr": False}, {"open_pr": "true"}):
+        if metadata is not None:
+            (tmp_path / ".outerloop/budget.json").write_text(json.dumps(metadata))
+        assert run(tmp_path, "end", "--withdraw", "Superseded.") == 2
+        assert "Withdrawal requires an open PR." in capsys.readouterr().err
+        assert read_request(tmp_path) is None
+    write_budget(tmp_path, launches_remaining=0, sleeps_remaining=0, open_pr=True)
+    assert run(tmp_path, "end", "--withdraw", "Superseded.") == 0
+    request = read_request(tmp_path)
+    assert request and request.end and not request.sleep
+    assert request.withdraw == "Superseded."
+    assert read_request(tmp_path) is None
+
+
+def test_installed_withdraw_bounds(tmp_path):
+    from outerloop.syscall import MAX_REPLY_CHARS, install_tool, write_budget
+
+    install_tool(tmp_path)
+    write_budget(tmp_path, launches_remaining=0, sleeps_remaining=0, open_pr=True)
+    tool = tmp_path / ".outerloop/syscall"
+    for reason, code in (
+        ("", 2),
+        (" ", 2),
+        ("x" * (MAX_REPLY_CHARS + 1), 2),
+        ("x" * MAX_REPLY_CHARS, 0),
+    ):
+        result = subprocess.run(
+            [sys.executable, str(tool), "end", "--withdraw", reason], capture_output=True, text=True
+        )
+        assert result.returncode == code, result.stderr
+    request = read_request(tmp_path)
+    assert request and len(request.withdraw) == MAX_REPLY_CHARS
