@@ -1504,7 +1504,7 @@ def _wake_author_sleep(
                     "git",
                     thread,
                     now,
-                    f"base:{fresh_base}",
+                    f"base-advanced:{fresh_base}",
                     {
                         "text": (
                             "The base moved while you were asleep. "

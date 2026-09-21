@@ -612,13 +612,22 @@ def advance_github_positions(directory: Path, positions: dict[str, int]) -> None
             _write_at(fd, "positions.json", current)
 
 
+def base_moved_key(tip: str) -> str:
+    """One message per base tip; the suffix changes when the advice does,
+    so a run parked under the old wording still receives the new one."""
+    return f"base:{tip}:2"
+
+
 def base_moved_text(tip: str, base: str) -> str:
     """Advice for a head that does not contain the current base tip."""
     return (
-        f"Your head does not contain the current base tip {tip}; "
-        f"fold origin/{base} into your branch, inspect the result, and submit directly. "
-        "The gate measures the folded candidate. Re-run your own experiment only if "
-        f"what landed in {base} changes your hypothesis."
+        f"Your head does not contain the current base tip {tip}. Fold it: from a HEAD "
+        f"that contains your PR head, run `git merge --no-edit origin/{base}`; that "
+        "merge commit is allowed. If git stops the merge, fix the listed files, stage "
+        "them, and finish the same merge with `git commit --no-edit`, taking the base's version "
+        f"of BENCHMARKS.md and results/leader.json. Do not replace your branch with {base}. "
+        "Inspect the result and submit directly. The gate measures the folded candidate; "
+        f"re-run your own experiment only if what landed in {base} changes your hypothesis."
     )
 
 
@@ -703,7 +712,7 @@ def gather_github_messages(
                 "git",
                 thread_for(record),
                 now,
-                f"base:{tip}",
+                base_moved_key(tip),
                 {"text": text, "base_sha": tip},
             ),
         )

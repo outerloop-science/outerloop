@@ -2183,7 +2183,7 @@ def test_stale_submit_repeated_tip_still_delivers_receipt(tmp_path):
     messages = pending(directory, 0)
     last = messages[-1].seq
     _stale_checkpoint(tmp_path, sleeps_used=1, inbox_seq=last)
-    assert len([m for m in pending(directory, 0) if m.key == "base:fresh"]) == 1
+    assert len([m for m in pending(directory, 0) if m.key == "base:fresh:2"]) == 1
     assert any(m.key == "refused:fresh:2" for m in pending(directory, last))
 
 
