@@ -65,7 +65,10 @@ def migrate_ledger(
                 raise LedgerReadError("incomplete ledger tree")
             exists = any(item["path"] in patch for item in tree["tree"])
             if exists and not force and not (created and head == main_sha):
-                raise ValueError("branch ledger already exists; use --force to replace it")
+                raise ValueError(
+                    "branch ledger already exists; the files on research-log may be an old "
+                    "copy of main's. Use --force to replace it."
+                )
         if dry_run:
             return table
         if not head:
@@ -102,6 +105,9 @@ def migrate(args: argparse.Namespace) -> int:
         table = migrate_ledger(
             github, args.target, args.main_sha, force=args.force, dry_run=args.dry_run
         )
+    except (ValueError, LedgerReadError, LedgerWriteError) as exc:
+        print(str(exc))
+        return 1
     except Exception:
         # Remote errors may contain credentials.
         print(

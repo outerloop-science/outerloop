@@ -8,7 +8,6 @@ import logging
 from dataclasses import asdict, replace
 from functools import cmp_to_key
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from outerloop.contract import Benchmark, Contract
@@ -25,7 +24,7 @@ from outerloop.progress import (
     LeaderEntry,
     PendingSubmission,
     confirm,
-    load_leader,
+    parse_leader,
     parse_pending,
     record_pending,
     reject,
@@ -42,13 +41,7 @@ def display_leader(github: GitHubClient, target: str) -> dict[str, LeaderEntry]:
         head = github.branch_head(target, RESEARCH_LOG_BRANCH)
         if not head:
             return {}
-        content = github.get_file(target, LEADER_FILE, head)
-        with TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            path = workspace / LEADER_FILE
-            path.parent.mkdir(parents=True)
-            path.write_text(content)
-            return load_leader(workspace)
+        return parse_leader(github.get_file(target, LEADER_FILE, head))
     except Exception:
         # API exception strings can contain credentials; no remote detail is needed.
         log.warning("branch ledger unavailable; using no prior measurement")

@@ -48,7 +48,7 @@ def test_import_and_refuse_repeat(absent):
     assert (entry.baseline, entry.best, entry.run_seed) == (ENTRY.baseline, ENTRY.best, 731)
     assert entry.main_commit == PIN
     assert not entry.measured_sha
-    assert "snapshot; provenance unknown" in table
+    assert "imported; provenance unknown" in table
     assert gh.ledger_files["reports/keep.md"] == "keep"
     assert gh.ledger_snapshots[PIN][LEADER_FILE] == SOURCE
     with pytest.raises(ValueError, match="already exists"):
@@ -123,3 +123,17 @@ def test_cli_dispatch_and_redaction(monkeypatch, capsys):
     monkeypatch.setattr(gh, "get_file", fail)
     assert main(argv) == 1
     assert "secret-token" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [ValueError, LedgerReadError, LedgerWriteError])
+def test_cli_reports_local_errors(monkeypatch, capsys, error):
+    monkeypatch.setattr("outerloop.ledger_migrate.env_file_values", lambda **kw: {})
+    monkeypatch.setattr("outerloop.ledger_migrate.resolve_bot_auth", lambda *a: None)
+    monkeypatch.setattr("outerloop.ledger_migrate.GitHubClient", lambda **kw: fake())
+
+    def fail(*args, **kwargs):
+        raise error("local migration failure")
+
+    monkeypatch.setattr("outerloop.ledger_migrate.migrate_ledger", fail)
+    assert main(["migrate-ledger", "--target", "org/repo", "--main-sha", PIN]) == 1
+    assert capsys.readouterr().out == "local migration failure\n"

@@ -1124,9 +1124,8 @@ def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
         {"run_id": "r2", "baseline": 9472.0, "candidate": 8960.0, "outcome": "rejected"},
     ]
     with_start = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"}, {"speedrun": 9472.0})
-    assert (
-        "baseline (start, confirmed main): **9472**" in with_start
-        or "baseline (start, confirmed main): **9472.0**" in (with_start)
+    assert "baseline (start): **9472**" in with_start or "baseline (start): **9472.0**" in (
+        with_start
     )
     # no ledger -> the chip is simply absent; nothing per-run substitutes
     without = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"})
@@ -1152,9 +1151,9 @@ def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path, mon
 
     monkeypatch.setattr(gh, "get_file", pinned_get)
     assert service_climb_board(tmp_path, gh, "org/repo") >= 1
-    assert "Attempt history" in gh.files["CLIMB.md"]
-    assert "confirmed-main results" in gh.files["index.html"]
-    assert "baseline (start, confirmed main): **9472**" in gh.files["CLIMB.md"]
+    assert "This page is attempt history. Confirmed results:" in gh.files["CLIMB.md"]
+    assert "This page is attempt history. Confirmed results:" in gh.files["index.html"]
+    assert "baseline (start): **9472**" in gh.files["CLIMB.md"]
 
 
 def test_run_base_renders_as_markers_not_a_line() -> None:

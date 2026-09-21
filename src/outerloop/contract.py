@@ -319,16 +319,16 @@ class Scope(_StrictModel):
     shared: list[str] = Field(default_factory=list)
 
 
-# Legacy record paths remain excluded from steward scope until scope simplification.
+# The ledger's old location on main. Neither role may edit these files.
 RECORD_PATHS = ("BENCHMARKS.md", "results/leader.json")
 
 
 class StewardScope(_StrictModel):
     """Paths the BENCHMARK STEWARD may edit: env generators, the eval
     harness, tests, and reference data — NEVER the record ledger
-    (BENCHMARKS.md, results/leader.json; load_contract still rejects a
-    steward scope that includes these frozen snapshots). The solver's `scope.allowed` is implicitly
-    forbidden to the steward — the roles' territories must not overlap
+    (BENCHMARKS.md, results/leader.json; load_contract rejects a steward scope
+    that includes them). The solver's `scope.allowed` is implicitly forbidden
+    to the steward — the roles' territories must not overlap
     (collusion structure, design/meta.md) — and the always-forbidden set
     (this contract, `.github/`, the roadmap) binds the steward too."""
 

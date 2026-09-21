@@ -288,7 +288,7 @@ def render_markdown(
             else "provenance unknown"
         )
         if e.main_commit and not e.measured_sha:
-            provenance += " (snapshot; provenance unknown)"
+            provenance += " (imported; provenance unknown)"
         lines.append(
             f"| {e.benchmark} | `{e.metric}` {arrow} | {fmt_metric(e.baseline, d)} | "
             f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` | {provenance} |"

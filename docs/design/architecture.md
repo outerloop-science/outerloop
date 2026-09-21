@@ -299,7 +299,7 @@ Operators seed an existing target with
 The SHA must be the current default-branch tip. The command imports the exact
 ledger file at that SHA, preserving numbers and seeds without claiming a
 measured SHA. `--dry-run` prints the table without writes; `--force` permits
-replacing an existing branch ledger. Main's files remain frozen.
+replacing an existing branch ledger. The copies on main are no longer updated.
 
 ## Harness and context engineering
 

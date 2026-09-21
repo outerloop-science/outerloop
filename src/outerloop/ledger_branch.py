@@ -51,7 +51,6 @@ def _read_at(
     target: str,
     head: str,
     *,
-    leader_only: bool = False,
     unmeasured: set[int] | None = None,
 ) -> tuple[Ledger, Pendings]:
     if not head:
@@ -71,8 +70,7 @@ def _read_at(
             if path == LEADER_FILE:
                 leader = parse_leader(github.get_file(target, path, head))
             elif (
-                not leader_only
-                and path.startswith("results/submissions/")
+                path.startswith("results/submissions/")
                 and path.endswith(".json")
                 and item.get("sha") != TOMBSTONE_BLOB_SHA
             ):
@@ -98,14 +96,6 @@ def read_ledger(
         raise LedgerReadError("ledger branch head unavailable")
     leader, pendings = _read_at(github, target, head, unmeasured=unmeasured)
     return head, leader, pendings
-
-
-def read_leader(github: GitHubClient, target: str) -> Ledger:
-    """Read only the leader file at a captured branch head."""
-    head = github.branch_head(target, RESEARCH_LOG_BRANCH)
-    if head is None:
-        raise LedgerReadError("ledger branch head unavailable")
-    return _read_at(github, target, head, leader_only=True)[0]
 
 
 def progress_link(target: str) -> str:

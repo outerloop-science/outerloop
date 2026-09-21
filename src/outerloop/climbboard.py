@@ -287,7 +287,7 @@ def render_md(
         "",
         "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",
         "chart: open `index.html` from a clone of this branch.",
-        "Attempt history; confirmed-main results: [BENCHMARKS.md](BENCHMARKS.md).",
+        "This page is attempt history. Confirmed results: [BENCHMARKS.md](BENCHMARKS.md).",
     ]
     for benchmark in sorted(boards):
         rows = boards[benchmark]
@@ -301,9 +301,7 @@ def render_md(
         # number (owner decision: per-run declared bases confused more than
         # they informed as a headline)
         start = (starts or {}).get(benchmark)
-        start_chip = (
-            f" · baseline (start, confirmed main): **{_fmt(start)}**" if start is not None else ""
-        )
+        start_chip = f" · baseline (start): **{_fmt(start)}**" if start is not None else ""
         lines += [
             "",
             f"## {benchmark}",
@@ -442,8 +440,8 @@ def render_html(
         f"<header><h1>{target} <span>· climb</span></h1>\n"
         "<button id='theme' title='theme: auto / light / dark'>auto</button>\n"
         "</header>\n"
-        "<p>Attempt history · confirmed-main results: "
-        "<a href='BENCHMARKS.md'>BENCHMARKS.md</a></p>\n"
+        "<p>This page is attempt history. Confirmed results: "
+        "<a href='BENCHMARKS.md'>BENCHMARKS.md</a>.</p>\n"
         "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"

@@ -186,17 +186,25 @@ def test_tombstoned_submission_is_never_fetched(monkeypatch):
 
 def test_display_fetches_only_leader(monkeypatch):
     fake, github = client()
-    fake.ledger_files[LEADER_FILE] = "{}"
+    entry = LeaderEntry("bench", "score", "max", 1, 2, "r", "d")
+    fake.ledger_files[LEADER_FILE] = json.dumps({"bench": asdict(entry)})
     original = fake.get_file
     fetched = []
+    trees = []
 
     def get_file(repo, path, ref):
-        fetched.append(path)
+        fetched.append((repo, path, ref))
         return original(repo, path, ref)
 
+    def get_tree(*args):
+        trees.append(args)
+        raise AssertionError("display must not read the tree")
+
     monkeypatch.setattr(fake, "get_file", get_file)
-    assert display_leader(github, "org/repo") == {}
-    assert fetched == [LEADER_FILE]
+    monkeypatch.setattr(fake, "get_tree", get_tree)
+    assert display_leader(github, "org/repo") == {"bench": entry}
+    assert fetched == [("org/repo", LEADER_FILE, fake.ledger_head)]
+    assert trees == []
 
 
 def test_reset_first_then_solvers_in_ancestry_order(monkeypatch):

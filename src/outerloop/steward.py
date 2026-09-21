@@ -148,7 +148,8 @@ Hard rules:
 - Edit ONLY the steward paths listed below. The solver directories are
   forbidden to you completely — do not read requirements from them, do not
   "fix" them, do not compensate for their weaknesses.
-- The records live on the research-log branch in BENCHMARKS.md and
+- Do not edit BENCHMARKS.md or results/leader.json.
+  The records live on the research-log branch in BENCHMARKS.md and
   results/leader.json. A merged result appears there after the PR is merged
   and the kernel observes the merge.
 - Your change must keep every benchmark runnable: the full test suite and

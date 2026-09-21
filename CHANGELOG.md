@@ -41,7 +41,7 @@ tasks to finish.
 ### Changed
 - The leaderboard moves from PR branches and main to the research-log branch.
 - Results are pending when published and confirmed when the kernel observes their PR merge.
-- The leaderboard links main commits; imported rows identify snapshot attribution and unknown measurement provenance.
+- The leaderboard shows the main commit each result was confirmed at; imported rows say provenance unknown.
 - PRs carry only the measured tree; the generated ledger child commit is removed.
 - **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. A panel lens that names no backend now runs on the author's backend (a codex author gets codex judges by default), so a deployment that never chose Claude is not asked for a Claude model. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` (`outerloop start` refuses without it and names the line), and the review and verify agents on the claude backend read it from the `OUTERLOOP_CLAUDE_MODEL` Actions variable when no model input is given.
 - Panel model resolution now has one shared rule for start, tick preflight, and climb: inherit the author's backend/model, require explicit models on other backends, and resolve resumed panels against the parked run's author.
