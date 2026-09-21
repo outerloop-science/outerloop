@@ -287,6 +287,7 @@ def render_md(
         "",
         "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",
         "chart: open `index.html` from a clone of this branch.",
+        "Attempt history; confirmed-main results: [BENCHMARKS.md](BENCHMARKS.md).",
     ]
     for benchmark in sorted(boards):
         rows = boards[benchmark]
@@ -300,7 +301,9 @@ def render_md(
         # number (owner decision: per-run declared bases confused more than
         # they informed as a headline)
         start = (starts or {}).get(benchmark)
-        start_chip = f" · baseline (start): **{_fmt(start)}**" if start is not None else ""
+        start_chip = (
+            f" · baseline (start, confirmed main): **{_fmt(start)}**" if start is not None else ""
+        )
         lines += [
             "",
             f"## {benchmark}",
@@ -439,6 +442,8 @@ def render_html(
         f"<header><h1>{target} <span>· climb</span></h1>\n"
         "<button id='theme' title='theme: auto / light / dark'>auto</button>\n"
         "</header>\n"
+        "<p>Attempt history · confirmed-main results: "
+        "<a href='BENCHMARKS.md'>BENCHMARKS.md</a></p>\n"
         "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"
@@ -1405,12 +1410,10 @@ def service_climb_board(
     # render without it until a later pass reads it again. An index that
     # could not be READ at all (None) is never rewritten this pass.
     wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
-    # the starting positions come from the target's ledger on its default
-    # branch — best-effort: a missing or unreadable ledger just drops the chip
+    # Read the baseline at this pass's research-log pin; failure drops the chip.
     starts: dict[str, float] = {}
     try:
-        # ref HEAD = the repo's default branch, whatever it is named
-        raw_leader = github.get_file_content(target, "results/leader.json", "HEAD")
+        raw_leader = github.get_file(target, "results/leader.json", head) if head else None
         if raw_leader:
             for name, entry in json.loads(raw_leader).items():
                 value = entry.get("baseline") if isinstance(entry, dict) else None

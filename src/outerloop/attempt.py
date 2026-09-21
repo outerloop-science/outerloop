@@ -71,7 +71,6 @@ from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.ledger_branch import LedgerWriteError, progress_link
 from outerloop.ledger_events import (
-    LEDGER_RETRY,
     display_leader,
     measurement_pending,
     observe_target,
@@ -104,6 +103,7 @@ from outerloop.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
     ENDED,
+    LEDGER_RETRY,
     NEGATIVE_RESULT,
     PARKED,
     RUNNING,
@@ -2309,8 +2309,8 @@ def _paths_changed_from_base(
 ) -> list[str]:
     """Count staged changes differing from primary, with secondary record exemptions.
 
-    Folding main can stage its ledger edits against a stale HEAD. Only the
-    kernel's record paths may match a secondary reference; other paths always
+    Legacy main-ledger edits can be staged against a stale HEAD. Only
+    record paths may match a secondary reference; other paths always
     count when they differ from primary. Unresolved secondaries are skipped.
     """
     commits = _resolved_bases(ws, [primary], fallback) + _resolved_bases(ws, secondary)
@@ -3712,7 +3712,7 @@ def publish(
                 number,
                 pushed_sha,
                 date,
-                kind="SOLVER",
+                kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
             ),
             contract,
             now,
@@ -3876,7 +3876,7 @@ def publish(
                     int(pr_number),
                     published_head,
                     date,
-                    kind="SOLVER",
+                    kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
                 ),
                 contract,
                 now,
@@ -5094,12 +5094,13 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
     note = "PR merged" if ending == MERGED else "PR closed unmerged"
     if _pr_number(record.pr_url) in unmeasured:
         note = "PR merged; merged tree was not measured, leaderboard unchanged"
-        marker = "<!-- outerloop:unmeasured-merge -->"
         if not any(
-            marker in str(c.get("body", ""))
+            has_marker(str(c.get("body", "")), "unmeasured-merge")
             for c in github.list_comments(record.target, _pr_number(record.pr_url))
         ):
-            github.comment(record.target, _pr_number(record.pr_url), f"{marker}\n{note}")
+            github.comment(
+                record.target, _pr_number(record.pr_url), f"{marker('unmeasured-merge')}\n{note}"
+            )
     finish_run(run_root, record, ending, note, now, github)
     return ending
 

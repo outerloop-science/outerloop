@@ -53,6 +53,8 @@ class LedgerGitHub:
         }
 
     def get_file(self, repo, path, ref):
+        if self.ledger_fail:
+            raise GitHubError(503, "file", "unavailable")
         files = self.ledger_snapshots.get(ref, self.ledger_files)
         if path not in files:
             raise GitHubError(404, "file", "missing")

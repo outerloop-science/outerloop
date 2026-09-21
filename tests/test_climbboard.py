@@ -1124,16 +1124,17 @@ def test_md_baseline_chip_is_the_ledger_starting_position() -> None:
         {"run_id": "r2", "baseline": 9472.0, "candidate": 8960.0, "outcome": "rejected"},
     ]
     with_start = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"}, {"speedrun": 9472.0})
-    assert "baseline (start): **9472**" in with_start or "baseline (start): **9472.0**" in (
-        with_start
+    assert (
+        "baseline (start, confirmed main): **9472**" in with_start
+        or "baseline (start, confirmed main): **9472.0**" in (with_start)
     )
     # no ledger -> the chip is simply absent; nothing per-run substitutes
     without = render_md("o/r", {"speedrun": rows}, {"speedrun": "min"})
     assert "baseline" not in without
 
 
-def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> None:
-    """The chip's value travels get_file_content -> starts -> CLIMB.md; a
+def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path, monkeypatch) -> None:
+    """The chip's value travels pinned get_file -> starts -> CLIMB.md; a
     NaN in the ledger is dropped instead of aborting the publish."""
     _terminal_run(tmp_path, "speedrun-1")
     gh = _BoardGitHub()
@@ -1141,8 +1142,19 @@ def test_service_loads_the_starting_baseline_from_the_ledger(tmp_path: Path) -> 
         {"speedrun": {"baseline": 9472.0}, "broken": {"baseline": float("nan")}},
         allow_nan=True,
     )
+    original_get = gh.get_file
+    pin = gh.head
+
+    def pinned_get(repo, path, ref):
+        if path == "results/leader.json":
+            assert ref == pin
+        return original_get(repo, path, ref)
+
+    monkeypatch.setattr(gh, "get_file", pinned_get)
     assert service_climb_board(tmp_path, gh, "org/repo") >= 1
-    assert "baseline (start): **9472**" in gh.files["CLIMB.md"]
+    assert "Attempt history" in gh.files["CLIMB.md"]
+    assert "confirmed-main results" in gh.files["index.html"]
+    assert "baseline (start, confirmed main): **9472**" in gh.files["CLIMB.md"]
 
 
 def test_run_base_renders_as_markers_not_a_line() -> None:

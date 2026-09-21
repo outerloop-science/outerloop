@@ -148,9 +148,9 @@ Hard rules:
 - Edit ONLY the steward paths listed below. The solver directories are
   forbidden to you completely — do not read requirements from them, do not
   "fix" them, do not compensate for their weaknesses.
-- Do not touch BENCHMARKS.md or results/leader.json: after your change the
-  orchestrator re-measures the benchmark with the CURRENT solver and writes
-  those records itself, with its own provenance.
+- The records live on the research-log branch in BENCHMARKS.md and
+  results/leader.json. A merged result appears there after the PR is merged
+  and the kernel observes the merge.
 - Your change must keep every benchmark runnable: the full test suite and
   each eval command still pass after your edits. Update tests you are
   allowed to touch when the env legitimately changes them — never to make a

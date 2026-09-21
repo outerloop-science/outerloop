@@ -361,7 +361,7 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
     record = load_record(tmp_path / "state", "steward-tsp-1")
     assert record.state == "parked" and record.agent_id == "steward-01"
     # PR body: measured provenance stated, report present — and the
-    # previous best is the PRIOR ledger value, not the fresh overwrite
+    # previous best is the confirmed branch value, before the pending reset
     body = github.prs[0]["body"]
     assert "measured by the orchestrator" in body
     assert "Addresses #21" in body

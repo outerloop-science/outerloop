@@ -1038,7 +1038,8 @@ def sweep(
 
     ledger_blocked: set[str] = set()
     if github is not None and not dry_run:
-        from outerloop.ledger_events import LEDGER_RETRY, retry_pending
+        from outerloop.ledger_events import retry_pending
+        from outerloop.runstate import LEDGER_RETRY
 
         # Materialize every durable publish before any merge observation, so
         # a deferred ruler reset participates in this sweep's ancestry ordering.

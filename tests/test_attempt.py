@@ -1502,7 +1502,7 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
     # THE unification's core pin: after the seal, the workspace diverges (an
     # untracked file appears AND a tracked file is rewritten — eval cruft, a
     # stray write, anything). The pushed branch must be exactly the SEALED
-    # candidate plus the ledger commit — the divergence never ships.
+    # measured candidate — the divergence never ships.
     class DivergingCompute(QueueCompute):
         def __init__(self, values, ws_root):
             super().__init__(values=values)
@@ -2358,7 +2358,7 @@ def _write_parked_candidate(
     snap = snapshot_tree(ws, base_sha)  # candidate_sha, retained under its ref
     # cruft that appears AFTER the snapshot (a dispatched eval / session
     # leftover): it is in the wake's working tree but NOT in candidate_sha, so
-    # the finish's force-checkout keeps it around and the ledger-only commit
+    # the finish's force-checkout keeps it around; publication
     # must NOT sweep it into the PR.
     (wsroot / "eval-cache.tmp").write_text("junk an eval left behind\n")
     candidate_sha = snap.commit
@@ -4418,7 +4418,7 @@ def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_rep
     (memory survives) and the message names the gate outcome; the ledger
     stays on main and reaches the line at the next run-start merge."""
     github = FakeGitHub()
-    queue = [13.876, 13.1]  # improvement: PR + ledger
+    queue = [13.876, 13.1]  # improvement: PR + pending branch record
     with _queued_local(queue):
         outcome = live_attempt(
             config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),

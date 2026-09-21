@@ -63,12 +63,12 @@ flowchart TD
 
     F -->|no| R0["run ends: negative result<br/>+ research report"]
     F -->|yes| G["freshness: base moved?<br/>merge + re-measure BOTH sides"]
-    G --> PR["push branch, open PR<br/>report + table in body,<br/>record blessed head in auto mode;<br/>manual arming requires human review"]
+    G --> PR["push measured tree, open PR<br/>pending record on research-log;<br/>report + table in body,<br/>record blessed head in auto mode;<br/>manual arming requires human review"]
 
     PR --> V["verifier (next): integrity read<br/>advisory reviewer: skips bot PRs"]
     PR --> H{human code-owner review}
     V -.->|findings inform| H
-    H -->|approve| M["auto-merge executes<br/>ledger + BENCHMARKS.md updated"]
+    H -->|approve| M["merge executes<br/>kernel confirms on research-log"]
     H -->|comment| W["wake job wakes the<br/>AUTHOR session (resume)"]
     W -->|reply / fixes re-measured| PR
     H -->|close| R1["run ends: rejected + report"]
@@ -149,7 +149,7 @@ issues — never directly on code or contracts:
 ```mermaid
 flowchart TD
     subgraph memory [Research memory]
-        LED["leader.json:<br/>best config per benchmark"]
+        LED["research-log leader.json:<br/>confirmed best per benchmark"]
         LES["notebook: lessons,<br/>recent run reports"]
     end
 
@@ -211,7 +211,7 @@ finding survives.
 
 | Boundary | Enforced by |
 |---|---|
-| Solver never touches ruler/contract/progress files | scope veto + ledger-only publish commit on the sealed sha (code) |
+| Solver never touches ruler/contract/progress files | scope veto; PR carries only the measured tree (code) |
 | Numbers come only from the orchestrator | climb_once re-measures; PR body states it; CI re-verifies |
 | Reviewer never reviews its own pipeline's PRs automatically | bot-author skip (code) |
 | Verifier ≠ author | different role, prompt, key; reads adversarially |
@@ -222,7 +222,9 @@ finding survives.
 ## Where state lives
 
 Run records, leases, pending markers: the state root on the shared FS.
-Results: `results/leader.json` + `BENCHMARKS.md` in the target repo
-(orchestrator-written only). Research memory: reports per run, distilled
+Results: `results/leader.json` + `BENCHMARKS.md` on the target's
+`research-log` branch (kernel-written only). Measurements are pending at publish
+and confirmed when the kernel observes the merge. The main-commit column links
+the merge; imported rows say "provenance unknown". PRs carry only the measured tree. Research memory: reports per run, distilled
 lessons in the private notebook (phase 6). Plans: GitHub issues + notebook
 copies. Nothing durable lives in any process.

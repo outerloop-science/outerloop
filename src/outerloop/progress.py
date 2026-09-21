@@ -269,9 +269,10 @@ def render_markdown(
     lines = [
         "# Benchmark progress",
         "",
-        f"Autonomous improvement record for `{target}`. Every number in this",
-        "table was measured by the orchestrator re-running the contract's",
-        "eval command. Published results are pending until their PR merges.",
+        f"Autonomous improvement record for `{target}`.",
+        "Confirmed results are measured by the orchestrator; "
+        "imported rows have provenance unknown.",
+        "Published results are pending until the kernel observes their PR merge.",
         "",
         "| benchmark | metric | baseline | best | progress | last improved | by run | "
         "main commit |",
@@ -286,6 +287,8 @@ def render_markdown(
             if e.main_commit
             else "provenance unknown"
         )
+        if e.main_commit and not e.measured_sha:
+            provenance += " (snapshot; provenance unknown)"
         lines.append(
             f"| {e.benchmark} | `{e.metric}` {arrow} | {fmt_metric(e.baseline, d)} | "
             f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` | {provenance} |"

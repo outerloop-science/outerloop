@@ -579,7 +579,14 @@ def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatc
     ids=["no-report", "hypothesis"],
 )
 def test_publish_review_fast_forwards_and_applies_floor(
-    review_run, monkeypatch, candidate, expected, unchanged, submit_report, panel_skip
+    review_run,
+    monkeypatch,
+    candidate,
+    expected,
+    unchanged,
+    submit_report,
+    panel_skip,
+    agent_id="solver",
 ):
     import json
 
@@ -648,6 +655,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
     record = replace(
         load_record(root, "tsp-r1"),
         stage={"panel_skip": panel_skip, "hypothesis": "OLD hypothesis"},
+        agent_id=agent_id,
     )
     record = replace(record, stage={**record.stage, "review_topup": True})
     save_record(root, record, NOW)
@@ -734,7 +742,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
     assert submission["measured_sha"] == snap.commit
     assert submission["published_head"] == pushed
     assert submission["candidate"] == candidate
-    assert submission["kind"] == "SOLVER"
+    assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
     assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
     assert snap.commit[:12] in github.body_addenda[0]
     assert f"pushed as `{submitted}`" in github.body_addenda[0]
@@ -1810,3 +1818,16 @@ def test_submit_preflight_git_failure_proceeds(tmp_path, caplog, operation):
         )
     assert caught.value.phase == "candidate"
     assert calls == ["unknown"] and "secret-token" not in caplog.text
+
+
+def test_steward_followup_publishes_pending_reset(review_run, monkeypatch):
+    test_publish_review_fast_forwards_and_applies_floor(
+        review_run,
+        monkeypatch,
+        candidate=11.8,
+        expected=12.0,
+        unchanged=False,
+        submit_report="",
+        panel_skip="",
+        agent_id="steward",
+    )

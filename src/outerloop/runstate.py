@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 RUNNING = "running"
 PARKED = "parked"
 ENDED = "ended"
+LEDGER_RETRY = "ledger_retry"
 
 STATES = (RUNNING, PARKED, ENDED)
 
@@ -201,8 +202,6 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
 
 def acknowledge_ledger_pending(root: Path, run_id: str, path: str, now: float) -> RunRecord:
     """Remove a persisted ledger intent, including terminal-run cleanup."""
-    from outerloop.ledger_events import LEDGER_RETRY
-
     directory = run_dir(root, run_id)
     with (directory / ".record-lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

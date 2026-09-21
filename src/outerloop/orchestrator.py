@@ -756,7 +756,7 @@ def make_task(
     # is the real bar: it re-measures both sides after the session, so a
     # missing baseline (a benchmark's first run) just drops the reference
     # number. Naming a target here would only invite optimizing that number.
-    current = f"currently {baseline}" if baseline is not None else "no score recorded yet"
+    current = f"currently {baseline}" if baseline is not None else "current score unknown"
     return Task(
         hypothesis=hypothesis
         or (

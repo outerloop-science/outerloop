@@ -172,6 +172,9 @@ open-ended sweep space.
 - [ ] Task selection reads lessons/ + recent runs/ (the loop's research memory)
 - [ ] Periodic distillation pass: raw reports → bounded lessons/<target>.md
 - [ ] Weekly digest aggregates per-run reports; cost ledger; leaderboard history
+- [x] Leaderboard on research-log: pending at publish, confirmed at observed
+      merge; main-commit links and `outerloop migrate-ledger` for existing targets.
+      PRs carry only the measured tree.
 - [x] Climb board on the research-log branch: `climb/<benchmark>.json` +
       `CLIMB.md` + `index.html`; a Pages site can serve the same files at the
       public flip

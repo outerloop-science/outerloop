@@ -223,7 +223,7 @@ def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
     result, harness, _ = run_climb(tmp_path, [13.876, 13.10])  # brief_baseline defaults None
     assert result.outcome == "improved" and result.baseline == 13.876
     brief_text = harness.calls[0][0]
-    assert "no score recorded yet" in brief_text  # no reference number
+    assert "current score unknown" in brief_text  # no reference number
     assert "currently" not in brief_text  # and no fabricated baseline
     assert "lower is better" in brief_text  # the metric context still orients
 

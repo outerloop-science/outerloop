@@ -836,7 +836,16 @@ def main(argv: list[str] | None = None) -> int:
         return init.main(argv[1:])
     p = sub.add_parser("permissions", help="check and update the App's required permissions")
     p.add_argument("--open", action="store_true", help="open the next permission settings page")
+    p = sub.add_parser("migrate-ledger", help="seed research-log from a pinned main ledger")
+    p.add_argument("--target", required=True, help="owner/repo")
+    p.add_argument("--main-sha", required=True, help="full current default-branch commit SHA")
+    p.add_argument("--force", action="store_true", help="replace an existing branch ledger")
+    p.add_argument("--dry-run", action="store_true", help="print the table without writing")
     args = parser.parse_args(argv)
+    if args.command == "migrate-ledger":
+        from outerloop.ledger_migrate import migrate
+
+        return migrate(args)
     if args.command == "permissions":
         return permissions(args)
     if args.command == "upgrade":

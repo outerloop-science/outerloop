@@ -108,12 +108,13 @@ results tracking keeps them separate instead of blurring them:
 | --- | --- | --- | --- |
 | **Telemetry** | the experiment tracker your org already uses (W&B, in our case) | experiment jobs, via the target repo's own config-driven logging | curves, configs, artifacts — the deep-dive surface; agent runs tagged with agent + run id, filterable next to human runs |
 | **Ledger** | a `results` branch in the target repo — append-only `ledger.jsonl` + a full rendered history table | the orchestrator after every measured run (improvements, negative results, aborted); humans via one command that evals + appends | EVERY measured number with provenance: benchmark, value, sha, who (agent id or human), date, W&B link. Intermediate baselines and lab members' numbers live here — attributable, in-repo, zero PRs |
-| **Headline** | `BENCHMARKS.md` + `results/leader.json` on main | the orchestrator only, riding inside improvement PRs | current best per benchmark + milestones (rows where the leader changed) |
+| **Headline** | `BENCHMARKS.md` + `results/leader.json` on `research-log` | the kernel, after observing a PR merge | confirmed best per benchmark; linked main-commit column; imported rows say "provenance unknown" |
 
 Rules that fall out:
 
-- **No result ever creates its own main-branch PR.** Headline updates ride
-  inside improvement PRs that merge on their own merits; everything else goes
+- **No result ever creates its own main-branch PR.** PRs carry only the
+  measured tree. Results on research-log are pending at publish and confirmed
+  when the kernel observes the merge; everything else goes
   to the ledger branch (a push, not a PR — data, not code, same reasoning as
   the notebook's auto-merge) or to W&B. Public research repos' main history
   stays exactly as clean as their science.
@@ -128,7 +129,7 @@ Rules that fall out:
   are an invariant); experiment jobs may log with the target repo's own
   config. Whether agent experiments get a scoped W&B service account or log
   anonymously-tagged is a phase-6 decision.
-- The pilot keeps its simpler shape (headline-on-main only): every merge
+- The pilot uses the same research-log headline: every merge
   there is important by construction, and it has no W&B.
 
 Implementation lands with phase 6 (reports); nothing here blocks the live

@@ -8,31 +8,47 @@ import logging
 from dataclasses import asdict, replace
 from functools import cmp_to_key
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from outerloop.contract import Benchmark, Contract
 from outerloop.github import GitHubClient, Workspace
-from outerloop.ledger_branch import ensure_ledger_branch, read_leader, read_ledger, write_ledger
+from outerloop.ledger_branch import (
+    RESEARCH_LOG_BRANCH,
+    ensure_ledger_branch,
+    read_ledger,
+    write_ledger,
+)
 from outerloop.orchestrator import steward_out_of_scope
 from outerloop.progress import (
     LEADER_FILE,
     LeaderEntry,
     PendingSubmission,
     confirm,
+    load_leader,
     parse_pending,
     record_pending,
     reject,
 )
+from outerloop.runstate import LEDGER_RETRY as LEDGER_RETRY
 from outerloop.runstate import RunRecord, acknowledge_ledger_pending, save_record
 
 log = logging.getLogger(__name__)
-LEDGER_RETRY = "ledger_retry"
 
 
 def display_leader(github: GitHubClient, target: str) -> dict[str, LeaderEntry]:
     """A failed display/decision read means no prior, never checkout fallback."""
     try:
-        return read_leader(github, target)
+        head = github.branch_head(target, RESEARCH_LOG_BRANCH)
+        if not head:
+            return {}
+        content = github.get_file(target, LEADER_FILE, head)
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            path = workspace / LEADER_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text(content)
+            return load_leader(workspace)
     except Exception:
         # API exception strings can contain credentials; no remote detail is needed.
         log.warning("branch ledger unavailable; using no prior measurement")

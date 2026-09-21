@@ -321,3 +321,21 @@ def test_confirmation_preserves_monotonic_noise_floor(candidate, expected):
     )
     assert result["bench"].best == expected
     assert result["bench"].baseline == 1
+
+
+@pytest.mark.parametrize("content", ["{broken", "[]"])
+def test_author_orientation_tolerates_corrupt_branch_ledger(content, monkeypatch):
+    fake, github = client()
+    fake.ledger_snapshots["orientation-pin"] = {LEADER_FILE: content}
+    fake.ledger_head = "orientation-pin"
+    fake.ledger_files[LEADER_FILE] = json.dumps(
+        {"bench": asdict(LeaderEntry("bench", "score", "max", 1, 99, "r", "d"))}
+    )
+    original = fake.get_file
+
+    def pinned_file(repo, path, ref):
+        assert ref == "orientation-pin"
+        return original(repo, path, ref)
+
+    monkeypatch.setattr(fake, "get_file", pinned_file)
+    assert display_leader(github, "org/repo") == {}
