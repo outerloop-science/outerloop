@@ -18,9 +18,10 @@ these is written or read includes four things:
 1. A compatibility statement in the PR body: which surfaces change, the
    oldest state still read, what happens to runs and PRs in flight on the
    first tick after the upgrade, and whether rolling back is safe.
-2. One fixture produced by the previous release (a run record, an inbox, a
-   branch layout), exercised through the new code: first pass, a second
-   idempotent pass, and a retry after an interruption.
+2. A fixture for each surface the PR changes (a run record, an inbox, a
+   branch layout), produced by every release whose state the new code still
+   reads, exercised through the new code: first pass, a second idempotent
+   pass, and a retry after an interruption.
 3. A backfill or an explicit tolerance for the old state, including missing
    fields and ended runs. If a case is not supported, the PR says so instead
    of leaving it to the operator to discover.
@@ -33,13 +34,13 @@ wording does not reach a parked run unless its deduplication key changes.
 
 ## Cutting a release
 
-1. Before the version PR, list the merged PRs since the last tag that touch
-   the state above and check each has the four items; run their fixtures
-   once more against the release candidate, covering an open, a merged and
-   an ended legacy run. Collect the `Upgrading:` lines into one section at
-   the top of the release's changelog entry.
+1. List the merged PRs since the last tag that touch the state above and
+   check each has the four items. Collect their `Upgrading:` lines into one
+   section at the top of the release's changelog entry.
 2. PR: bump `__version__`, set `CITATION.cff`'s `version` and `date-released`,
-   and move the `[Unreleased]` entries under the new version. A dev or rc pre-release still bumps the version (PyPI never
+   and move the `[Unreleased]` entries under the new version. Before tagging,
+   run the fixtures from step 1 once more against this PR's head, covering a
+   run with an open PR, a run whose PR merged, and an ended run. A dev or rc pre-release still bumps the version (PyPI never
    accepts a version twice, so the next one is `.dev1`, `rc2`, ...) but leaves
    `[Unreleased]` in place until the final release.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow builds
