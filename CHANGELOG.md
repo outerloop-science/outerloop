@@ -8,8 +8,6 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
-
 - A submit after the base moves is checkpointed before any gate compute runs. Staged experiments do not run. The author is told to fold the base and submit again, or that the gate pin was refreshed.
 
 - After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
@@ -39,6 +37,8 @@ tasks to finish.
 - `outerloop init` asks for the Claude model (`--claude-model`, else the shell's `OUTERLOOP_CLAUDE_MODEL`, else a required prompt) and writes it to `.env`. A focused `init --github-app` run preserves every existing `.env` setting it does not manage.
 
 ### Changed
+- Scope checks compare the full candidate tree with its merge-base against the fetched base tip, including author edits to ledger files.
+- Publish is refused when shared history cannot be found; fetch the base and fold it before submitting again.
 - The leaderboard moves from PR branches and main to the research-log branch.
 - Results are pending when published and confirmed when the kernel observes their PR merge.
 - The leaderboard shows the main commit each result was confirmed at; imported rows say provenance unknown.

@@ -110,6 +110,10 @@ target's artifact structure, declared in the contract:
   contracts may declare suite aggregates (e.g. mean success rate) and
   no-regression floors.
 
+Scope checks compare the full candidate tree with its merge-base against the fetched
+base tip, so changes made only on the base branch do not count as author edits.
+Missing shared history refuses publication; the separate base-tip ancestry check still applies.
+
 What stays absolute regardless of scope: one hypothesis per PR (attributable
 diffs), full-scope reporting, and **cross-target separation** — separate clones,
 branches, budgets, and report streams per target (`runs/<target>/`,

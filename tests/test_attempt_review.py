@@ -1141,6 +1141,8 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
                 self.merge_base = False
                 return super().run(brief_text, workspace, resume_session_id)
             session = super().run(brief_text, workspace, resume_session_id)
+            if not contains_base:
+                _git(workspace, "checkout", old_base, "--", ".outerloop.yaml")
             assert main(["submit"], root=workspace) == 0
             assert main(["sleep"], root=workspace) == 0
             return session
@@ -1538,9 +1540,11 @@ def _author_folded_base_scope(
             _git(workspace, "reset", "--mixed", "origin/main")
             _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
             (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
-            if rollback_to:
-                reference = head if rollback_to == "head" else "origin/main"
-                _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
+            reference = (
+                head
+                if rollback_to == "head"
+                else _git(workspace, "rev-parse", "origin/main").strip()
+            )
             if moved_again:
                 if rollback_to:
                     (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
@@ -1549,6 +1553,10 @@ def _author_folded_base_scope(
                 _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
                 _git(seed, "push", str(bare), "main")
                 _git(workspace, "fetch", "origin")
+            if rollback_to:
+                _git(workspace, "reset", "--mixed", "origin/main")
+                _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
+                _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
             if edit_ledger:
                 (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
             assert (

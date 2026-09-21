@@ -34,6 +34,7 @@ from outerloop.attempt import (
     _best_effort,
     arm_self_deadline,
     arm_sigterm_containment,
+    submission_paths,
 )
 from outerloop.contract import Contract, contract_text_in_tree, load_contract
 from outerloop.dispatch import image_file_arg
@@ -448,10 +449,12 @@ def live_steward(
             spec = dc_replace(spec, scope=tuple(contract.steward.allowed))
 
         def changed_paths() -> list[str]:
+            paths = submission_paths(ws, f"refs/remotes/origin/{base_branch}")
             ws.git("add", "-A")
-            paths = ws.staged_paths()
-            tree_hashes.append(ws.git("write-tree").strip())
-            ws.git("reset")
+            try:
+                tree_hashes.append(ws.git("write-tree").strip())
+            finally:
+                ws.git("reset")
             return paths
 
         if issue_number:
