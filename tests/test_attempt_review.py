@@ -1306,10 +1306,12 @@ def test_review_submit_scope_includes_existing_pr_changes(
         assert any(
             m.kind == "note"
             and m.source == "kernel"
-            and m.payload["text"] == f"panel read skipped: {panel_skip}"
+            and m.payload["text"] == "Panel read skipped."
+            and m.payload["quoted_text"] == panel_skip
             for m in messages
         )
-        assert f"panel read skipped: {panel_skip}" in author.calls[0][0]
+        assert "Panel read skipped." in author.calls[0][0]
+        assert f"Quoted data:\n```\n{panel_skip}\n```" in author.calls[0][0]
 
 
 @pytest.mark.parametrize("with_report", [False, True])
@@ -1589,7 +1591,8 @@ def test_review_terminal_note_redacted_and_deduplicated(review_run, monkeypatch,
     assert message.kind == "note" and message.source == "kernel"
     assert message.thread == thread_for(record)
     assert "sk-x" not in message.payload["text"]
-    assert "out-of-scope paths at launch: private-" in message.payload["text"]
+    assert "out-of-scope paths at launch: private-" in message.payload["quoted_text"]
+    assert "sk-x" not in message.payload["quoted_text"]
     assert record.state == PARKED
 
 

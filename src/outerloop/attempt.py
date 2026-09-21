@@ -987,9 +987,8 @@ def deliver_messages(
                     time.time(),
                     f"message-refused:{record.run_id}:{entry['counter']}",
                     {
-                        "text": (
-                            f"Message #{index} to {item.get('to')!r} was not delivered: {reason}."
-                        ),
+                        "text": f"Message #{index} was not delivered: {reason}.",
+                        "quoted_text": f"Recipient: {item.get('to')!r}",
                         "context_only": True,
                     },
                 )
@@ -1323,10 +1322,10 @@ def _wake_author_sleep(
                     role="steward" if record.agent_id.startswith("steward") else "solver",
                 )
                 attempts = max(0, attempts - 1)
-            note = f"Your attempt ended with {result.outcome}: {result.note or result.outcome}"
+            note = f"Your attempt ended with {result.outcome}."
             if result.outcome == "scope-violation":
                 note += (
-                    ". Only in-scope paths may differ from the bases; "
+                    " Only in-scope paths may differ from the bases; "
                     "restore the rest and submit again."
                 )
             append(
@@ -1338,7 +1337,7 @@ def _wake_author_sleep(
                     thread_for(record),
                     now,
                     f"terminal:{result.outcome}:{latest.stage.get('sleeps_used', 0)}",
-                    {"text": redact(note, secrets)},
+                    {"text": redact(note, secrets), "quoted_text": redact(result.note, secrets)},
                 ),
             )
             save_record(
@@ -1486,7 +1485,10 @@ def _wake_author_sleep(
                 thread,
                 now,
                 f"pacing:{sleep_ref}:{sleeps_used}",
-                {"text": "\n".join(pacing) + " (the contract's ceiling applies)."},
+                {
+                    "text": "The contract's ceiling applies to these sweeps.",
+                    "quoted_text": "\n".join(pacing),
+                },
                 origin=record.run_id,
             ),
         )
@@ -1510,8 +1512,9 @@ def _wake_author_sleep(
                             "The base moved while you were asleep. "
                             f"origin/{base_branch} advanced and has been fetched; your change "
                             "is measured and scope-checked against this base from now on. "
-                            f"What landed:\n{digest}"
+                            "What landed:"
                         ),
+                        "quoted_text": digest,
                         "base_sha": fresh_base,
                     },
                 ),
@@ -2506,7 +2509,7 @@ def resume_run(
                 thread_for(record),
                 now,
                 f"panel-skip:{record.inbox_seq}:{panel_skip}",
-                {"text": f"panel read skipped: {panel_skip}"},
+                {"text": "Panel read skipped.", "quoted_text": panel_skip},
                 origin=record.run_id,
             ),
         )
@@ -2916,7 +2919,8 @@ def resume_run(
                 now,
                 f"gate:{candidate_sha}:{stage.get('sleeps_used', 0)}",
                 {
-                    "text": result.note or result.outcome,
+                    "text": f"Gate: {result.outcome}.",
+                    "quoted_text": result.note,
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -2985,8 +2989,9 @@ def resume_run(
                 f"gate:{candidate_sha}:{record.stage.get('sleeps_used', 0)}",
                 {
                     "text": "Your `submit` did NOT clear the gate: "
-                    f"{result.note or result.outcome} "
+                    f"{result.outcome} "
                     f"(baseline {result.baseline}, candidate {result.candidate}).",
+                    "quoted_text": result.note,
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -3016,6 +3021,7 @@ def resume_run(
                         f"Gate: {result.outcome} "
                         f"(baseline {result.baseline}, candidate {result.candidate})."
                     ),
+                    "quoted_text": "",
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -3520,7 +3526,9 @@ def publish(
     )
     bench = _benchmark(contract, config.benchmark)
 
-    def refuse(text: str, head: str = "", *, moved: bool = False) -> AttemptOutcome:
+    def refuse(
+        text: str, head: str = "", *, moved: bool = False, quoted_text: str = ""
+    ) -> AttemptOutcome:
         append(
             run_dir,
             Message(
@@ -3530,7 +3538,12 @@ def publish(
                 thread_for(record),
                 now,
                 f"publish-refused:{result.candidate_sha}:{head}:{text}",
-                {"text": text, "pr_head": head, "sealed_sha": result.candidate_sha},
+                {
+                    "text": text,
+                    "quoted_text": quoted_text,
+                    "pr_head": head,
+                    "sealed_sha": result.candidate_sha,
+                },
                 origin="" if moved else record.run_id,
             ),
         )
@@ -3596,7 +3609,8 @@ def publish(
             return refuse("Publish refused: the base contract's measurement signature changed.")
     except Exception as exc:
         return refuse(
-            f"Publish refused: cannot confirm the base contract: {redact(str(exc), secrets)}"
+            "Publish refused: cannot confirm the base contract.",
+            quoted_text=redact(str(exc), secrets),
         )
 
     if record.pr_url:
@@ -3652,7 +3666,8 @@ def publish(
                 common = ws.git("merge-base", base_sha, head).strip()
             except Exception as exc:
                 return refuse(
-                    f"Publish refused: cannot confirm PR base ancestry: {redact(str(exc), secrets)}"
+                    "Publish refused: cannot confirm PR base ancestry.",
+                    quoted_text=redact(str(exc), secrets),
                 )
             parents = ["-p", head]
             if common != base_sha:

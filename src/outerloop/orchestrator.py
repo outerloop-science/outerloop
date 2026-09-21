@@ -1578,8 +1578,8 @@ def attempt_once(
                         time.time(),
                         f"refusal:{session.session_id}:{inbox_seq}",
                         {
-                            "text": "Your syscall request was REFUSED and nothing was launched: "
-                            f"{request.problem}"
+                            "text": "Your syscall request was REFUSED and nothing was launched.",
+                            "quoted_text": request.problem,
                         },
                         origin=inbox_dir.name,
                     )
@@ -1819,8 +1819,8 @@ def attempt_once(
                     time.time(),
                     f"refusal:{session.session_id}:{inbox_seq}",
                     {
-                        "text": "Your syscall request was REFUSED and nothing was launched: "
-                        f"{problem}"
+                        "text": "Your syscall request was REFUSED and nothing was launched.",
+                        "quoted_text": problem,
                     },
                     origin=inbox_dir.name,
                 )
@@ -1979,7 +1979,7 @@ def attempt_once(
                 # silent terminal. Rounds stay bounded by sleep_k.
                 failed_gate = (base_sha, candidate_sha, outcome)
                 verdict_text = (
-                    f"{outcome.note or outcome.outcome} "
+                    f"{outcome.outcome} "
                     f"(baseline {outcome.baseline}, candidate {outcome.candidate})."
                 )
                 if unchanged:
@@ -2000,6 +2000,7 @@ def attempt_once(
                         f"gate:{candidate_sha}:{sleeps_used}",
                         {
                             "text": lead + _not_run_note(submitted),
+                            "quoted_text": outcome.note,
                             "sealed_sha": candidate_sha,
                             "base_sha": base_sha,
                             "measurement_signature": bench.measurement_signature(),
@@ -2090,6 +2091,7 @@ def attempt_once(
                 f"gate:{candidate_sha}:{sleeps_used}",
                 {
                     "text": f"Gate: improved (baseline {baseline}, candidate {candidate}).",
+                    "quoted_text": "",
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),

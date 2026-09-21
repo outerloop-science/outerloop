@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Kernel inbox instructions now render outside data fences while quoted text stays fenced.
+
+Upgrading: no action needed; unread legacy inbox messages remain readable and mixed kernel output stays fenced.
+
 - Authors can now merge a moved base with one merge commit, and parked runs receive the updated message once.
 
 - A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
