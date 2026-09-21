@@ -32,7 +32,13 @@ from urllib.parse import quote
 from outerloop.appauth import add_credential_args, resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
 from outerloop.compute import LocalCompute
-from outerloop.contract import Benchmark, Contract, contract_text_in_tree, load_contract
+from outerloop.contract import (
+    RECORD_PATHS,
+    Benchmark,
+    Contract,
+    contract_text_in_tree,
+    load_contract,
+)
 from outerloop.dispatch import (
     Snapshot,
     afterany_ids,
@@ -1525,19 +1531,13 @@ def _wake_author_sleep(
     # and park the run as a CANDIDATE). Seals retain the session's HEAD ancestry.
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
-    change_bases = [base_sha]
+    primary_base = base_sha
+    secondary_bases: tuple[str, ...] = ()
     if record.pr_url:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-        # Include the tree's own base when main moved again after the fold.
-        change_bases = list(
-            dict.fromkeys(
-                [
-                    str((pr.get("head") or {}).get("sha") or base_sha),
-                    f"refs/remotes/origin/{base_branch}",
-                    base_sha,
-                ]
-            )
-        )
+        # Only kernel-written records may match the PR head or the folded base.
+        primary_base = f"refs/remotes/origin/{base_branch}"
+        secondary_bases = (str((pr.get("head") or {}).get("sha") or base_sha), base_sha)
 
     def snapshot() -> str:
         snap = snapshot_tree(
@@ -1550,7 +1550,7 @@ def _wake_author_sleep(
         return snap.commit
 
     def changed_paths() -> list[str]:
-        return submission_paths(ws, change_bases, bool(wake_line))
+        return submission_paths(ws, primary_base, bool(wake_line), secondary=secondary_bases)
 
     panel_runner = (
         build_panel_runner(
@@ -2261,21 +2261,26 @@ def _checkout_line(
     return line
 
 
-def _resolved_bases(ws: Workspace, bases: Sequence[str], fallback: str = "HEAD") -> list[str]:
+def _resolved_bases(ws: Workspace, bases: Sequence[str], fallback: str = "") -> list[str]:
     commits = []
     for base in bases:
         try:
             commits.append(ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip())
         except GitError:
             continue
-    return commits or [fallback]
+    return commits or ([fallback] if fallback else [])
 
 
 def submission_paths(
-    ws: Workspace, bases: Sequence[str], exclude_memory: bool, candidate_sha: str = ""
+    ws: Workspace,
+    primary: str,
+    exclude_memory: bool,
+    candidate_sha: str = "",
+    *,
+    secondary: Sequence[str] = (),
 ) -> list[str]:
-    """Submission paths that differ from every base, including committed edits."""
-    commits = _resolved_bases(ws, bases)
+    """Paths differing from primary, excusing secondary matches only for records."""
+    commits = _resolved_bases(ws, [primary], "HEAD") + _resolved_bases(ws, secondary)
     if not candidate_sha:
         ws.git("add", "-A")
     try:
@@ -2283,7 +2288,7 @@ def submission_paths(
         for base in commits:
             revisions = (base, candidate_sha) if candidate_sha else ("--cached", base)
             differs = set(ws.git("diff", "--name-only", "-z", *revisions).split("\0")) - {""}
-            paths = differs if paths is None else paths & differs
+            paths = differs if paths is None else paths - (set(RECORD_PATHS) - differs)
         return sorted(p for p in paths or () if not (exclude_memory and _is_line_memory(p)))
     finally:
         if not candidate_sha:
@@ -2291,25 +2296,34 @@ def submission_paths(
 
 
 def _paths_changed_from_base(
-    ws: Workspace, bases: Sequence[str], exclude_memory: bool, fallback: str = "HEAD"
+    ws: Workspace,
+    primary: str,
+    exclude_memory: bool,
+    fallback: str = "HEAD",
+    *,
+    secondary: Sequence[str] = (),
 ) -> list[str]:
-    """Count staged changes against HEAD only when they differ from every base.
+    """Count staged changes differing from primary, with secondary record exemptions.
 
-    Folding main can stage its ledger edits against a stale HEAD. Content equal
-    to any base belongs to that base, not the session. New and deleted files
-    count when they differ from all bases; unresolved bases are skipped.
+    Folding main can stage its ledger edits against a stale HEAD. Only the
+    kernel's record paths may match a secondary reference; other paths always
+    count when they differ from primary. Unresolved secondaries are skipped.
     """
-    commits = _resolved_bases(ws, bases, fallback)
+    commits = _resolved_bases(ws, [primary], fallback) + _resolved_bases(ws, secondary)
     ws.git("add", "-A")
     try:
         staged = ws.staged_paths()
         if not staged:
             return []
         differs = set(staged)
-        for base in commits:
-            differs.intersection_update(
+        for index, base in enumerate(commits):
+            changed = set(
                 ws.git("diff", "--cached", "--name-only", "-z", base, "--", *staged).split("\0")
             )
+            if index == 0:
+                differs.intersection_update(changed)
+            else:
+                differs.difference_update(set(RECORD_PATHS) - changed)
     finally:
         ws.git("reset")
     return [p for p in staged if p in differs and not (exclude_memory and _is_line_memory(p))]
@@ -2579,22 +2593,20 @@ def resume_run(
     measurer = dispatch.measurer(
         run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
-    change_bases = [base_sha]
+    primary_base = base_sha
+    secondary_bases: tuple[str, ...] = ()
     if record.pr_url:
         pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
-        # Include the tree's own base when main moved again after the fold.
-        change_bases = list(
-            dict.fromkeys(
-                [
-                    str((pr.get("head") or {}).get("sha") or base_sha),
-                    f"refs/remotes/origin/{base_branch}",
-                    base_sha,
-                ]
-            )
-        )
+        # Only kernel-written records may match the PR head or the folded base.
+        primary_base = f"refs/remotes/origin/{base_branch}"
+        secondary_bases = (str((pr.get("head") or {}).get("sha") or base_sha), base_sha)
     measured_paths = tuple(
         submission_paths(
-            ws, change_bases, bool(_line_ref_for(bench, config.agent_id)), candidate_sha
+            ws,
+            primary_base,
+            bool(_line_ref_for(bench, config.agent_id)),
+            candidate_sha,
+            secondary=secondary_bases,
         )
     )
     seed = int(stage["seed"])  # type: ignore[call-overload]
@@ -3636,7 +3648,7 @@ def publish(
         if (
             not landed
             and head
-            and not submission_paths(ws, [head], bool(line_ref), result.candidate_sha)
+            and not submission_paths(ws, head, bool(line_ref), result.candidate_sha)
         ):
             return refuse("Publish refused: no code change; metric noise.")
         assert result.candidate is not None
@@ -4225,9 +4237,7 @@ def live_attempt(
         def changed_paths() -> list[str]:
             # against the base branch head, never the line tip a conflicted
             # merge can leave HEAD on (see _paths_changed_from_base)
-            return _paths_changed_from_base(
-                ws, [f"refs/remotes/origin/{base_branch}"], lines_active
-            )
+            return _paths_changed_from_base(ws, f"refs/remotes/origin/{base_branch}", lines_active)
 
         if issue_number:
             from outerloop.intake import CLAIM_MARKER

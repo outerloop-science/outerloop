@@ -941,7 +941,10 @@ def test_review_submit_parks_and_delivers_verdict(
             }
 
     def check_verdict_paths(*args, **kwargs):
-        assert kwargs["measured_paths"] == ("src/pilot/solvers/tsp.py",)
+        assert kwargs["measured_paths"] == (
+            "src/pilot/solvers/pr.py",
+            "src/pilot/solvers/tsp.py",
+        )
         return resume_attempt(*args, **kwargs)
 
     monkeypatch.setattr("outerloop.attempt.resume_attempt", check_verdict_paths)
@@ -1177,7 +1180,9 @@ def test_inline_review_submit_uses_fresh_base(review_run, monkeypatch, contains_
         "the job's walltime cap left 1 min for a read that needs 10",
     ],
 )
-def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, panel_skip):
+def test_review_submit_scope_includes_existing_pr_changes(
+    review_run, monkeypatch, edit, panel_skip
+):
     from outerloop.attempt import publish
     from outerloop.compute import LocalCompute
     from outerloop.inbox import pending
@@ -1267,11 +1272,14 @@ def test_review_submit_changes_since_pr_head(review_run, monkeypatch, edit, pane
     assert outcome.action == "replied", outcome.note
     messages = pending(ws.parent, 0)
     if edit == "none":
-        assert not measured and not published
-        assert "no code change; metric noise" in author.calls[-1][0]
+        # Existing PR code still differs from main and must pass scope/the gate;
+        # the publish guard independently refuses an unchanged PR head.
+        assert measured and published[0].measured_paths == ("src/pilot/solvers/tsp.py",)
+        assert outcome.note == "publish-refused"
+        assert any("no code change; metric noise" in m.payload.get("text", "") for m in messages)
         assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
     else:
-        assert published[0].measured_paths == (path,)
+        assert published[0].measured_paths == (path, "src/pilot/solvers/tsp.py")
         assert next(m for m in measured if m.name == "baseline").tree_sha == base
         assert not load_record(root, "tsp-r1").auto_blessed_head
         if panel_skip:
@@ -1461,11 +1469,21 @@ def test_author_wake_launch_after_base_moved_again_passes_scope(review_run, monk
     _author_folded_base_scope(review_run, monkeypatch, moved_again=True)
 
 
-def test_author_edit_to_out_of_scope_file_still_violates(review_run, monkeypatch):
+def test_record_path_edited_by_author_still_violates(review_run, monkeypatch):
     _author_folded_base_scope(review_run, monkeypatch, moved_again=True, edit_ledger=True)
 
 
-def _author_folded_base_scope(review_run, monkeypatch, *, edit_ledger=False, moved_again=False):
+@pytest.mark.parametrize("rollback_to", ["head", "base"])
+def test_rolled_back_protected_file_is_still_the_authors_change(
+    review_run, monkeypatch, rollback_to
+):
+    _author_folded_base_scope(review_run, monkeypatch, moved_again=True, rollback_to=rollback_to)
+
+
+def _author_folded_base_scope(
+    review_run, monkeypatch, *, edit_ledger=False, moved_again=False, rollback_to=""
+):
+    from outerloop import attempt
     from outerloop.syscall_cli import main
 
     root, bare = review_run
@@ -1473,10 +1491,21 @@ def _author_folded_base_scope(review_run, monkeypatch, *, edit_ledger=False, mov
     head = _git(workspace, "rev-parse", "HEAD").strip()
     seed = bare.parent / "seed"
     (seed / "BENCHMARKS.md").write_text("main's ledger\n")
+    if rollback_to:
+        (seed / "docs/roadmap.md").write_text("reviewed ruler B1\n")
     _git(seed, "add", "-A")
     _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "ledger")
     _git(seed, "push", str(bare), "main")
     launched = []
+    seen = []
+    real_submission_paths = attempt.submission_paths
+
+    def submission_paths(*args, **kwargs):
+        paths = real_submission_paths(*args, **kwargs)
+        seen.append(paths)
+        return paths
+
+    monkeypatch.setattr(attempt, "submission_paths", submission_paths)
 
     def launcher(*args, **kwargs):
         def launch(sha, request):
@@ -1492,7 +1521,12 @@ def _author_folded_base_scope(review_run, monkeypatch, *, edit_ledger=False, mov
             _git(workspace, "reset", "--mixed", "origin/main")
             _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
             (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
+            if rollback_to:
+                reference = head if rollback_to == "head" else "origin/main"
+                _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
             if moved_again:
+                if rollback_to:
+                    (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
                 (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
                 _git(seed, "add", "-A")
                 _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
@@ -1509,8 +1543,11 @@ def _author_folded_base_scope(review_run, monkeypatch, *, edit_ledger=False, mov
 
     github = FakeGitHub(pr={"state": "open", "head": {"sha": head}})
     outcome = wake_review(root, "tsp-r1", FoldingHarness(), github)
-    assert outcome.action == ("scope-violation" if edit_ledger else "parked")
-    assert bool(launched) is not edit_ledger
+    refused = bool(edit_ledger or rollback_to)
+    assert outcome.action == ("scope-violation" if refused else "parked")
+    assert bool(launched) is not refused
+    if rollback_to:
+        assert any("docs/roadmap.md" in paths for paths in seen)
 
 
 @pytest.mark.parametrize("outcome", ["scope-violation", "session-error"])

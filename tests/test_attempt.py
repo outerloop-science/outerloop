@@ -5142,27 +5142,27 @@ def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path:
     (root / "agent_memory" / "note.md").write_text("x\n")
 
     ws = Workspace(root=root)
-    assert _paths_changed_from_base(ws, [base_sha], True) == ["train.py"]
+    assert _paths_changed_from_base(ws, base_sha, True) == ["train.py"]
     # the real call sites pass the base BRANCH ref; an unresolvable ref falls
     # back (here to the same base) rather than crashing
     git("update-ref", "refs/remotes/origin/main", base_sha)
-    assert _paths_changed_from_base(ws, ["refs/remotes/origin/main"], True) == ["train.py"]
-    assert _paths_changed_from_base(ws, ["refs/remotes/origin/nope"], True, fallback=base_sha) == [
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/main", True) == ["train.py"]
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True, fallback=base_sha) == [
         "train.py"
     ]
     # falling back to HEAD restores the old staged-vs-HEAD reading
-    assert _paths_changed_from_base(ws, ["refs/remotes/origin/nope"], True) == [
+    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True) == [
         "BENCHMARKS.md",
         "train.py",
     ]
     # memory not excluded (lines off): an ordinary path; the ledger still drops
-    assert _paths_changed_from_base(ws, [base_sha], False) == ["agent_memory/note.md", "train.py"]
+    assert _paths_changed_from_base(ws, base_sha, False) == ["agent_memory/note.md", "train.py"]
     # nothing staged against HEAD -> nothing, even though HEAD differs from base
     (root / "BENCHMARKS.md").write_text("best 8640\n")
     (root / "train.py").write_text("warmdown = 2048\n")
     (root / "agent_memory" / "note.md").unlink()
     (root / "agent_memory").rmdir()
-    assert _paths_changed_from_base(ws, [base_sha], True) == []
+    assert _paths_changed_from_base(ws, base_sha, True) == []
 
 
 def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path) -> None:
@@ -5200,7 +5200,7 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
         ws.git("status")  # EVERY kernel git call refuses
     with pytest.raises(GitError, match="altered by the session"):
-        _paths_changed_from_base(ws, [base], False)
+        _paths_changed_from_base(ws, base, False)
     os.unlink(pack)
     pack.mkdir()
     for f in elsewhere.iterdir():
@@ -6314,38 +6314,39 @@ def test_wake_releases_its_lease_when_panel_setup_fails(tmp_path, monkeypatch):
     assert calls == [(tmp_path, "run-1")]
 
 
-def test_changed_paths_intersect_bases(tmp_path: Path) -> None:
+def test_changed_paths_only_excuse_secondary_matches_for_records(tmp_path: Path) -> None:
     from outerloop.attempt import _paths_changed_from_base, submission_paths
     from outerloop.github import Workspace
 
     root = tmp_path / "ws"
     root.mkdir()
     _git(root, "init", "-q")
-    for name in ("ledger", "code", "deleted", "unchanged"):
+    for name in ("BENCHMARKS.md", "code", "deleted", "unchanged"):
         (root / name).write_text("A\n")
     _git(root, "add", "-A")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "A")
     base_a = _git(root, "rev-parse", "HEAD").strip()
-    for name in ("ledger", "code", "unchanged"):
+    for name in ("BENCHMARKS.md", "code", "unchanged"):
         (root / name).write_text("B\n")
     _git(root, "add", "-A")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B")
     base_b = _git(root, "rev-parse", "HEAD").strip()
-    _git(root, "checkout", "--detach", base_a)
-    (root / "ledger").write_text("B\n")
+    _git(root, "checkout", "--detach", base_b)
+    (root / "BENCHMARKS.md").write_text("A\n")
+    (root / "unchanged").write_text("A\n")
     (root / "code").write_text("session\n")
     (root / "new").write_text("new\n")
     (root / "deleted").unlink()
     ws = Workspace(root=root)
-    expected = ["code", "deleted", "new"]
-    bases = [base_a, "refs/remotes/origin/missing", base_b]
-    assert _paths_changed_from_base(ws, bases, False) == expected
-    assert submission_paths(ws, bases, False) == expected
+    expected = ["code", "deleted", "new", "unchanged"]
+    secondary = [base_a, "refs/remotes/origin/missing"]
+    assert _paths_changed_from_base(ws, base_b, False, secondary=secondary) == expected
+    assert submission_paths(ws, base_b, False, secondary=secondary) == expected
     _git(root, "add", "-A")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "session")
     candidate = _git(root, "rev-parse", "HEAD").strip()
-    assert _paths_changed_from_base(ws, bases, False) == []
-    assert submission_paths(ws, bases, False, candidate) == expected
+    assert _paths_changed_from_base(ws, base_b, False, secondary=secondary) == []
+    assert submission_paths(ws, base_b, False, candidate, secondary=secondary) == expected
 
 
 @pytest.mark.parametrize("wake", [False, True], ids=["first-pass", "non-pr-wake"])
@@ -6803,11 +6804,16 @@ def test_candidate_wake_after_two_base_moves_passes_scope(tmp_path, monkeypatch)
     _candidate_wake_two_base_moves(tmp_path, monkeypatch, edit_ledger=False)
 
 
-def test_author_edit_to_out_of_scope_file_still_violates(tmp_path, monkeypatch):
+def test_record_path_edited_by_author_still_violates(tmp_path, monkeypatch):
     _candidate_wake_two_base_moves(tmp_path, monkeypatch, edit_ledger=True)
 
 
-def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger):
+@pytest.mark.parametrize("rollback_to", ["head", "base"])
+def test_rolled_back_protected_file_is_still_the_authors_change(tmp_path, monkeypatch, rollback_to):
+    _candidate_wake_two_base_moves(tmp_path, monkeypatch, rollback_to=rollback_to)
+
+
+def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger=False, rollback_to=""):
     import json
     from dataclasses import replace
 
@@ -6824,6 +6830,9 @@ def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger):
     (root / "eval-cache.tmp").unlink()
 
     def base_commit(label):
+        if rollback_to:
+            (root / "docs").mkdir(exist_ok=True)
+            (root / "docs/roadmap.md").write_text(f"reviewed ruler {label}\n")
         (root / "BENCHMARKS.md").write_text(f"kernel ledger {label}\n")
         (root / "results").mkdir(exist_ok=True)
         (root / "results/leader.json").write_text(json.dumps({"base": label}) + "\n")
@@ -6836,6 +6845,9 @@ def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger):
     (root / "src/pilot/solvers/tsp.py").write_text("author's candidate\n")
     if edit_ledger:
         (root / "BENCHMARKS.md").write_text("author's ledger\n")
+    if rollback_to:
+        reference = head if rollback_to == "head" else base
+        _git(root, "checkout", reference, "--", "docs/roadmap.md")
     snap = snapshot_tree(ws, base)
     _git(root, "reset", "--hard", base)
     base_commit("B2")
@@ -6880,5 +6892,9 @@ def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger):
         if edit_ledger
         else ("src/pilot/solvers/tsp.py",)
     )
+    if rollback_to:
+        expected = ("docs/roadmap.md", "src/pilot/solvers/tsp.py")
     assert seen == [expected]
-    assert outcome.outcome == ("scope-violation" if edit_ledger else "no-improvement")
+    assert outcome.outcome == (
+        "scope-violation" if edit_ledger or rollback_to else "no-improvement"
+    )
