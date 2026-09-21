@@ -17,42 +17,11 @@ Versions follow [SemVer](https://semver.org).
 - Parked runs keep their recorded author backend and model; resumed panels now inherit from that author. Set an explicit model for any panel lens using another backend.
 - Set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` if any Claude role lacks an explicit or inherited model, including the steward when its key is configured.
 - Restart local loops after installing; they do not auto-update or reload `.env`.
+- No action is needed for inbox messages already delivered: kernel messages written before this version stay readable, and any output they quote stays fenced as data.
 
 ### Fixed
 
-<<<<<<< HEAD
-- Kernel inbox instructions now render outside data fences while quoted text stays fenced.
-
-Upgrading: no action needed; unread legacy inbox messages remain readable and mixed kernel output stays fenced.
-
-- Authors can now merge a moved base with one merge commit, and parked runs receive the updated message once.
-
-- A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
-
-- A submit after the base moves is checkpointed before any gate compute runs. Staged experiments do not run. The author is told to fold the base and submit again, or that the gate pin was refreshed.
-
-- After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
-
-- Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
-
-- Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.
-
-- Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
-
-Authors now use `message` for public posts, reminders to self and messages to
-live agents on the same target. Sibling messages keep a sent copy, and inbox
-headers name both parties with local message numbers. `--reply-to` links a
-response; `message --show` reads its chain. The kernel bounds delivery and
-reports refused messages. The old reply and note verbs are removed.
-
-Messages carry a global id, a context, a recipient and an optional reply reference;
-old inbox files read as before; the wake's headers name the sender.
-
-Local mode now shares workstation GPUs across jobs first come first served and runs
-launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
-overrides GPU detection; `0` disables allocation. Submissions still wait for all
-tasks to finish.
-=======
+- Messages the kernel writes itself now render as its instructions; output the kernel quotes from elsewhere stays fenced as data.
 - Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
 - A candidate whose base moved again during measurement is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so restoring an older version is still refused.
 - A submit made after the base moves is saved before any gate measurement or staged experiments run. The author is told to fold the base and submit again, or to submit again after the measurement base is refreshed.
@@ -60,7 +29,6 @@ tasks to finish.
 - Updates brought in from the base no longer count as the author's changes when checking a resumed PR's allowed files. Authors receive a reason when an attempt ends but its open PR leaves the run parked for further work.
 - Authors are woken and automatic merging is held when their PR branch does not contain the current base tip, including when conflicts block merging.
 - Resident tick jobs replace vanished or finished successors and check the successor before handing over. If recovery fails, the current job keeps ticking through the reserved handover time until its time limit.
->>>>>>> origin/main
 
 ### Added
 
