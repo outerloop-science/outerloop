@@ -666,12 +666,12 @@ def test_check_log_and_base_tip_messages(tmp_path, caplog, tip, dirty, status):
     messages = [m for m in pending(tmp_path, 0) if m.kind == "base-moved"]
     assert len(messages) == int(status in ("behind", "diverged"))
     if messages:
-        assert messages[0].key == f"base:{tip}"
+        assert messages[0].key == f"base:{tip}:2"
         assert messages[0].payload["base_sha"] == tip
         assert f"does not contain the current base tip {tip}" in messages[0].payload["text"]
         assert ("conflicts" in messages[0].payload["text"]) == dirty
         assert (
-            "fold origin/release/next into your branch, inspect the result, and submit directly"
+            "run `git merge --no-edit origin/release/next`; that merge commit is allowed"
             in messages[0].payload["text"]
         )
     if tip == "error":
@@ -959,12 +959,11 @@ def test_github_comment_association_reaches_wake_header(tmp_path):
 def test_base_moved_advises_direct_submit(base):
     from outerloop.inbox import base_moved_text
 
-    assert base_moved_text("tip123", base) == (
-        "Your head does not contain the current base tip tip123; "
-        f"fold origin/{base} into your branch, inspect the result, and submit directly. "
-        "The gate measures the folded candidate. Re-run your own experiment only if "
-        f"what landed in {base} changes your hypothesis."
-    )
+    text = base_moved_text("tip123", base)
+    assert text.startswith("Your head does not contain the current base tip tip123. ")
+    assert f"run `git merge --no-edit origin/{base}`; that merge commit is allowed" in text
+    assert "taking the base's version of BENCHMARKS.md and results/leader.json" in text
+    assert text.endswith(f"what landed in {base} changes your hypothesis.")
 
 
 def test_base_moved_preserves_conflict_suffix_and_dedupe(tmp_path, caplog):

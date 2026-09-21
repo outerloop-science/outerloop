@@ -46,6 +46,7 @@ from outerloop.inbox import (
     AUTHOR_PROTOCOL,
     Message,
     append,
+    base_moved_key,
     base_moved_text,
     budgets_line,
     panel_payload,
@@ -1683,7 +1684,7 @@ def attempt_once(
                                 "git",
                                 inbox_thread,
                                 time.time(),
-                                f"base:{preflight.tip}",
+                                base_moved_key(preflight.tip),
                                 {
                                     "text": base_moved_text(preflight.tip, preflight.base_branch),
                                     "base_sha": preflight.tip,
@@ -1691,7 +1692,11 @@ def attempt_once(
                                 origin=inbox_dir.name,
                             ),
                         )
-                        receipt = "Your stale submit was checkpointed; no gate ran. "
+                        receipt = (
+                            "Your stale submit was checkpointed; no gate ran. Fold the base as "
+                            "the base-moved message says (that merge commit is allowed), inspect, "
+                            "and submit again. "
+                        )
                     else:
                         receipt = (
                             f"Your candidate contains {preflight.tip}, but the gate was pinned to "

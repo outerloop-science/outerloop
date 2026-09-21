@@ -459,9 +459,14 @@ def render(brief: SessionBrief) -> str:
         "",
         "# Ground rules",
         "Work only within the contract's allowed paths. One hypothesis, one "
-        "change-set. Do NOT commit, push, or open PRs: when your session "
-        "ends, the orchestrator scope-checks your working tree, re-measures "
-        "the benchmark itself, and publishes the branch and PR. "
+        "change-set. Do not push or open PRs, and do not commit, with one "
+        "exception: when the kernel tells you the base moved, fold it with "
+        "`git merge --no-edit origin/<base>` from a HEAD that contains your PR "
+        "head; if it conflicts, resolve and stage the files, then finish that "
+        "same merge with `git commit --no-edit`, taking the base's version of "
+        "BENCHMARKS.md and results/leader.json. When your session ends, the "
+        "orchestrator scope-checks your working tree, re-measures the "
+        "benchmark itself, and publishes the branch and PR. "
         "The records live on the research-log branch in BENCHMARKS.md and "
         "results/leader.json. A merged result appears there after the PR is "
         "merged and the kernel observes the merge. "
