@@ -1028,7 +1028,8 @@ def sweep(
     reaped: list[str] = []
     stuck: list[str] = []
     holder = f"tick:{socket.gethostname()}:{os.getpid()}"
-    records = [r for r in list_runs(root) if r.state in (PARKED, RUNNING)]
+    all_records = list_runs(root)
+    records = [r for r in all_records if r.state in (PARKED, RUNNING)]
     ended: list[tuple[str, str]] = []
 
     def wake(record: RunRecord, reason: str, tag: str) -> None:
@@ -1041,8 +1042,8 @@ def sweep(
 
         # Materialize every durable publish before any merge observation, so
         # a deferred ruler reset participates in this sweep's ancestry ordering.
-        for record in records:
-            if not record.stage.get(LEDGER_RETRY):
+        for record in all_records:
+            if record.state not in (PARKED, RUNNING, ENDED) or not record.stage.get(LEDGER_RETRY):
                 continue
             if acquire_lease(root, record.run_id, holder, "", now):
                 try:
@@ -1064,16 +1065,15 @@ def sweep(
                 finally:
                     release_lease(root, record.run_id)
             try:
-                if (
-                    github is not None
-                    and record.pr_url
-                    and not dry_run
-                    and record.target not in ledger_blocked
-                ):
+                if github is not None and record.pr_url and not dry_run:
                     from outerloop.attempt import close_if_done
                     from outerloop.inbox import gather_github_messages
 
-                    ending = close_if_done(root, record, github, now)
+                    ending = (
+                        ""
+                        if record.target in ledger_blocked
+                        else close_if_done(root, record, github, now)
+                    )
                     if ending:
                         ended.append((record.run_id, ending))
                         continue

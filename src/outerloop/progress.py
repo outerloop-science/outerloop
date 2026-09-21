@@ -134,7 +134,7 @@ def parse_pending(content: str) -> PendingSubmission | None:
                 for c in part
             ):
                 raise ValueError("invalid submission path")
-        if pending.status != "PENDING":
+        if pending.status not in {"PENDING", "UNMEASURED"}:
             raise ValueError("invalid submission status")
         if pending.pr_number <= 0:
             raise ValueError("invalid PR number")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import asdict
@@ -19,6 +20,7 @@ from outerloop.progress import (
 )
 
 RESEARCH_LOG_BRANCH = "research-log"
+TOMBSTONE_BLOB_SHA = hashlib.sha1(b"blob 5\0null\n").hexdigest()
 Ledger = dict[str, LeaderEntry]
 Pendings = dict[str, PendingSubmission]
 LedgerEdit = Callable[[Ledger, Pendings], dict[str, str]]
@@ -44,7 +46,14 @@ def ensure_ledger_branch(github: GitHubClient, target: str, pinned_commit: str) 
             raise LedgerWriteError("could not create ledger branch") from exc
 
 
-def _read_at(github: GitHubClient, target: str, head: str) -> tuple[Ledger, Pendings]:
+def _read_at(
+    github: GitHubClient,
+    target: str,
+    head: str,
+    *,
+    leader_only: bool = False,
+    unmeasured: set[int] | None = None,
+) -> tuple[Ledger, Pendings]:
     if not head:
         raise LedgerReadError("ledger branch does not exist; seed it from a pinned commit")
     try:
@@ -61,24 +70,46 @@ def _read_at(github: GitHubClient, target: str, head: str) -> tuple[Ledger, Pend
             path = item["path"]
             if path == LEADER_FILE:
                 leader = parse_leader(github.get_file(target, path, head))
-            elif path.startswith("results/submissions/") and path.endswith(".json"):
+            elif (
+                not leader_only
+                and path.startswith("results/submissions/")
+                and path.endswith(".json")
+                and item.get("sha") != TOMBSTONE_BLOB_SHA
+            ):
                 pending = parse_pending(github.get_file(target, path, head))
                 if pending is not None:
                     if pending.path != path:
                         raise LedgerReadError("submission identity does not match its path")
-                    pendings[path] = pending
+                    if pending.status == "PENDING":
+                        pendings[path] = pending
+                    elif unmeasured is not None:
+                        unmeasured.add(pending.pr_number)
         return leader, pendings
     except (GitHubError, KeyError, TypeError, ValueError) as exc:
         raise LedgerReadError(f"cannot read ledger at {head}") from exc
 
 
-def read_ledger(github: GitHubClient, target: str) -> tuple[str, Ledger, Pendings]:
-    """Read authoritative leader and live submissions at one captured branch head."""
+def read_ledger(
+    github: GitHubClient, target: str, *, unmeasured: set[int] | None = None
+) -> tuple[str, Ledger, Pendings]:
+    """Read leader and live submissions; optionally collect terminal unmeasured PRs."""
     head = github.branch_head(target, RESEARCH_LOG_BRANCH)
     if head is None:
         raise LedgerReadError("ledger branch head unavailable")
-    leader, pendings = _read_at(github, target, head)
+    leader, pendings = _read_at(github, target, head, unmeasured=unmeasured)
     return head, leader, pendings
+
+
+def read_leader(github: GitHubClient, target: str) -> Ledger:
+    """Read only the leader file at a captured branch head."""
+    head = github.branch_head(target, RESEARCH_LOG_BRANCH)
+    if head is None:
+        raise LedgerReadError("ledger branch head unavailable")
+    return _read_at(github, target, head, leader_only=True)[0]
+
+
+def progress_link(target: str) -> str:
+    return f"[Benchmark progress](https://github.com/{target}/blob/{RESEARCH_LOG_BRANCH}/BENCHMARKS.md)"
 
 
 def write_ledger(

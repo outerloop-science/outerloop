@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from outerloop.contract import Benchmark, Contract
 from outerloop.github import GitHubClient, Workspace
-from outerloop.ledger_branch import ensure_ledger_branch, read_ledger, write_ledger
+from outerloop.ledger_branch import ensure_ledger_branch, read_leader, read_ledger, write_ledger
 from outerloop.orchestrator import steward_out_of_scope
 from outerloop.progress import (
     LEADER_FILE,
@@ -23,7 +23,7 @@ from outerloop.progress import (
     record_pending,
     reject,
 )
-from outerloop.runstate import RunRecord, save_record
+from outerloop.runstate import RunRecord, acknowledge_ledger_pending, save_record
 
 log = logging.getLogger(__name__)
 LEDGER_RETRY = "ledger_retry"
@@ -32,7 +32,7 @@ LEDGER_RETRY = "ledger_retry"
 def display_leader(github: GitHubClient, target: str) -> dict[str, LeaderEntry]:
     """A failed display/decision read means no prior, never checkout fallback."""
     try:
-        return read_ledger(github, target)[1]
+        return read_leader(github, target)
     except Exception:
         # API exception strings can contain credentials; no remote detail is needed.
         log.warning("branch ledger unavailable; using no prior measurement")
@@ -51,6 +51,8 @@ def measurement_pending(
     pr_number: int,
     published_head: str,
     timestamp: str,
+    *,
+    kind: str,
 ) -> PendingSubmission:
     signature = json.dumps(bench.measurement_signature(), separators=(",", ":"))
     # Ruler identity includes harness contents, not just its command. Solver
@@ -76,7 +78,7 @@ def measurement_pending(
         pr_number,
         published_head,
         timestamp,
-        kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+        kind=kind,
         min_delta=bench.min_delta or 0.0,
         min_delta_rel=bench.min_delta_rel or 0.0,
     )
@@ -129,11 +131,7 @@ def retry_pending(root: Path, record: RunRecord, github: GitHubClient, now: floa
             log.warning("branch ledger publish deferred; durable retry retained")
             break
         del queue[path]
-        stage = {**record.stage, LEDGER_RETRY: queue}
-        if not queue:
-            stage.pop(LEDGER_RETRY)
-        record = replace(record, stage=stage)
-        save_record(root, record, now)
+        record = acknowledge_ledger_pending(root, record.run_id, path, now)
     return record
 
 
@@ -143,10 +141,11 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
     Returns PRs whose merge tree is unmeasured. An API/ancestry failure raises
     before run cleanup; the immutable pending files are the retry journal.
     """
-    head, _, pendings = read_ledger(github, target)
+    unmeasured: set[int] = set()
+    head, _, pendings = read_ledger(github, target, unmeasured=unmeasured)
     merged: list[tuple[PendingSubmission, str]] = []
     closed: list[PendingSubmission] = []
-    unmeasured: set[int] = set()
+    terminal: list[PendingSubmission] = []
     for pending in pendings.values():
         pr = github.get_pull_request(target, pending.pr_number)
         if pr.get("merged") or pr.get("merged_at"):
@@ -162,7 +161,8 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
                 ):
                     closed.append(pending)
                 else:
-                    log.warning("merged PR head was not measured; submission remains pending")
+                    log.warning("merged PR head was not measured; leaderboard unchanged")
+                    terminal.append(pending)
                     unmeasured.add(pending.pr_number)
                 continue
             merge_tree = github.get_tree(target, sha, recursive=False).get("sha")
@@ -172,7 +172,8 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
             if not merge_tree or not measured_tree:
                 raise ValueError("missing measurement tree")
             if merge_tree != measured_tree:
-                log.warning("merged PR has an unmeasured tree; submission remains pending")
+                log.warning("merged PR has an unmeasured tree; leaderboard unchanged")
+                terminal.append(pending)
                 unmeasured.add(pending.pr_number)
                 continue
             merged.append((pending, sha))
@@ -194,11 +195,14 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
         raise ValueError("merged submissions have unrelated ancestry")
 
     merged.sort(key=cmp_to_key(order))
-    if not merged and not closed:
+    if not merged and not closed and not terminal:
         return unmeasured
 
     def edit(leader, current):
         patch = {}
+        for pending in terminal:
+            if pending.path in current:
+                patch.update(record_pending(replace(pending, status="UNMEASURED")))
         for pending in closed:
             if pending.path in current:
                 patch.update(reject(pending))

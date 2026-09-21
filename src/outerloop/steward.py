@@ -61,6 +61,7 @@ from outerloop.intake import (
     issue_labels,
     qualifying_issue,
 )
+from outerloop.ledger_branch import progress_link
 from outerloop.ledger_events import display_leader, measurement_pending, queue_pending
 from outerloop.markers import has_label, has_marker, marker
 from outerloop.orchestrator import draw_run_seed, steward_out_of_scope
@@ -578,7 +579,7 @@ def live_steward(
             f"them with their own work orders.\n\n"
             f"## Stewardship report\n\n{redact(session.final_text, secrets)[:20000]}"
         )
-        body += f"\n\n[Benchmark progress](https://github.com/{config.target}/blob/research-log/BENCHMARKS.md)\n"
+        body += f"\n\n{progress_link(config.target)}\n"
         pr_url = github.create_pull(
             config.target,
             title=f"[steward] {config.benchmark}: re-based env "
@@ -606,6 +607,7 @@ def live_steward(
                     int(pr_number),
                     measured_sha,
                     created,
+                    kind="RESET",
                 ),
                 contract,
                 now,

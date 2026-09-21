@@ -1,5 +1,6 @@
 """In-memory GitHub branch/CAS surface shared by writer integration tests."""
 
+import hashlib
 from dataclasses import dataclass, field
 
 from outerloop.github import GitHubError
@@ -7,6 +8,7 @@ from outerloop.github import GitHubError
 
 @dataclass
 class LedgerGitHub:
+    comments: list[dict] = field(default_factory=list)
     dry_run: bool = False
     ledger_head: str = "ledger-0"
     ledger_files: dict[str, str] = field(default_factory=dict)
@@ -37,7 +39,18 @@ class LedgerGitHub:
         if not recursive:
             return {"sha": self.trees[sha]}
         files = self.ledger_snapshots.get(sha, self.ledger_files)
-        return {"truncated": False, "tree": [{"path": p} for p in files]}
+        return {
+            "truncated": False,
+            "tree": [
+                {
+                    "path": p,
+                    "sha": hashlib.sha1(
+                        f"blob {len(content.encode())}\0".encode() + content.encode()
+                    ).hexdigest(),
+                }
+                for p, content in files.items()
+            ],
+        }
 
     def get_file(self, repo, path, ref):
         files = self.ledger_snapshots.get(ref, self.ledger_files)
@@ -64,3 +77,9 @@ class LedgerGitHub:
 
     def get_pull_request(self, repo, number):
         return self.pull_requests[number]
+
+    def list_comments(self, repo, number):
+        return self.comments
+
+    def comment(self, repo, number, body):
+        self.comments.append({"body": body})

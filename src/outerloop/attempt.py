@@ -69,14 +69,13 @@ from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
-from outerloop.ledger_branch import LedgerWriteError
+from outerloop.ledger_branch import LedgerWriteError, progress_link
 from outerloop.ledger_events import (
     LEDGER_RETRY,
     display_leader,
     measurement_pending,
     observe_target,
     queue_pending,
-    retry_pending,
 )
 from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
@@ -433,7 +432,6 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 STAGE_RETAINED_KEYS = (
     LEDGER_RETRY,
     "ledger_digits",
-    "ledger_note",
     "launches_used",
     "sleeps_used",
     "gpu_hours_used",
@@ -3714,6 +3712,7 @@ def publish(
                 number,
                 pushed_sha,
                 date,
+                kind="SOLVER",
             ),
             contract,
             now,
@@ -3751,7 +3750,7 @@ def publish(
                 record.target,
                 number,
                 f"---\n**Edit ({date}, submit):** {note}\n\n"
-                f"[Benchmark progress](https://github.com/{config.target}/blob/research-log/BENCHMARKS.md)\n\n"
+                f"{progress_link(config.target)}\n\n"
                 f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
                 f"{_self_merge_line(blessed_head, bless_reason)}",
             ),
@@ -3831,7 +3830,7 @@ def publish(
                 display_digits=bench.display_digits,
                 experiments=experiments_rows(run_dir),
             )
-            body += f"\n\n[Benchmark progress](https://github.com/{config.target}/blob/research-log/BENCHMARKS.md)\n"
+            body += f"\n\n{progress_link(config.target)}\n"
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(
@@ -3877,6 +3876,7 @@ def publish(
                     int(pr_number),
                     published_head,
                     date,
+                    kind="SOLVER",
                 ),
                 contract,
                 now,
@@ -5072,9 +5072,6 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
 
     if record.state == ENDED or not record.pr_url:
         return ""
-    record = retry_pending(run_root, record, github, now)
-    if record.stage.get(LEDGER_RETRY):
-        return ""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
     except GitHubError as exc:
@@ -5094,11 +5091,15 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
         unmeasured = observe_target(github, record.target, _ledger_digits(record))
     except Exception as exc:
         raise LedgerWriteError("branch ledger observation deferred") from exc
-    if _pr_number(record.pr_url) in unmeasured:
-        record = dc_replace(record, stage={**record.stage, "ledger_note": "unmeasured merge tree"})
-        save_record(run_root, record, now)
-        return ""
     note = "PR merged" if ending == MERGED else "PR closed unmerged"
+    if _pr_number(record.pr_url) in unmeasured:
+        note = "PR merged; merged tree was not measured, leaderboard unchanged"
+        marker = "<!-- outerloop:unmeasured-merge -->"
+        if not any(
+            marker in str(c.get("body", ""))
+            for c in github.list_comments(record.target, _pr_number(record.pr_url))
+        ):
+            github.comment(record.target, _pr_number(record.pr_url), f"{marker}\n{note}")
     finish_run(run_root, record, ending, note, now, github)
     return ending
 

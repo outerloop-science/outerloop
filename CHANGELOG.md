@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Ledger retries include ended runs without blocking PR inbox polling; unmeasured merges finish with a retained terminal submission and one explanatory PR comment. Ledger reads skip tombstones, and leader displays fetch only the leader file.
+
 - A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
 
 - A submit after the base moves is checkpointed before any gate compute runs. Staged experiments do not run. The author is told to fold the base and submit again, or that the gate pin was refreshed.

@@ -22,7 +22,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 log = logging.getLogger(__name__)
 
@@ -197,6 +197,26 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
         if latest is not None and latest.state == ENDED:
             return
         _save_record(root, record, now)
+
+
+def acknowledge_ledger_pending(root: Path, run_id: str, path: str, now: float) -> RunRecord:
+    """Remove a persisted ledger intent, including terminal-run cleanup."""
+    from outerloop.ledger_events import LEDGER_RETRY
+
+    directory = run_dir(root, run_id)
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_record(root, run_id)
+        stage = dict(record.stage)
+        queue = dict(cast(dict[str, object], stage.get(LEDGER_RETRY) or {}))
+        queue.pop(path, None)
+        if queue:
+            stage[LEDGER_RETRY] = queue
+        else:
+            stage.pop(LEDGER_RETRY, None)
+        record = replace(record, stage=stage)
+        _save_record(root, record, now)
+        return record
 
 
 def mark_launches_cancelled(root: Path, run_id: str, now: float) -> None:
