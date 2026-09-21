@@ -1625,7 +1625,7 @@ def _wake_author_sleep(
         if sleep_ref:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
-    except GitError as exc:
+    except ScopeHistoryError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     finally:
         for snap in snapshots:
@@ -2261,6 +2261,17 @@ def _checkout_line(
     return line
 
 
+class ScopeHistoryError(GitError):
+    """Publishing requires shared history with the fetched base."""
+
+    def __init__(self, base_ref: str) -> None:
+        branch = base_ref.removeprefix("refs/remotes/origin/")
+        super().__init__(
+            f"Publish refused: cannot find shared history between the candidate and {branch}; "
+            "fetch the base and fold it, then submit again."
+        )
+
+
 def submission_paths(
     ws: Workspace,
     base_ref: str,
@@ -2278,10 +2289,7 @@ def submission_paths(
         if not common:
             raise GitError("no merge-base")
     except GitError:
-        raise GitError(
-            f"Publish refused: cannot find shared history between the candidate and {base_ref}; "
-            "fetch the base and fold it, then submit again."
-        ) from None
+        raise ScopeHistoryError(base_ref) from None
     if not candidate_ref:
         ws.git("add", "-A")
     try:
@@ -2504,10 +2512,10 @@ def resume_run(
     scope_base = f"refs/remotes/origin/{stage.get('base_branch') or base_branch}"
     pinned_tip = _rev(ws, scope_base)
     if not pinned_tip:
-        try:
-            submission_paths(ws, scope_base, str(stage.get("candidate_sha") or "HEAD"))
-        except GitError as exc:
-            return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
+        # An unresolvable base cannot be scope-checked: refuse, never guess.
+        return _end_refused_wake(
+            run_root, record, ScopeHistoryError(scope_base), now, secrets, ws.auth
+        )
 
     if record.pr_url and not stage.get("phase"):
         base_branch = str(stage.get("base_branch") or base_branch)
@@ -2572,7 +2580,7 @@ def resume_run(
                 exclude_memory=bool(_line_ref_for(bench, config.agent_id)),
             )
         )
-    except GitError as exc:
+    except ScopeHistoryError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]

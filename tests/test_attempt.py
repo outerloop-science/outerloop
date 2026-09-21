@@ -6875,10 +6875,10 @@ def test_scope_merge_base_counts_only_author_changes(tmp_path, committed, folded
     assert bool(violations) == (path != "src/pilot/solvers/tsp.py")
 
 
-@pytest.mark.parametrize("base", ["unrelated", "missing"])
+@pytest.mark.parametrize("base", ["unrelated", "missing", "refs/remotes/origin/main"])
 def test_scope_merge_base_requires_shared_history(tmp_path, base):
-    from outerloop.attempt import submission_paths
-    from outerloop.github import GitError, Workspace
+    from outerloop.attempt import ScopeHistoryError, submission_paths
+    from outerloop.github import Workspace
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -6889,8 +6889,13 @@ def test_scope_merge_base_requires_shared_history(tmp_path, base):
     _git(root, "checkout", "--orphan", "unrelated")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "unrelated")
     _git(root, "checkout", "main")
-    with pytest.raises(GitError, match=f"Publish refused:.*{base}; fetch the base and fold it"):
+    branch = base.removeprefix("refs/remotes/origin/")
+    with pytest.raises(ScopeHistoryError) as exc:
         submission_paths(Workspace(root=root), base)
+    assert str(exc.value) == (
+        f"Publish refused: cannot find shared history between the candidate and {branch}; "
+        "fetch the base and fold it, then submit again."
+    )
 
 
 @pytest.mark.parametrize("failure", ["unrelated", "missing"])
@@ -6936,6 +6941,11 @@ def test_resumed_scope_missing_history_ends_without_publish(tmp_path, monkeypatc
     candidate = _git(root, "rev-parse", "HEAD").strip()
     stage = {**record.stage, "phase": phase, "candidate_sha": candidate}
     if history == "unfetched":
+
+        def unexpected_collector(*args, **kwargs):
+            pytest.fail("missing base must be refused before collecting paths")
+
+        monkeypatch.setattr("outerloop.attempt.submission_paths", unexpected_collector)
         monkeypatch.setattr(Workspace, "fetch_origin", lambda self: None)
         stage["base_branch"] = "private-secret-base"
         record = replace(record, pr_url="https://github.com/org/pilot/pull/23")
@@ -6960,6 +6970,7 @@ def test_resumed_scope_missing_history_ends_without_publish(tmp_path, monkeypatc
     assert record.ending == "aborted"
     assert "Publish refused: cannot find shared history" in record.ending_note
     assert "private-secret" not in record.ending_note
+    assert "refs/remotes/origin/" not in record.ending_note
 
 
 def test_scope_merge_base_counts_rename_source_and_preserves_memory_filter(tmp_path):

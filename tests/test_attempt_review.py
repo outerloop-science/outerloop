@@ -1839,3 +1839,22 @@ def test_steward_followup_publishes_pending_reset(review_run, monkeypatch):
         panel_skip="",
         agent_id="steward",
     )
+
+
+@pytest.mark.parametrize("site", ["submission_paths", "run_author_leg"])
+def test_unrelated_wake_git_error_remains_retryable(review_run, monkeypatch, site):
+    from outerloop import attempt
+    from outerloop.github import GitError
+
+    root, _ = review_run
+    github = FakeGitHub(comments=[member(91, "Please revise the solver")])
+
+    def fail(*args, **kwargs):
+        raise GitError("transient push failure")
+
+    monkeypatch.setattr(attempt, site, fail)
+    with pytest.raises(GitError, match="transient push failure"):
+        respond(root, github)
+    record = load_record(root, "tsp-r1")
+    assert record.state == PARKED
+    assert record.ending != "aborted"
