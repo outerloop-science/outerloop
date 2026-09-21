@@ -34,3 +34,7 @@ uv run pre-commit run --all-files
   green is not read.
 - Imports are absolute (`from autoresearch...`); deps go in with their code +
   `uv lock`; CHANGELOG under `[Unreleased]`.
+- A PR that changes state read across kernel versions (run records, PR
+  branches, ledger files, inbox messages, caches) carries a compatibility
+  statement, a legacy fixture, a backfill or tolerance, and an `Upgrading:`
+  changelog line (RELEASING.md).
