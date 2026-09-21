@@ -43,6 +43,7 @@ from outerloop.compute import (
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.limits import EffectiveLimits, effective_limits
 from outerloop.markers import has_marker, marker
 from outerloop.runstate import (
@@ -1027,12 +1028,33 @@ def sweep(
     reaped: list[str] = []
     stuck: list[str] = []
     holder = f"tick:{socket.gethostname()}:{os.getpid()}"
-    records = [r for r in list_runs(root) if r.state in (PARKED, RUNNING)]
+    all_records = list_runs(root)
+    records = [r for r in all_records if r.state in (PARKED, RUNNING)]
     ended: list[tuple[str, str]] = []
 
     def wake(record: RunRecord, reason: str, tag: str) -> None:
         if dry_run or _wake(root, record, reason, dispatcher, now, holder):
             woken.append((record.run_id, tag))
+
+    ledger_blocked: set[str] = set()
+    if github is not None and not dry_run:
+        from outerloop.ledger_events import retry_pending
+        from outerloop.runstate import LEDGER_RETRY
+
+        # Materialize every durable publish before any merge observation, so
+        # a deferred ruler reset participates in this sweep's ancestry ordering.
+        for record in all_records:
+            if record.state not in (PARKED, RUNNING, ENDED) or not record.stage.get(LEDGER_RETRY):
+                continue
+            if acquire_lease(root, record.run_id, holder, "", now):
+                try:
+                    record = load_record(root, record.run_id)
+                    record = retry_pending(root, record, github, now)
+                finally:
+                    release_lease(root, record.run_id)
+            if record.stage.get(LEDGER_RETRY):
+                ledger_blocked.add(record.target)
+        records = [load_record(root, r.run_id) for r in records]
 
     for record in records:
         try:
@@ -1048,10 +1070,15 @@ def sweep(
                     from outerloop.attempt import close_if_done
                     from outerloop.inbox import gather_github_messages
 
-                    ending = close_if_done(root, record, github, now)
+                    ending = (
+                        ""
+                        if record.target in ledger_blocked
+                        else close_if_done(root, record, github, now)
+                    )
                     if ending:
                         ended.append((record.run_id, ending))
                         continue
+                    record = load_record(root, record.run_id)
                     pr = github.get_pull_request(
                         record.target, int(record.pr_url.rstrip("/").split("/")[-1])
                     )
@@ -1165,7 +1192,6 @@ def cancel_ended_launches(
     return cancelled
 
 
-RESEARCH_LOG_BRANCH = "research-log"
 RESEARCH_LOG_MARKER = marker("research-log")
 RESEARCH_LOG_PER_TICK = 3
 

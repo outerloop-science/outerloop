@@ -68,6 +68,14 @@ from outerloop.harness import (
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
+from outerloop.ledger_branch import LedgerWriteError, progress_link
+from outerloop.ledger_events import (
+    display_leader,
+    measurement_pending,
+    observe_target,
+    queue_pending,
+)
 from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -86,13 +94,7 @@ from outerloop.orchestrator import (
 )
 from outerloop.panel import PanelLens, PanelVerdict, run_panel
 from outerloop.paths import CONFIG_DIR
-from outerloop.progress import (
-    PROGRESS_PATHS,
-    fmt_metric,
-    load_leader,
-    update_leader,
-    write_progress,
-)
+from outerloop.progress import fmt_metric
 from outerloop.review import PullRequest
 from outerloop.role_runner import build_harness, role_key
 from outerloop.roles import author_spec
@@ -101,6 +103,7 @@ from outerloop.runstate import (
     ABORTED,
     BUDGET_EXHAUSTED,
     ENDED,
+    LEDGER_RETRY,
     NEGATIVE_RESULT,
     PARKED,
     RUNNING,
@@ -427,6 +430,8 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 STAGE_RETAINED_KEYS = (
+    LEDGER_RETRY,
+    "ledger_digits",
     "launches_used",
     "sleeps_used",
     "gpu_hours_used",
@@ -1808,7 +1813,6 @@ def _launch_refund(
     return launch_hours_refund(launches, elapsed, gpus=gpus)
 
 
-RESEARCH_LOG_BRANCH = "research-log"
 MAX_ARCHIVED_REPORTS = 30  # materialized for the session to read; newest first
 MAX_ARCHIVED_REPORT_CHARS = 100_000  # per report; branch content is remote-controlled
 
@@ -2305,8 +2309,8 @@ def _paths_changed_from_base(
 ) -> list[str]:
     """Count staged changes differing from primary, with secondary record exemptions.
 
-    Folding main can stage its ledger edits against a stale HEAD. Only the
-    kernel's record paths may match a secondary reference; other paths always
+    Legacy main-ledger edits can be staged against a stale HEAD. Only
+    record paths may match a secondary reference; other paths always
     count when they differ from primary. Unresolved secondaries are skipped.
     """
     commits = _resolved_bases(ws, [primary], fallback) + _resolved_bases(ws, secondary)
@@ -2471,7 +2475,7 @@ def resume_run(
       drop the candidate snapshot and end the record;
     * **improved** — branch the SEALED `candidate_sha` (never the live tree,
       which may have drifted since the park; the diff was scope-checked so it
-      carries only in-scope changes), layer the ledger update on top, push, and
+      carries only in-scope changes), push the measured tree, and
       open the PR. A moved base is NOT merged and re-measured here
       (docs/design/research-loop.md): a stale PR is a re-wake, not an
       orchestrator auto-merge.
@@ -3400,20 +3404,14 @@ def _finish_attempt(
     )
 
 
-def _update_ledger(
-    workspace: Path,
+def _ledger_comparison(
+    github: GitHubClient,
     bench: Any,
-    contract: Any,
     candidate: float,
-    run_id: str,
-    created: str,
-    run_seed: int,
     target: str,
-    *,
-    baseline: float | None = None,
 ) -> tuple[Any, str]:
-    """Move the best row only past the cross-seed floor; explain an unchanged row."""
-    prior = load_leader(workspace).get(bench.name)
+    """Explain the confirmed prior and its cross-seed floor without mutating it."""
+    prior = display_leader(github, target).get(bench.name)
     floor_note = ""
     beats_prior = prior is not None and (
         candidate > prior.best if bench.direction == "max" else candidate < prior.best
@@ -3435,24 +3433,6 @@ def _update_ledger(
         )
         floor_note = (
             f" — within {where} of the recorded best {prior.best}, so the ledger row is unchanged"
-        )
-    if not floor_note:
-        entries = update_leader(
-            load_leader(workspace),
-            benchmark=bench.name,
-            metric=bench.metric,
-            direction=bench.direction,
-            baseline=candidate if baseline is None else baseline,
-            candidate=candidate,
-            run_id=run_id,
-            date=created[:10],
-            run_seed=run_seed,
-        )
-        write_progress(
-            workspace,
-            entries,
-            target,
-            digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
         )
     return prior, floor_note
 
@@ -3590,7 +3570,7 @@ def publish(
         number = int(record.pr_url.rstrip("/").split("/")[-1])
         if not _measured_note_on_thread(github, record.target, number, result.candidate_sha):
             note = _measured_note(bench, result.candidate, result.candidate_sha)
-            prior = load_leader(workspace).get(bench.name)
+            prior = display_leader(github, config.target).get(bench.name)
             if prior is not None and (
                 result.candidate < prior.best
                 if bench.direction == "max"
@@ -3655,7 +3635,7 @@ def publish(
         if landed:
             assert isinstance(journal, dict)
             pushed_sha = str(journal.get("pushed_sha", result.candidate_sha))
-            prior = load_leader(workspace).get(bench.name)
+            prior = display_leader(github, config.target).get(bench.name)
             floor_note = str(journal.get("floor_note", ""))
         else:
             if not head or not _is_ancestor(ws, head, result.candidate_sha):
@@ -3688,27 +3668,7 @@ def publish(
             ).strip()
             ws.git("checkout", "-f", "-B", branch, pushed_sha)
             ws.git("clean", "-fd")
-            prior, floor_note = _update_ledger(
-                workspace,
-                bench,
-                contract,
-                result.candidate,
-                run_id,
-                date,
-                result.run_seed,
-                config.target,
-            )
-            ws.git("add", "--", *PROGRESS_PATHS)
-            staged = ws.staged_paths()
-            if any(path not in PROGRESS_PATHS for path in staged):
-                raise WorkspaceDrift("publish would stage non-ledger paths")
-            if staged:
-                ws.git(
-                    *git_identity(config.bot_login),
-                    "commit",
-                    "-m",
-                    "agent: record submitted measurement",
-                )
+            prior, floor_note = _ledger_comparison(github, bench, result.candidate, config.target)
             pushed_head = ws.git("rev-parse", "HEAD").strip()
             record = dc_replace(
                 record,
@@ -3736,6 +3696,27 @@ def publish(
                     moved,
                     moved=True,
                 )
+        record = queue_pending(
+            run_root,
+            record,
+            github,
+            measurement_pending(
+                ws,
+                contract,
+                bench,
+                record,
+                result.baseline if result.baseline is not None else result.candidate,
+                result.candidate,
+                result.run_seed,
+                result.candidate_sha,
+                number,
+                pushed_sha,
+                date,
+                kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+            ),
+            contract,
+            now,
+        )
         worse = prior is not None and (
             result.candidate < prior.best
             if bench.direction == "max"
@@ -3769,6 +3750,7 @@ def publish(
                 record.target,
                 number,
                 f"---\n**Edit ({date}, submit):** {note}\n\n"
+                f"{progress_link(config.target)}\n\n"
                 f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
                 f"{_self_merge_line(blessed_head, bless_reason)}",
             ),
@@ -3836,36 +3818,9 @@ def publish(
             # tree. The snapshot commit is anchored by the new branch (the
             # dropped dispatch ref left it unreferenced; nothing pruned it in
             # this process). clean -fd drops post-snapshot cruft so the
-            # pushed tree is exactly candidate_sha plus the ledger commit.
+            # pushed tree is exactly candidate_sha.
             ws.git("checkout", "-f", "-B", branch, result.candidate_sha)
             ws.git("clean", "-fd")
-            _update_ledger(
-                workspace,
-                bench,
-                contract,
-                candidate,
-                run_id,
-                date,
-                result.run_seed,
-                config.target,
-                baseline=baseline,
-            )
-            # Stage ONLY the ledger files on top of the sealed candidate —
-            # never `git add -A`, which would sweep in anything a session or
-            # eval left behind (same rule as the wake publish).
-            ws.git("add", "--", *PROGRESS_PATHS)
-            staged = ws.staged_paths()
-            extra = [p for p in staged if p not in PROGRESS_PATHS]
-            if extra:
-                raise WorkspaceDrift(f"publish would stage non-ledger paths: {extra[:10]}")
-            if staged:
-                ws.git(
-                    *git_identity(config.bot_login),
-                    "commit",
-                    "-m",
-                    f"agent: improve {config.benchmark} ({_title_pair(baseline, candidate)})"
-                    f"\n\nAgent: {config.agent_id}",
-                )
             ws.push(branch)
             pushed = True
             body = pr_body(
@@ -3875,6 +3830,7 @@ def publish(
                 display_digits=bench.display_digits,
                 experiments=experiments_rows(run_dir),
             )
+            body += f"\n\n{progress_link(config.target)}\n"
             if issue_number:
                 body = f"Addresses #{issue_number}.\n\n{body}"
             pr_url = github.create_pull(
@@ -3894,6 +3850,37 @@ def publish(
         # enforced in code, not in per-repo config. Never arm a draft,
         # and never arm a claim whose base has moved (_arm_unless_base_moved).
         pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+        if pr_number.isdigit():
+            published_head = (
+                str(
+                    (github.get_pull_request(config.target, int(pr_number)).get("head") or {}).get(
+                        "sha", ""
+                    )
+                )
+                if existing
+                else ""
+            ) or ws.git("rev-parse", "HEAD").strip()
+            record = queue_pending(
+                run_root,
+                dc_replace(record, pr_url=pr_url),
+                github,
+                measurement_pending(
+                    ws,
+                    contract,
+                    bench,
+                    record,
+                    baseline,
+                    candidate,
+                    result.run_seed,
+                    result.candidate_sha,
+                    int(pr_number),
+                    published_head,
+                    date,
+                    kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+                ),
+                contract,
+                now,
+            )
         if pr_number.isdigit() and not draft:
             _arm_unless_base_moved(
                 github,
@@ -4361,7 +4348,7 @@ def live_attempt(
         try:
             # the last-known score orients the brief only; the gate re-measures
             # both sides after the session, so None (a first run) is fine.
-            prior_best = load_leader(workspace).get(config.benchmark)
+            prior_best = display_leader(github, config.target).get(config.benchmark)
             result = attempt_once(
                 config,
                 contract_text,
@@ -5069,6 +5056,15 @@ def main() -> int:
     return 0
 
 
+def _ledger_digits(record: RunRecord) -> dict[str, int]:
+    digits = record.stage.get("ledger_digits")
+    return (
+        {str(k): v for k, v in digits.items() if isinstance(v, int)}
+        if isinstance(digits, dict)
+        else {}
+    )
+
+
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
     """Route a human PR ending through the run terminal."""
     from outerloop.github import GitHubError
@@ -5091,7 +5087,20 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
     )
     if not ending:
         return ""
+    try:
+        unmeasured = observe_target(github, record.target, _ledger_digits(record))
+    except Exception as exc:
+        raise LedgerWriteError("branch ledger observation deferred") from exc
     note = "PR merged" if ending == MERGED else "PR closed unmerged"
+    if _pr_number(record.pr_url) in unmeasured:
+        note = "PR merged; merged tree was not measured, leaderboard unchanged"
+        if not any(
+            has_marker(str(c.get("body", "")), "unmeasured-merge")
+            for c in github.list_comments(record.target, _pr_number(record.pr_url))
+        ):
+            github.comment(
+                record.target, _pr_number(record.pr_url), f"{marker('unmeasured-merge')}\n{note}"
+            )
     finish_run(run_root, record, ending, note, now, github)
     return ending
 

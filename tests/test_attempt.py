@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import ClassVar, cast
 
 import pytest
 
+from ledger_fake import LedgerGitHub
 from outerloop import attempt as climb_mod
 from outerloop.attempt import _park_run, live_attempt, resume_run
 from outerloop.dispatch import Snapshot
@@ -752,11 +754,14 @@ class QueueCompute:
 
 
 @dataclass
-class FakeGitHub:
+class FakeGitHub(LedgerGitHub):
     prs: list[dict] = field(default_factory=list)
     armed: list[tuple[str, int]] = field(default_factory=list)
     arming_error: str = ""
     existing_pr: str = ""  # find_open_pull_for_head returns this (idempotency)
+
+    def get_pull_request(self, repo, number):
+        return self.pull_requests.get(number, {"state": "open", "head": {}})
 
     def create_pull(self, repo, title, head, base, body, draft=False) -> str:
         self.prs.append(dict(repo=repo, title=title, head=head, base=base, body=body, draft=draft))
@@ -890,8 +895,16 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     files = set(
         _git(target_repo, "diff", "--name-only", "main", "feat/auto/agent-01/tsp-1").split()
     )
-    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
+    assert files == {"src/pilot/solvers/tsp.py"}
+    pending = next(
+        json.loads(v)
+        for k, v in github.ledger_files.items()
+        if k.startswith("results/submissions/")
+    )
+    assert pending["candidate"] == 13.1 and pending["baseline"] == 13.876
+    assert json.loads(github.ledger_files["results/leader.json"]) == {}
     pr = github.prs[0]
+    assert "blob/research-log/BENCHMARKS.md" in pr["body"]
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
@@ -1228,10 +1241,12 @@ def test_seeded_climb_records_the_seed_in_the_ledger(tmp_path, target_repo) -> N
         run_id="tsp-seeded",
     )
     assert outcome.outcome == "improved"
-    leader = _json.loads(
-        _git(target_repo, "show", "feat/auto/agent-01/tsp-seeded:results/leader.json")
+    pending = next(
+        _json.loads(v)
+        for k, v in _github.ledger_files.items()
+        if k.startswith("results/submissions/")
     )
-    assert leader["tsp"]["run_seed"] > 0
+    assert pending["run_seed"] > 0
 
 
 def test_climb_error_still_writes_a_report(tmp_path, target_repo) -> None:
@@ -1487,7 +1502,7 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
     # THE unification's core pin: after the seal, the workspace diverges (an
     # untracked file appears AND a tracked file is rewritten — eval cruft, a
     # stray write, anything). The pushed branch must be exactly the SEALED
-    # candidate plus the ledger commit — the divergence never ships.
+    # measured candidate — the divergence never ships.
     class DivergingCompute(QueueCompute):
         def __init__(self, values, ws_root):
             super().__init__(values=values)
@@ -1525,7 +1540,7 @@ def test_inline_publish_ships_the_sealed_sha_not_the_live_workspace(tmp_path, ta
     assert outcome.outcome == "improved"
     branch = "feat/auto/agent-01/tsp-seal"
     files = set(_git(target_repo, "diff", "--name-only", "main", branch).split())
-    assert files == {"src/pilot/solvers/tsp.py", "BENCHMARKS.md", "results/leader.json"}
+    assert files == {"src/pilot/solvers/tsp.py"}
     # the tracked file ships at its SEALED content, not the post-seal rewrite
     assert "return 7" in _git(target_repo, "show", f"{branch}:src/pilot/solvers/tsp.py")
 
@@ -2343,7 +2358,7 @@ def _write_parked_candidate(
     snap = snapshot_tree(ws, base_sha)  # candidate_sha, retained under its ref
     # cruft that appears AFTER the snapshot (a dispatched eval / session
     # leftover): it is in the wake's working tree but NOT in candidate_sha, so
-    # the finish's force-checkout keeps it around and the ledger-only commit
+    # the finish's force-checkout keeps it around; publication
     # must NOT sweep it into the PR.
     (wsroot / "eval-cache.tmp").write_text("junk an eval left behind\n")
     candidate_sha = snap.commit
@@ -2548,7 +2563,7 @@ def test_resume_improved_pushes_and_opens_pr(tmp_path, monkeypatch) -> None:
     # and NOT the untracked eval cruft the session left in the workspace
     files = set(_git(bare, "ls-tree", "-r", "--name-only", "feat/auto/agent-01/tsp-1").split())
     assert "src/pilot/solvers/tsp.py" in files
-    assert {"BENCHMARKS.md", "results/leader.json"} <= files
+    assert not {"BENCHMARKS.md", "results/leader.json"} & files
     assert "eval-cache.tmp" not in files
     assert "def solve(): return 'better'" in _git(
         bare, "show", "feat/auto/agent-01/tsp-1:src/pilot/solvers/tsp.py"
@@ -4403,7 +4418,7 @@ def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_rep
     (memory survives) and the message names the gate outcome; the ledger
     stays on main and reaches the line at the next run-start merge."""
     github = FakeGitHub()
-    queue = [13.876, 13.1]  # improvement: PR + ledger
+    queue = [13.876, 13.1]  # improvement: PR + pending branch record
     with _queued_local(queue):
         outcome = live_attempt(
             config=RunConfig(target="org/pilot", benchmark="tsp", agent_id="agent-07"),
@@ -4420,7 +4435,7 @@ def test_improved_terminal_notebook_names_the_final_outcome(tmp_path, target_rep
     assert "tsp-lines-2" in msg and "improved" in msg
     tree = _git(target_repo_lines, "ls-tree", "-r", "--name-only", "agents/agent-07")
     assert "src/pilot/solvers/tsp.py" in tree  # the session's final tree
-    assert "results/leader.json" not in tree  # the ledger lives on main
+    assert "results/leader.json" not in tree  # the ledger lives on research-log
 
 
 def test_line_memory_never_reaches_a_measurable_seal(tmp_path, target_repo_lines) -> None:

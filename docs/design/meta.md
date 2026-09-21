@@ -123,8 +123,11 @@ vetoable self-proposed plans), verifier's adversarial read, human merge.
 
 ## Progress webpage
 
-Everything is already in git: `results/leader.json` history, run reports,
-plan issues, BENCHMARKS.md. A static generator renders charts (leader
+The generator reads `results/leader.json` history, run reports, and
+`BENCHMARKS.md` from `research-log`, plus plan issues. Results are pending at
+publish and confirmed when the kernel observes the merge. The main-commit
+column identifies confirmed results; imported rows say "provenance unknown".
+PRs carry only the measured tree. A static generator renders charts (leader
 trajectories per benchmark), run timelines, and report indexes — GitHub
 Pages on public repos, a private artifact before that. No server, no new
 state, no new trust surface (the generator reads git, writes HTML).

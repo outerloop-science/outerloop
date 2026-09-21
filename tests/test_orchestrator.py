@@ -223,7 +223,7 @@ def test_first_run_brief_has_no_baseline_number(tmp_path: Path) -> None:
     result, harness, _ = run_climb(tmp_path, [13.876, 13.10])  # brief_baseline defaults None
     assert result.outcome == "improved" and result.baseline == 13.876
     brief_text = harness.calls[0][0]
-    assert "no score recorded yet" in brief_text  # no reference number
+    assert "current score unknown" in brief_text  # no reference number
     assert "currently" not in brief_text  # and no fabricated baseline
     assert "lower is better" in brief_text  # the metric context still orients
 
@@ -1226,14 +1226,16 @@ def test_report_redacts_secrets(tmp_path: Path) -> None:
 
 def test_progress_render_and_ledger_roundtrip(tmp_path: Path) -> None:
     from outerloop.progress import (
+        LeaderEntry,
         load_leader,
         render_markdown,
-        update_leader,
         write_progress,
     )
 
-    entries = update_leader({}, "tsp", "mean_tour_length", "min", 13.876, 13.1, "r1", "2026-08-06")
-    entries = update_leader(entries, "sokoban", "solve_rate", "max", 0.25, 0.31, "r2", "2026-08-06")
+    entries = {
+        "tsp": LeaderEntry("tsp", "mean_tour_length", "min", 13.876, 13.1, "r1", "2026-08-06"),
+        "sokoban": LeaderEntry("sokoban", "solve_rate", "max", 0.25, 0.31, "r2", "2026-08-06"),
+    }
     write_progress(tmp_path, entries, "org/pilot")
     reloaded = load_leader(tmp_path)
     assert reloaded == entries
@@ -1249,19 +1251,6 @@ def test_leader_survives_corruption(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True)
     path.write_text("{broken")
     assert load_leader(tmp_path) == {}
-
-
-def test_leader_best_never_regresses() -> None:
-    from outerloop.progress import update_leader
-
-    entries = update_leader({}, "tsp", "m", "min", 13.876, 13.1, "r1", "d1")
-    # a later run improved vs its own (stale) baseline but is worse than best
-    entries = update_leader(entries, "tsp", "m", "min", 13.876, 13.5, "r2", "d2")
-    assert entries["tsp"].best == 13.1
-    assert entries["tsp"].best_run == "r1"
-    # a genuinely better run still advances it
-    entries = update_leader(entries, "tsp", "m", "min", 13.1, 12.9, "r3", "d3")
-    assert entries["tsp"].best == 12.9
 
 
 def test_eval_cache_is_bound_alone_and_cleaned(tmp_path: Path, monkeypatch) -> None:

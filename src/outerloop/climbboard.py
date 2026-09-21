@@ -31,12 +31,12 @@ from typing import Any
 from outerloop.hypothesis import MAX_HYPOTHESIS_CHARS as MAX_HYPOTHESIS_CHARS
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import wake_pending
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as BOARD_BRANCH
 from outerloop.markers import marker
 from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 
 log = logging.getLogger("outerloop.climbboard")
 
-BOARD_BRANCH = "research-log"
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
 MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one
@@ -287,6 +287,7 @@ def render_md(
         "",
         "Written by the kernel when runs end. Data: `climb/data/<benchmark>.json`;",
         "chart: open `index.html` from a clone of this branch.",
+        "This page is attempt history. Confirmed results: [BENCHMARKS.md](BENCHMARKS.md).",
     ]
     for benchmark in sorted(boards):
         rows = boards[benchmark]
@@ -439,6 +440,8 @@ def render_html(
         f"<header><h1>{target} <span>· climb</span></h1>\n"
         "<button id='theme' title='theme: auto / light / dark'>auto</button>\n"
         "</header>\n"
+        "<p>This page is attempt history. Confirmed results: "
+        "<a href='BENCHMARKS.md'>BENCHMARKS.md</a>.</p>\n"
         "<div id='now' class='chips'></div>\n"
         "<div id='charts'></div>\n<script>\n"
         f"const data = {payload};\n"
@@ -1405,12 +1408,10 @@ def service_climb_board(
     # render without it until a later pass reads it again. An index that
     # could not be READ at all (None) is never rewritten this pass.
     wanted = {b: directions.get(b, "min") for b in sorted(set(boards) | set(index or {}))}
-    # the starting positions come from the target's ledger on its default
-    # branch — best-effort: a missing or unreadable ledger just drops the chip
+    # Read the baseline at this pass's research-log pin; failure drops the chip.
     starts: dict[str, float] = {}
     try:
-        # ref HEAD = the repo's default branch, whatever it is named
-        raw_leader = github.get_file_content(target, "results/leader.json", "HEAD")
+        raw_leader = github.get_file(target, "results/leader.json", head) if head else None
         if raw_leader:
             for name, entry in json.loads(raw_leader).items():
                 value = entry.get("baseline") if isinstance(entry, dict) else None

@@ -271,6 +271,23 @@ class GitHubClient:
             raise GitHubError(200, path, "missing branch SHA")
         return sha
 
+    def get_tree(self, repo: str, sha: str, recursive: bool = True) -> dict:
+        """Read a Git tree by commit or tree SHA; callers check truncation."""
+        ref = urllib.parse.quote(sha, safe="")
+        path = f"/repos/{urllib.parse.quote(repo)}/git/trees/{ref}"
+        if recursive:
+            path += "?recursive=1"
+        return self._expect_dict(self._request("GET", path), path)
+
+    def create_ref(self, repo: str, ref: str, sha: str) -> None:
+        """Create a ref without replacing an existing ref."""
+        if self.dry_run:
+            log.info("[dry-run] create Git ref")
+            return
+        self._request(
+            "POST", f"/repos/{urllib.parse.quote(repo)}/git/refs", {"ref": ref, "sha": sha}
+        )
+
     def compare(self, repo: str, base: str, head: str) -> dict:
         """Compare a head with a base using GitHub's commit ancestry."""
         base_ref = urllib.parse.quote(base, safe="")

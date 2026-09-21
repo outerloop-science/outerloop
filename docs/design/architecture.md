@@ -289,7 +289,17 @@ grep + recency + distillation until that provably fails.
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |
 | `limits` | Effective session and job limits — turns, session and job minutes — with each contract wish clamped into our `[floor, ceiling]`; the tick's `OUTERLOOP_MAX_JOB_MINUTES` floors here |
-| `progress` / `climbboard` | `progress` writes the human-readable benchmark-progress files into the target repo on each improvement PR; `climbboard` publishes the climb board — every ended attempt and its outcome, plus the ledger and views — to the target's `research-log` branch whenever runs end |
+| `progress` / `climbboard` | `progress` records pending measurements at publish and confirms them when the kernel observes the merge, writing `results/leader.json` and `BENCHMARKS.md` on `research-log`; PRs carry only the measured tree; `climbboard` publishes the climb board — every ended attempt and its outcome, plus the ledger and views — to the target's `research-log` branch whenever runs end |
+
+The ledger's main-commit column links confirmed merges. Imported rows say
+"provenance unknown"; an import SHA identifies only the source snapshot.
+
+Operators seed an existing target with
+`outerloop migrate-ledger --target OWNER/REPO --main-sha FULL_SHA`.
+The SHA must be the current default-branch tip. The command imports the exact
+ledger file at that SHA, preserving numbers and seeds without claiming a
+measured SHA. `--dry-run` prints the table without writes; `--force` permits
+replacing an existing branch ledger. The copies on main are no longer updated.
 
 ## Harness and context engineering
 

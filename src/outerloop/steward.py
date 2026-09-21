@@ -61,16 +61,12 @@ from outerloop.intake import (
     issue_labels,
     qualifying_issue,
 )
+from outerloop.ledger_branch import progress_link
+from outerloop.ledger_events import display_leader, measurement_pending, queue_pending
 from outerloop.markers import has_label, has_marker, marker
 from outerloop.orchestrator import draw_run_seed, steward_out_of_scope
 from outerloop.paths import CONFIG_DIR
-from outerloop.progress import (
-    PROGRESS_PATHS,
-    LeaderEntry,
-    fmt_metric,
-    load_leader,
-    write_progress,
-)
+from outerloop.progress import fmt_metric
 from outerloop.role_runner import build_harness, role_key, run_role
 from outerloop.roles import steward_spec
 from outerloop.rolespec import RoleSpec
@@ -152,9 +148,10 @@ Hard rules:
 - Edit ONLY the steward paths listed below. The solver directories are
   forbidden to you completely — do not read requirements from them, do not
   "fix" them, do not compensate for their weaknesses.
-- Do not touch BENCHMARKS.md or results/leader.json: after your change the
-  orchestrator re-measures the benchmark with the CURRENT solver and writes
-  those records itself, with its own provenance.
+- Do not edit BENCHMARKS.md or results/leader.json.
+  The records live on the research-log branch in BENCHMARKS.md and
+  results/leader.json. A merged result appears there after the PR is merged
+  and the kernel observes the merge.
 - Your change must keep every benchmark runnable: the full test suite and
   each eval command still pass after your edits. Update tests you are
   allowed to touch when the env legitimately changes them — never to make a
@@ -187,41 +184,6 @@ def validate_and_measure(
             evaluator.check(workspace, sibling.command)
     seed_env = {bench.seed_env: str(run_seed)} if bench.seed_env and run_seed else None
     return float(evaluator.evaluate(workspace, bench.command, bench.metric, extra_env=seed_env))
-
-
-def rebase_leader_row(
-    workspace: Path,
-    contract: Contract,
-    benchmark: str,
-    bench: Any,
-    measured: float,
-    run_id: str,
-    created: str,
-    target: str,
-    run_seed: int = 0,
-) -> float:
-    """Reset the benchmark's ledger row to the orchestrator's measurement;
-    returns the PRIOR best (captured before the overwrite)."""
-    entries = load_leader(workspace)
-    prior_entry = entries.get(benchmark)
-    prior_best = prior_entry.best if prior_entry is not None else float("nan")
-    entries[benchmark] = LeaderEntry(
-        benchmark=benchmark,
-        metric=bench.metric,
-        direction=bench.direction,
-        baseline=measured,
-        best=measured,
-        best_run=f"baseline-{run_id}",
-        updated=created[:10],
-        run_seed=run_seed,
-    )
-    write_progress(
-        workspace,
-        entries,
-        target,
-        digits={b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
-    )
-    return prior_best
 
 
 # A short role reminder prefixed to steward WAKE prompts: the resumed
@@ -588,19 +550,8 @@ def live_steward(
         if len(tree_hashes) < 2 or tree_hashes[-1] != tree_hashes[-2]:
             raise WorkspaceDrift("content changed during validation (or fingerprints missing)")
 
-        # Orchestrator-authored record reset: the re-based benchmark's row
-        # carries the orchestrator's own measurement, never a pasted number.
-        prior_best = rebase_leader_row(
-            workspace,
-            contract,
-            config.benchmark,
-            bench,
-            measured,
-            run_id,
-            created,
-            config.target,
-            run_seed=run_seed,
-        )
+        prior = display_leader(github, config.target).get(config.benchmark)
+        prior_best = prior.best if prior else float("nan")
 
         branch = f"{STEWARD_BRANCH_PREFIX}/{run_id}"
         ws.branch(branch)
@@ -609,9 +560,7 @@ def live_steward(
             f"(new baseline {fmt_metric(measured, bench.display_digits)})"
             f"\n\nAgent: {STEWARD_AGENT_ID}",
             author=config.bot_login,
-            forbidden=lambda p: (
-                p not in PROGRESS_PATHS and bool(steward_out_of_scope([p], contract))
-            ),
+            forbidden=lambda p: bool(steward_out_of_scope([p], contract)),
         )
         ws.push(branch)
         body = (
@@ -631,6 +580,7 @@ def live_steward(
             f"them with their own work orders.\n\n"
             f"## Stewardship report\n\n{redact(session.final_text, secrets)[:20000]}"
         )
+        body += f"\n\n{progress_link(config.target)}\n"
         pr_url = github.create_pull(
             config.target,
             title=f"[steward] {config.benchmark}: re-based env "
@@ -640,6 +590,29 @@ def live_steward(
             body=body,
         )
         pr_number = pr_url.rstrip("/").rsplit("/", 1)[-1]
+        if pr_number.isdigit():
+            measured_sha = ws.git("rev-parse", "HEAD").strip()
+            record = queue_pending(
+                run_root,
+                dc_replace(record, pr_url=pr_url),
+                github,
+                measurement_pending(
+                    ws,
+                    contract,
+                    bench,
+                    record,
+                    measured,
+                    measured,
+                    run_seed,
+                    measured_sha,
+                    int(pr_number),
+                    measured_sha,
+                    created,
+                    kind="RESET",
+                ),
+                contract,
+                now,
+            )
         if pr_number.isdigit() and getattr(contract, "merge", "manual") != "auto":
             _best_effort(
                 "auto-merge arming",
