@@ -66,7 +66,7 @@ from outerloop.harness import (
     redact,
 )
 from outerloop.hypothesis import report_hypothesis
-from outerloop.inbox import Message, append, base_moved_key, panel_payload, thread_for
+from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.ledger_branch import LedgerWriteError, progress_link
@@ -1504,7 +1504,7 @@ def _wake_author_sleep(
                     "git",
                     thread,
                     now,
-                    base_moved_key(fresh_base),
+                    f"base-advanced:{fresh_base}",
                     {
                         "text": (
                             "The base moved while you were asleep. "

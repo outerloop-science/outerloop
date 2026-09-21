@@ -8,7 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- An author told that the base moved may now fold it with one merge commit; the brief no longer forbids the fold it was asked to do. Runs parked under the old wording receive the corrected message once.
+- Authors can now merge a moved base with one merge commit, and parked runs receive the updated message once.
 
 - A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
 
