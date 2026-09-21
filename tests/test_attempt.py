@@ -6896,6 +6896,13 @@ def test_scope_merge_base_requires_shared_history(tmp_path, base):
         f"Publish refused: cannot find shared history between the candidate and {branch}; "
         "fetch the base and fold it, then submit again."
     )
+    from outerloop.github import GitError
+
+    cause = exc.value.__cause__
+    assert isinstance(cause, GitError)
+    assert cause.returncode == (1 if base == "unrelated" else 128)
+    assert cause.stdout == ""
+    assert bool(cause.stderr) == (base != "unrelated")
 
 
 @pytest.mark.parametrize("failure", ["unrelated", "missing"])
@@ -6989,3 +6996,77 @@ def test_scope_merge_base_counts_rename_source_and_preserves_memory_filter(tmp_p
     ws = Workspace(root=root)
     assert submission_paths(ws, "main") == ["agent_memory/note.md", "code", "protected"]
     assert submission_paths(ws, "main", exclude_memory=True) == ["code", "protected"]
+
+
+@pytest.mark.parametrize("operation", ["merge-base", "rev-parse"])
+@pytest.mark.parametrize(
+    "returncode,stderr,stdout,refused",
+    [
+        (None, "", "", False),
+        (1, "", "", True),
+        (1, "I/O error", "", False),
+        (1, "", "unexpected output", False),
+        (128, "fatal: Not a valid object name missing", "", True),
+        (
+            128,
+            "fatal: ambiguous argument 'missing': "
+            "unknown revision or path not in the working tree.",
+            "",
+            True,
+        ),
+        (128, "fatal: packed object ab0123 is corrupt", "", False),
+        (128, "fatal: cannot lock ref", "", False),
+        (2, "fatal: Not a valid object name missing", "", False),
+    ],
+)
+def test_scope_git_failure_classification(
+    tmp_path, monkeypatch, operation, returncode, stderr, stdout, refused
+):
+    from outerloop.attempt import ScopeHistoryError, _scope_revision, submission_paths
+    from outerloop.github import GitError, Workspace
+
+    error = GitError("git failed", returncode=returncode, stderr=stderr, stdout=stdout)
+
+    def fail(self, *args):
+        assert args[0] == operation
+        raise error
+
+    monkeypatch.setattr(Workspace, "git", fail)
+    ws = Workspace(root=tmp_path)
+    with pytest.raises(ScopeHistoryError if refused else GitError) as caught:
+        if operation == "merge-base":
+            submission_paths(ws, "missing")
+        else:
+            _scope_revision(ws, "missing")
+    if refused:
+        assert caught.value.__cause__ is error
+    else:
+        assert caught.value is error
+
+
+@pytest.mark.parametrize("operation", ["merge-base", "rev-parse"])
+def test_scope_git_failure_keeps_wake_retryable(tmp_path, monkeypatch, operation):
+    from outerloop.github import GitError, Workspace
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch)
+    before = load_record(state, run_id)
+    real_git = Workspace.git
+    error = GitError("transient I/O error", returncode=128, stderr="fatal: I/O error")
+
+    def git(self, *args, **kwargs):
+        if args[0] == operation:
+            raise error
+        return real_git(self, *args, **kwargs)
+
+    monkeypatch.setattr(Workspace, "git", git)
+    with pytest.raises(GitError) as caught:
+        resume_run(
+            state,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100.0,
+        )
+    assert caught.value is error
+    assert load_record(state, run_id) == before

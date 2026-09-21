@@ -2272,6 +2272,31 @@ class ScopeHistoryError(GitError):
         )
 
 
+def _scope_revision(ws: Workspace, base_ref: str, candidate_ref: str = "") -> str:
+    """Resolve scope ancestry, refusing only absent refs or unrelated history."""
+    args = (
+        ("merge-base", base_ref, candidate_ref)
+        if candidate_ref
+        else ("rev-parse", "--verify", "-q", f"{base_ref}^{{commit}}")
+    )
+    try:
+        revision = ws.git(*args).strip()
+    except GitError as exc:
+        # Both merge-base and quiet rev-parse use silent status 1 for absence.
+        absent = exc.returncode == 1 and not exc.stdout.strip() and not exc.stderr.strip()
+        unknown = exc.returncode == 128 and exc.stderr.startswith(
+            ("fatal: Not a valid object name ", "fatal: ambiguous argument ")
+        )
+        if unknown and exc.stderr.startswith("fatal: ambiguous argument "):
+            unknown = ": unknown revision or path not in the working tree." in exc.stderr
+        if absent or unknown:
+            raise ScopeHistoryError(base_ref) from exc
+        raise
+    if not revision:
+        raise GitError(f"git {args[0]} succeeded without a revision")
+    return revision
+
+
 def submission_paths(
     ws: Workspace,
     base_ref: str,
@@ -2284,12 +2309,7 @@ def submission_paths(
     An empty candidate_ref uses the working tree, with HEAD as its ancestry.
     """
     ensure_regular_git_dir(ws.root)
-    try:
-        common = ws.git("merge-base", base_ref, candidate_ref or "HEAD").strip()
-        if not common:
-            raise GitError("no merge-base")
-    except GitError:
-        raise ScopeHistoryError(base_ref) from None
+    common = _scope_revision(ws, base_ref, candidate_ref or "HEAD")
     if not candidate_ref:
         ws.git("add", "-A")
     try:
@@ -2510,12 +2530,11 @@ def resume_run(
     except Exception as exc:
         log.warning("wake fetch failed for %s: %s", run_id, exc)
     scope_base = f"refs/remotes/origin/{stage.get('base_branch') or base_branch}"
-    pinned_tip = _rev(ws, scope_base)
-    if not pinned_tip:
+    try:
+        pinned_tip = _scope_revision(ws, scope_base)
+    except ScopeHistoryError as exc:
         # An unresolvable base cannot be scope-checked: refuse, never guess.
-        return _end_refused_wake(
-            run_root, record, ScopeHistoryError(scope_base), now, secrets, ws.auth
-        )
+        return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
 
     if record.pr_url and not stage.get("phase"):
         base_branch = str(stage.get("base_branch") or base_branch)
