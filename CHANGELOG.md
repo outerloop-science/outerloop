@@ -10,8 +10,7 @@ Versions follow [SemVer](https://semver.org).
 
 - No contract change; existing contract files need no edits.
 - The `research-log` ledger branch is created from the default branch on first publish if it is missing.
-- An existing `research-log` branch may carry a stale copy of main's ledger; check `BENCHMARKS.md` there and, if missing or stale, run `outerloop migrate-ledger --target OWNER/REPO --main-sha <current main sha> --dry-run`, then repeat without `--dry-run`.
-- If a ledger already exists, migration requires `--force`, including for the dry run; use it only after checking the existing table. It replaces the whole table and erases confirmed rows.
+- An existing `research-log` branch may carry a stale copy of main's ledger, so check `BENCHMARKS.md` there. If it is missing, run `outerloop migrate-ledger --target OWNER/REPO --main-sha <current main sha> --dry-run`, then repeat without `--dry-run`. If it is stale, add `--force` to both runs; it replaces the whole table and erases confirmed rows, so look at the existing table first.
 - Let open agent PRs finish before upgrading: PRs published by 0.2.0 carry a ledger commit and have no pending record, so their merge is not recorded on `research-log`.
 - No action is needed for authors parked under the old base-moved wording; they receive the corrected fold message once when the kernel next detects that their branch lacks the current base tip.
 - No action is needed for saved gate results without a base commit; they are ignored and the candidate must be measured again.
