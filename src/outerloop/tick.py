@@ -1035,6 +1035,25 @@ def sweep(
         if dry_run or _wake(root, record, reason, dispatcher, now, holder):
             woken.append((record.run_id, tag))
 
+    ledger_blocked: set[str] = set()
+    if github is not None and not dry_run:
+        from outerloop.ledger_events import LEDGER_RETRY, retry_pending
+
+        # Materialize every durable publish before any merge observation, so
+        # a deferred ruler reset participates in this sweep's ancestry ordering.
+        for record in records:
+            if not record.stage.get(LEDGER_RETRY):
+                continue
+            if acquire_lease(root, record.run_id, holder, "", now):
+                try:
+                    record = load_record(root, record.run_id)
+                    record = retry_pending(root, record, github, now)
+                finally:
+                    release_lease(root, record.run_id)
+            if record.stage.get(LEDGER_RETRY):
+                ledger_blocked.add(record.target)
+        records = [load_record(root, r.run_id) for r in records]
+
     for record in records:
         try:
             if not dry_run and acquire_lease(root, record.run_id, holder, "", now):
@@ -1045,7 +1064,12 @@ def sweep(
                 finally:
                     release_lease(root, record.run_id)
             try:
-                if github is not None and record.pr_url and not dry_run:
+                if (
+                    github is not None
+                    and record.pr_url
+                    and not dry_run
+                    and record.target not in ledger_blocked
+                ):
                     from outerloop.attempt import close_if_done
                     from outerloop.inbox import gather_github_messages
 
@@ -1053,6 +1077,7 @@ def sweep(
                     if ending:
                         ended.append((record.run_id, ending))
                         continue
+                    record = load_record(root, record.run_id)
                     pr = github.get_pull_request(
                         record.target, int(record.pr_url.rstrip("/").split("/")[-1])
                     )

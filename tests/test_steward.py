@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from ledger_fake import LedgerGitHub
 from outerloop.contract import load_contract
 from outerloop.harness import SessionResult
 from outerloop.intake import CLAIM_MARKER
@@ -274,7 +275,7 @@ class CheckingEvaluator:
 
 
 @dataclass
-class StewardGitHub:
+class StewardGitHub(LedgerGitHub):
     prs: list[dict] = field(default_factory=list)
     issue_comments: list = field(default_factory=list)
     armed: list = field(default_factory=list)
@@ -302,6 +303,14 @@ class NoAuth:
 
 def run_steward(tmp_path, edits, values=None, check_error="", run_id="steward-tsp-1"):
     github = StewardGitHub()
+    import json
+    from dataclasses import asdict
+
+    from outerloop.progress import LeaderEntry
+
+    github.ledger_files["results/leader.json"] = json.dumps(
+        {"tsp": asdict(LeaderEntry("tsp", "mean_tour_length", "min", 13.876, 10.84, "prior", "d"))}
+    )
     evaluator = CheckingEvaluator(values=list(values or [14.9]), check_error=check_error)
     outcome = live_steward(
         config=StewardConfig(target="org/pilot", benchmark="tsp"),
@@ -334,10 +343,16 @@ def test_stewardship_rebased_env_lands_with_orchestrator_records(tmp_path, stewa
             steward_repo, "diff", "--name-only", "main", "feat/steward/steward-01/steward-tsp-1"
         ).split()
     )
-    assert files == {"src/pilot/instances.py", "BENCHMARKS.md", "results/leader.json"}
-    leader = _git(steward_repo, "show", "feat/steward/steward-01/steward-tsp-1:results/leader.json")
-    assert '"baseline": 14.9' in leader and '"best": 14.9' in leader
-    assert "baseline-steward-tsp-1" in leader
+    assert files == {"src/pilot/instances.py"}
+    import json
+
+    pending = next(
+        json.loads(v)
+        for k, v in github.ledger_files.items()
+        if k.startswith("results/submissions/")
+    )
+    assert pending["kind"] == "RESET" and pending["candidate"] == 14.9
+    assert pending["run_id"] == "steward-tsp-1"
     # commits carry the steward identity, not the solver's
     log_out = _git(
         steward_repo, "log", "feat/steward/steward-01/steward-tsp-1", "-1", "--format=%B"
@@ -700,31 +715,6 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
         )
         == 0
     )
-
-
-def test_rebase_row_records_the_measurement_seed(tmp_path) -> None:
-    """A re-based baseline on a resampled pool is re-derivable: the row
-    carries the seed the orchestrator measured under."""
-    import json as _json
-
-    from outerloop.steward import rebase_leader_row
-
-    contract = load_contract(CONTRACT, "org/pilot")
-    bench = contract.benchmarks[0]
-    rebase_leader_row(
-        tmp_path,
-        contract,
-        bench.name,
-        bench,
-        14.9,
-        "steward-tsp-s",
-        "2026-08-09",
-        "org/pilot",
-        run_seed=987654321,
-    )
-    raw = _json.loads((tmp_path / "results" / "leader.json").read_text())
-    assert raw[bench.name]["run_seed"] == 987654321
-    assert raw[bench.name]["best_run"] == "baseline-steward-tsp-s"
 
 
 def test_read_only_spec_is_refused_before_any_work(tmp_path, steward_repo) -> None:

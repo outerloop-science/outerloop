@@ -102,6 +102,8 @@ class PendingSubmission:
     timestamp: str
     kind: str = "SOLVER"  # SOLVER | RESET
     status: str = "PENDING"
+    min_delta: float = 0.0
+    min_delta_rel: float = 0.0
 
     @property
     def path(self) -> str:
@@ -116,7 +118,7 @@ def parse_pending(content: str) -> PendingSubmission | None:
             return None
         pending = PendingSubmission(**raw)
         for field, value in asdict(pending).items():
-            if field in {"baseline", "candidate"}:
+            if field in {"baseline", "candidate", "min_delta", "min_delta_rel"}:
                 if type(value) not in (int, float) or not math.isfinite(value):
                     raise ValueError("invalid measurement")
             elif field in {"run_seed", "pr_number"}:
@@ -210,7 +212,15 @@ def confirm(
                 if pending.direction == "max"
                 else pending.candidate < old.best
             )
-            if not beats:
+            from outerloop.orchestrator import clears_min_delta
+
+            if not beats or not clears_min_delta(
+                old.best,
+                pending.candidate,
+                pending.direction,
+                pending.min_delta,
+                pending.min_delta_rel,
+            ):
                 return result
         baseline = old.baseline if old else pending.baseline
         reset_commit = old.reset_commit if old else ""
@@ -230,41 +240,6 @@ def confirm(
         ruler=pending.ruler,
     )
     return result
-
-
-def update_leader(
-    entries: dict[str, LeaderEntry],
-    benchmark: str,
-    metric: str,
-    direction: str,
-    baseline: float,
-    candidate: float,
-    run_id: str,
-    date: str,
-    run_seed: int = 0,
-) -> dict[str, LeaderEntry]:
-    """A new ledger with this run's improvement folded in. The baseline is
-    pinned by the FIRST entry and never moves; best follows improvements."""
-    existing = entries.get(benchmark)
-    pinned_baseline = existing.baseline if existing is not None else baseline
-    # Direction-aware: a run improved vs ITS OWN baseline can still be worse
-    # than the recorded best (stale clone, eval noise) — best never regresses.
-    if existing is not None:
-        beats = candidate > existing.best if direction == "max" else candidate < existing.best
-        if not beats:
-            return dict(entries)
-    updated = dict(entries)
-    updated[benchmark] = LeaderEntry(
-        benchmark=benchmark,
-        metric=metric,
-        direction=direction,
-        baseline=pinned_baseline,
-        best=candidate,
-        best_run=run_id,
-        updated=date,
-        run_seed=run_seed,
-    )
-    return updated
 
 
 def _delta(entry: LeaderEntry) -> str:

@@ -52,6 +52,24 @@ def test_branch_sha_reads_current_ref(provider: FileTokenProvider) -> None:
     )
 
 
+def test_public_tree_and_create_ref(provider, caplog):
+    transport = FakeTransport([{"sha": "tree"}, {"sha": "tree"}, {}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.get_tree("org/repo", "feature/head") == {"sha": "tree"}
+    assert transport.requests[-1].full_url.endswith("/git/trees/feature%2Fhead?recursive=1")
+    client.get_tree("org/repo", "commit", recursive=False)
+    assert transport.requests[-1].full_url.endswith("/git/trees/commit")
+    client.create_ref("org/repo", "refs/heads/research-log", "pin")
+    request = transport.requests[-1]
+    assert request.get_method() == "POST"
+    assert isinstance(request.data, bytes)
+    assert json.loads(request.data) == {"ref": "refs/heads/research-log", "sha": "pin"}
+    client.dry_run = True
+    client.create_ref("org/repo", "refs/heads/research-log", "pin")
+    assert len(transport.requests) == 3
+    assert provider.token() not in caplog.text
+
+
 @pytest.mark.parametrize("response", [None, [], {}, {"object": {}}, {"object": {"sha": ""}}])
 def test_branch_sha_rejects_missing_tip(provider: FileTokenProvider, response) -> None:
     client = GitHubClient(auth=provider, transport=FakeTransport([response]))

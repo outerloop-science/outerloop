@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from ledger_fake import LedgerGitHub
 from outerloop.attempt import REPLY_MARKER
 from outerloop.github import GitHubClient
 from outerloop.harness import SessionResult
@@ -51,7 +52,7 @@ def member(cid: int, body: str, author: str = "renmengye", assoc: str = "MEMBER"
 
 
 @dataclass
-class FakeGitHub:
+class FakeGitHub(LedgerGitHub):
     pr: dict = field(default_factory=lambda: {"state": "open", "merged": False})
     comments: list[dict] = field(default_factory=list)
     reviews: list[dict] = field(default_factory=list)
@@ -486,7 +487,7 @@ def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatc
     from outerloop.dispatch import snapshot_tree
     from outerloop.github import GitHubClient, Workspace
     from outerloop.orchestrator import AttemptResult, RunConfig
-    from outerloop.progress import update_leader, write_progress
+    from outerloop.progress import LeaderEntry, write_progress
 
     root, bare = review_run
     ws = run_dir(root, "tsp-r1") / "ws"
@@ -498,16 +499,17 @@ def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatc
     _git(ws, "push", "origin", f"{base}:main")
     write_progress(
         ws,
-        update_leader(
-            {},
-            benchmark="tsp",
-            metric="mean_tour_length",
-            direction="min",
-            baseline=14.0,
-            candidate=12.0,
-            run_id="prior",
-            date="d",
-        ),
+        {
+            "tsp": LeaderEntry(
+                benchmark="tsp",
+                metric="mean_tour_length",
+                direction="min",
+                baseline=14.0,
+                best=12.0,
+                best_run="prior",
+                updated="d",
+            )
+        },
         "org/pilot",
     )
     _git(ws, "add", "-A")
@@ -598,21 +600,22 @@ def test_publish_review_fast_forwards_and_applies_floor(
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "contract")
     base = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", f"{base}:main")
-    from outerloop.progress import load_leader, update_leader, write_progress
+    from outerloop.progress import LeaderEntry, load_leader, write_progress
 
     contract = load_contract(contract_text, "org/pilot")
     write_progress(
         ws,
-        update_leader(
-            {},
-            benchmark="tsp",
-            metric="mean_tour_length",
-            direction="min",
-            baseline=14.0,
-            candidate=12.0,
-            run_id="prior",
-            date="d",
-        ),
+        {
+            "tsp": LeaderEntry(
+                benchmark="tsp",
+                metric="mean_tour_length",
+                direction="min",
+                baseline=14.0,
+                best=12.0,
+                best_run="prior",
+                updated="d",
+            )
+        },
         "org/pilot",
     )
     _git(ws, "add", "-A")
@@ -669,6 +672,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
         line_ref="",
         date="2026-09-12",
     )
+    github.ledger_files["results/leader.json"] = (ws / "results/leader.json").read_text()
     if not unchanged and not submit_report:
         update_row = github.update_candidate_row
         with monkeypatch.context() as patch:
@@ -721,17 +725,22 @@ def test_publish_review_fast_forwards_and_applies_floor(
         _git(bare, "show", "-s", "--format=%an|%ae|%cn|%ce", submitted).strip()
         == f"{BOT}|{BOT}@users.noreply.github.com|{BOT}|{BOT}@users.noreply.github.com"
     )
-    assert submitted == (
-        pushed if expected == 12 else _git(bare, "rev-parse", f"{pushed}^").strip()
+    assert submitted == pushed
+    submission = next(
+        json.loads(v)
+        for k, v in github.ledger_files.items()
+        if k.startswith("results/submissions/")
     )
+    assert submission["measured_sha"] == snap.commit
+    assert submission["published_head"] == pushed
+    assert submission["candidate"] == candidate
+    assert submission["kind"] == "SOLVER"
+    assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
     assert snap.commit[:12] in github.body_addenda[0]
     assert f"pushed as `{submitted}`" in github.body_addenda[0]
     assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
-    assert load_leader(ws)["tsp"].best == expected
-    assert (
-        json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"]
-        == expected
-    )
+    assert load_leader(ws)["tsp"].best == 12
+    assert json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"] == 12
     assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
     assert github.row_updates == [candidate]
     if candidate > 12:
@@ -1677,13 +1686,13 @@ def _publish_folded(review_run, monkeypatch, *, contained=False, refusal=""):
     assert _git(bare, "rev-parse", f"{measured}^{{tree}}").strip() == snap.tree
     _git(bare, "merge-base", "--is-ancestor", base, pushed)
     _git(bare, "merge-base", "--is-ancestor", head, pushed)
-    assert _git(bare, "rev-parse", f"{pushed}^").strip() == measured
+    assert pushed == measured
     diff = set(_git(bare, "diff", "--name-only", f"{base}...{pushed}").splitlines())
     from outerloop.progress import PROGRESS_PATHS
 
     assert {"src/pilot/solvers/pr.py", "src/pilot/solvers/tsp.py"} <= diff
-    assert diff <= {"src/pilot/solvers/pr.py", "src/pilot/solvers/tsp.py", *PROGRESS_PATHS}
-    assert diff & set(PROGRESS_PATHS)
+    assert diff == {"src/pilot/solvers/pr.py", "src/pilot/solvers/tsp.py"}
+    assert not diff & set(PROGRESS_PATHS)
 
 
 def test_publish_folded_candidate_retains_measured_base(review_run, monkeypatch):

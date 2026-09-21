@@ -53,19 +53,20 @@ def test_run_seed_round_trips_and_old_rows_load(tmp_path) -> None:
     before the field existed load with 0 (fixed pool / none recorded)."""
     import json as _json
 
-    from outerloop.progress import LEADER_FILE, load_leader, update_leader, write_progress
+    from outerloop.progress import LEADER_FILE, LeaderEntry, load_leader, write_progress
 
-    entries = update_leader(
-        {},
-        benchmark="reach",
-        metric="success_rate",
-        direction="max",
-        baseline=0.54,
-        candidate=0.54,
-        run_id="r1",
-        date="2026-08-09",
-        run_seed=123456789,
-    )
+    entries = {
+        "reach": LeaderEntry(
+            benchmark="reach",
+            metric="success_rate",
+            direction="max",
+            baseline=0.54,
+            best=0.54,
+            best_run="r1",
+            updated="2026-08-09",
+            run_seed=123456789,
+        )
+    }
     write_progress(tmp_path, entries, "org/pilot")
     raw = _json.loads((tmp_path / LEADER_FILE).read_text())
     assert raw["reach"]["run_seed"] == 123456789

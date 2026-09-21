@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import asdict
-from urllib.parse import quote
 
 from outerloop.github import GitHubClient, GitHubError
 from outerloop.progress import (
@@ -39,11 +38,7 @@ def ensure_ledger_branch(github: GitHubClient, target: str, pinned_commit: str) 
     if head or github.dry_run:
         return
     try:
-        github._request(
-            "POST",
-            f"/repos/{quote(target)}/git/refs",
-            {"ref": f"refs/heads/{RESEARCH_LOG_BRANCH}", "sha": pinned_commit},
-        )
+        github.create_ref(target, f"refs/heads/{RESEARCH_LOG_BRANCH}", pinned_commit)
     except GitHubError as exc:
         if not github.branch_head(target, RESEARCH_LOG_BRANCH):
             raise LedgerWriteError("could not create ledger branch") from exc
@@ -54,7 +49,7 @@ def _read_at(github: GitHubClient, target: str, head: str) -> tuple[Ledger, Pend
         raise LedgerReadError("ledger branch does not exist; seed it from a pinned commit")
     try:
         # A recursive tree avoids the contents API's silent 1,000-entry cap.
-        tree = github._request("GET", f"/repos/{quote(target)}/git/trees/{quote(head)}?recursive=1")
+        tree = github.get_tree(target, head)
         if not isinstance(tree, dict) or tree.get("truncated") is not False:
             raise LedgerReadError("incomplete ledger tree")
         paths = tree["tree"]
@@ -91,6 +86,7 @@ def write_ledger(
     target: str,
     expected_head: str,
     files: LedgerEdit,
+    digits: dict[str, int] | None = None,
 ) -> None:
     """Apply a pure file-patch callback, recomputing on conflicts up to three times.
 
@@ -119,7 +115,7 @@ def write_ledger(
             json.dumps({name: asdict(entry) for name, entry in sorted(leader.items())}, indent=2)
             + "\n"
         )
-        patch[PROGRESS_FILE] = render_markdown(leader, target)
+        patch[PROGRESS_FILE] = render_markdown(leader, target, digits)
         if github.put_files(
             target, patch, RESEARCH_LOG_BRANCH, "Update benchmark ledger", expected_head=head
         ):

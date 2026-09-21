@@ -3826,6 +3826,7 @@ roadmap: docs/roadmap.md
 @pytest.mark.parametrize("event", ["comment", "base", "merged", "closed"])
 @pytest.mark.parametrize("agent", ["agent-01", "steward"])
 def test_sweep_pr_events_use_one_wake(tmp_path, event, agent):
+    from ledger_fake import LedgerGitHub
     from outerloop.inbox import pending
     from outerloop.runstate import run_dir
     from outerloop.tick import sweep
@@ -3839,7 +3840,7 @@ def test_sweep_pr_events_use_one_wake(tmp_path, event, agent):
         stage={"base_sha": "old"},
     )
 
-    class GitHub:
+    class GitHub(LedgerGitHub):
         def head_contains(self, repo, base, head):
             return base != "new"
 
@@ -3960,8 +3961,11 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
     if blocked == "lease":
         acquire_lease(tmp_path, record.run_id, "wake", "100", NOW)
 
-    class GitHub:
+    from ledger_fake import LedgerGitHub
+
+    class GitHub(LedgerGitHub):
         def __init__(self):
+            super().__init__()
             self.merged = []
 
         def head_contains(self, repo, base, head):
