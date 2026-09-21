@@ -785,6 +785,7 @@ def test_withdraw_requires_open_pr(tmp_path, capsys):
         assert read_request(tmp_path) is None
     write_budget(tmp_path, launches_remaining=0, sleeps_remaining=0, open_pr=True)
     assert run(tmp_path, "end", "--withdraw", "Superseded.") == 0
+    assert "The PR closes on the kernel's next pass." in capsys.readouterr().out
     request = read_request(tmp_path)
     assert request and request.end and not request.sleep
     assert request.withdraw == "Superseded."

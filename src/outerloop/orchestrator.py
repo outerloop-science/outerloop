@@ -1600,9 +1600,9 @@ def attempt_once(
                 if request.report:
                     session = dc_replace(session, final_text=request.report)
                 if on_stop is not None:
-                    if request.report and not request.withdraw and on_replies is not None:
+                    if request.report and on_replies is not None:
                         on_replies(({"to": "thread", "text": request.report, "reply_to": None},))
-                    session = dc_replace(session, final_text="")
+                    session = dc_replace(session, final_text=request.report)
                     return on_stop(session)
                 return AttemptResult(
                     outcome="no-improvement",

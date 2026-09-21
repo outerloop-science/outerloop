@@ -178,7 +178,7 @@ def cmd_end(root: Path, args: argparse.Namespace) -> str:
         raise ToolError(f"staged request exceeds {MAX_REQUEST_BYTES} bytes")
     abi.write_text(encoded)
     if args.withdraw is not None:
-        return "withdrawal staged; END YOUR TURN to close your PR and end the run."
+        return "withdrawal staged; END YOUR TURN. The PR closes on the kernel's next pass."
     return "end staged; END YOUR TURN to end the run or park its open PR."
 
 

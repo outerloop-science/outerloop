@@ -1649,6 +1649,7 @@ def _wake_author_sleep(
     if record.pr_url and result.outcome == "review" and result.session is not None:
         from outerloop.review import APPROVAL_PATTERN, REDACTED
 
+        (run_dir / "report.md").write_text(result.report(config, redact_secrets=secrets))
         deliver_messages(record, github, (), secrets, run_dir)
         reply = APPROVAL_PATTERN.sub(REDACTED, redact(result.session.final_text, secrets))[
             :MAX_REPLY_CHARS
@@ -5090,7 +5091,6 @@ def withdraw_pr(
     reason = APPROVAL_PATTERN.sub(REDACTED, redact(reason, secrets))
     record = dc_replace(record, stage={**record.stage, "withdraw_reason": reason})
     save_record(run_root, record, time.time())
-    close_if_done(run_root, record, github, time.time())
     return ""
 
 

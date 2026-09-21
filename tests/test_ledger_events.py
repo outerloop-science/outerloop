@@ -349,10 +349,10 @@ def test_author_orientation_tolerates_corrupt_branch_ledger(content, monkeypatch
     assert display_leader(github, "org/repo") == {}
 
 
-@pytest.mark.parametrize("crash", ["", "comment", "close", "record"])
+@pytest.mark.parametrize("crash", ["", "comment", "close-failed", "close", "record"])
 def test_author_withdrawal_retries_and_tombstones(tmp_path, monkeypatch, crash):
     from fakes import RecordingDispatcher
-    from outerloop.attempt import withdraw_pr
+    from outerloop.attempt import close_if_done, withdraw_pr
     from outerloop.markers import marker
     from outerloop.tick import sweep
     from test_tick import FakeSlurm
@@ -369,6 +369,8 @@ def test_author_withdrawal_retries_and_tombstones(tmp_path, monkeypatch, crash):
             raise RuntimeError("crash after comment")
 
     def close(repo, number):
+        if crash == "close-failed":
+            raise RuntimeError("crash before close")
         fake.pull_requests[number]["state"] = "closed"
         if crash == "close":
             raise RuntimeError("crash after close")
@@ -381,12 +383,14 @@ def test_author_withdrawal_retries_and_tombstones(tmp_path, monkeypatch, crash):
     monkeypatch.setattr(fake, "comment", post)
     monkeypatch.setattr(fake, "close_issue", close, raising=False)
     monkeypatch.setattr("outerloop.attempt.save_record", save)
+    assert withdraw_pr(tmp_path, r, github, "Superseded secret-token", ("secret-token",)) == ""
+    staged = load_record(tmp_path, r.run_id)
+    assert not staged.ended() and fake.pull_requests[1]["state"] == "open"
+    assert not fake.comments
     if crash:
         with pytest.raises(RuntimeError, match="crash"):
-            withdraw_pr(tmp_path, r, github, "Superseded secret-token", ("secret-token",))
+            close_if_done(tmp_path, staged, github, 2)
         assert not load_record(tmp_path, r.run_id).ended()
-    else:
-        assert withdraw_pr(tmp_path, r, github, "Superseded secret-token", ("secret-token",)) == ""
     monkeypatch.setattr("outerloop.attempt.save_record", saved)
     monkeypatch.setattr(fake, "comment", comment)
     monkeypatch.setattr(

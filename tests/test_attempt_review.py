@@ -1834,7 +1834,9 @@ def test_steward_followup_publishes_pending_reset(review_run, monkeypatch):
 
 
 @pytest.mark.parametrize("with_report", [False, True])
-def test_review_withdraw_ends_with_one_redacted_comment(review_run, monkeypatch, with_report):
+def test_review_withdraw_parks_then_sweep_closes_with_one_redacted_comment(
+    review_run, monkeypatch, with_report
+):
     from outerloop.syscall_cli import main
 
     root, _ = review_run
@@ -1865,11 +1867,35 @@ def test_review_withdraw_ends_with_one_redacted_comment(review_run, monkeypatch,
         now=NOW,
         secrets=("sk-secret",),
     )
+    from fakes import RecordingDispatcher
+    from outerloop.markers import marker
+    from outerloop.tick import sweep
+    from test_tick import FakeSlurm
+
+    staged = load_record(root, "tsp-r1")
+    assert outcome.action == "replied" and staged.state == PARKED
+    assert github.pr["state"] == "open"
+    assert "sk-secret" not in str(staged.stage["withdraw_reason"])
+    assert "LGTM" not in str(staged.stage["withdraw_reason"])
+    assert len(github.posted) == int(with_report)
+    report_path = run_dir(root, staged.run_id) / "report.md"
+    report = report_path.read_text()
+    if with_report:
+        assert "Final research report." in github.posted[0]
+        assert "Final research report." in report
+    for _ in range(2):
+        sweep(
+            root,
+            FakeSlurm().compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            github=cast(GitHubClient, github),
+        )
     final = load_record(root, "tsp-r1")
-    assert outcome.action == "rejected" and final.ending == "rejected"
+    assert final.ending == "rejected" and github.pr["state"] == "closed"
     assert final.ending_note.startswith("Author withdrew: Superseded")
-    assert len(github.posted) == 1
-    assert "sk-secret" not in github.posted[0] and "LGTM" not in github.posted[0]
-    assert final.ending_note in github.posted[0]
+    assert len(github.posted) == 1 + int(with_report)
+    assert "sk-secret" not in github.posted[-1] and "LGTM" not in github.posted[-1]
+    assert github.posted[-1] == f"{marker('withdraw')}\n{final.ending_note}"
     assert meters == {key: final.stage.get(key) for key in meters}
-    assert (run_dir(root, final.run_id) / "report.md").is_file()
+    assert report_path.read_text() == report
