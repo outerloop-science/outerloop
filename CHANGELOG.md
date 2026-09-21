@@ -6,53 +6,51 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Added
 
 - Authors can withdraw an open PR with `end --withdraw "<reason>"`.
 
 Upgrading: no action needed; old end requests and records remain valid, and the first tick retries any saved withdrawal before ending the run.
+=======
+### Upgrading
+
+- No contract change; existing contract files need no edits.
+- The `research-log` ledger branch is created from the default branch on first publish if it is missing.
+- An existing `research-log` branch may carry a stale copy of main's ledger, so check `BENCHMARKS.md` there. If it is missing, run `outerloop migrate-ledger --target OWNER/REPO --main-sha <current main sha> --dry-run`, then repeat without `--dry-run`. If it is stale, add `--force` to both runs; it replaces the whole table and erases confirmed rows, so look at the existing table first.
+- Let open agent PRs finish before upgrading: PRs published by 0.2.0 carry a ledger commit and have no pending record, so their merge is not recorded on `research-log`.
+- No action is needed for authors parked under the old base-moved wording; they receive the corrected fold message once when the kernel next detects that their branch lacks the current base tip.
+- No action is needed for saved gate results without a base commit; they are ignored and the candidate must be measured again.
+- Parked runs keep their recorded author backend and model; resumed panels now inherit from that author. Set an explicit model for any panel lens using another backend.
+- Set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` if any Claude role lacks an explicit or inherited model, including the steward when its key is configured.
+- Restart local loops after installing; they do not auto-update or reload `.env`.
+>>>>>>> origin/main
 
 ### Fixed
 
-- Authors can now merge a moved base with one merge commit, and parked runs receive the updated message once.
-
-- A candidate whose base moved again while its gate ran is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so rolling one back to an older version is still refused.
-
-- A submit after the base moves is checkpointed before any gate compute runs. Staged experiments do not run. The author is told to fold the base and submit again, or that the gate pin was refreshed.
-
-- After folding the base, an author is told to submit the branch directly instead of re-running its experiment; PR updates and sealed snapshots keep the measured base in their history; a gate result is reused only for the same base and the same code.
-
-- Exclude folded base content from PR wake scope checks and tell authors why a terminal attempt was re-parked.
-
-- Wake PR authors and hold merging when their head does not contain the current base tip, including when conflicts block merging.
-
-- Resident ticks replace vanished or terminal successors and verify the successor before handover, continuing to tick through the walltime margin if recovery fails.
-
-Authors now use `message` for public posts, reminders to self and messages to
-live agents on the same target. Sibling messages keep a sent copy, and inbox
-headers name both parties with local message numbers. `--reply-to` links a
-response; `message --show` reads its chain. The kernel bounds delivery and
-reports refused messages. The old reply and note verbs are removed.
-
-Messages carry a global id, a context, a recipient and an optional reply reference;
-old inbox files read as before; the wake's headers name the sender.
-
-Local mode now shares workstation GPUs across jobs first come first served and runs
-launch arrays in parallel. The board shows running GPU jobs. `OUTERLOOP_LOCAL_GPUS`
-overrides GPU detection; `0` disables allocation. Submissions still wait for all
-tasks to finish.
+- Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
+- A candidate whose base moved again during measurement is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so restoring an older version is still refused.
+- A submit made after the base moves is saved before any gate measurement or staged experiments run. The author is told to fold the base and submit again, or to submit again after the measurement base is refreshed.
+- After folding the base, an author is told to submit directly and repeat its experiment only if the new base changes its hypothesis. PR updates and saved snapshots retain the measured base in their history, and a saved gate result is reused only for the same base and code.
+- Updates brought in from the base no longer count as the author's changes when checking a resumed PR's allowed files. Authors receive a reason when an attempt ends but its open PR leaves the run parked for further work.
+- Authors are woken and automatic merging is held when their PR branch does not contain the current base tip, including when conflicts block merging.
+- Resident tick jobs replace vanished or finished successors and check the successor before handing over. If recovery fails, the current job keeps ticking through the reserved handover time until its time limit.
 
 ### Added
-- `outerloop migrate-ledger --target OWNER/REPO --main-sha SHA [--dry-run] [--force]` seeds research-log from a pinned current main ledger.
-- `outerloop init` asks for the Claude model (`--claude-model`, else the shell's `OUTERLOOP_CLAUDE_MODEL`, else a required prompt) and writes it to `.env`. A focused `init --github-app` run preserves every existing `.env` setting it does not manage.
+
+- `outerloop migrate-ledger --target OWNER/REPO --main-sha SHA [--dry-run] [--force]` imports the ledger from the specified current main commit into `research-log`.
+- Full `outerloop init` requires and writes a Claude model even for a deployment without Claude roles, using `--claude-model`, then the shell's `OUTERLOOP_CLAUDE_MODEL`, then a required interactive prompt. A focused `init --github-app` run preserves existing `.env` settings it does not manage.
 
 ### Changed
-- The leaderboard moves from PR branches and main to the research-log branch.
-- Results are pending when published and confirmed when the kernel observes their PR merge.
-- The leaderboard shows the main commit each result was confirmed at; imported rows say provenance unknown.
-- PRs carry only the measured tree; the generated ledger child commit is removed.
-- **Breaking:** `OUTERLOOP_CLAUDE_MODEL` is now required for every Claude-backed role (author, panel judges, steward); the built-in model default is gone. A panel lens that names no backend now runs on the author's backend (a codex author gets codex judges by default), so a deployment that never chose Claude is not asked for a Claude model. Deployments must add `OUTERLOOP_CLAUDE_MODEL=<model>` to their `.env` (`outerloop start` refuses without it and names the line), and the review and verify agents on the claude backend read it from the `OUTERLOOP_CLAUDE_MODEL` Actions variable when no model input is given.
-- Panel model resolution now has one shared rule for start, tick preflight, and climb: inherit the author's backend/model, require explicit models on other backends, and resolve resumed panels against the parked run's author.
+
+- The leaderboard moves from PR branches and main to the `research-log` branch.
+- Results are pending when published and confirmed when the kernel observes their PR merge, provided the final PR head and merged files match the measurement.
+- The leaderboard shows the main commit at which each result was confirmed; imported rows say their provenance is unknown.
+- PRs carry only the measured files; publication no longer adds a ledger commit.
+- **Breaking:** The built-in Claude model default is gone; set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` when a Claude role lacks an explicit or inherited model, including the steward when its key is configured. `outerloop start` refuses a missing Claude setting only in that case, so a deployment with no Claude roles can leave it unset.
+- **Breaking:** Panel lenses without a backend now use the author's backend, and lenses without a model inherit the author's model on that backend. Lenses using another backend require an explicit model, even if `OUTERLOOP_CLAUDE_MODEL` is set.
+- **Breaking:** The review and verify Actions use their model input or fall back to the `OUTERLOOP_CLAUDE_MODEL` Actions variable for Claude. With neither configured, the verifier logs a warning and skips verification with a successful exit.
+- Start, tick checks and running panels now resolve panel models using the same rules. Resumed panels use the parked run's recorded author backend and model.
 
 ## [0.2.0] - 2026-09-18
 
