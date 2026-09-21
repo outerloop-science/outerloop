@@ -1,25 +1,12 @@
-"""Human-readable benchmark progress, written by the orchestrator.
-
-Two files in the target repo, updated as part of each improvement PR so the
-progress record and the change that caused it land atomically:
-
-- ``results/leader.json`` — the machine ledger (the scaling sketch's
-  "leader"): per benchmark, the original baseline, the current best, and
-  which run set it.
-- ``BENCHMARKS.md`` — the same data as a table for humans, rendered from the
-  ledger (never parsed back).
-
-Both are ORCHESTRATOR-written from orchestrator-measured numbers: the agent
-editing either one is a scope violation that ends the run, and the publish
-step overwrites them from trusted data only after the workspace-drift check
-has passed.
-"""
+"""Benchmark measurements and confirmed progress on the research-log branch."""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+import math
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -34,7 +21,7 @@ class LeaderEntry:
     benchmark: str
     metric: str
     direction: str  # "min" | "max"
-    baseline: float  # first orchestrator-measured value; never changes
+    baseline: float  # pinned until a ruler reset
     best: float  # current best orchestrator-measured value
     best_run: str  # run id that set the best
     updated: str  # ISO date
@@ -42,30 +29,207 @@ class LeaderEntry:
     # with resampled pools, a bare scalar is not re-derivable — this plus
     # the eval's seed_env makes the ledger number reproducible
     run_seed: int = 0
+    main_commit: str = ""
+    measured_sha: str = ""
+    measurement_signature: str = ""
+    reset_commit: str = ""
+    ruler: str = ""
+
+
+class LedgerReadError(ValueError):
+    """The authoritative ledger could not be read safely."""
+
+
+def parse_leader(content: str) -> dict[str, LeaderEntry]:
+    """Decode a complete ledger, refusing malformed rows and nonfinite values."""
+    try:
+        raw = json.loads(content)
+        if not isinstance(raw, dict):
+            raise ValueError("ledger must be an object")
+        entries = {}
+        for name, item in raw.items():
+            entry = LeaderEntry(**item)
+            for field, value in asdict(entry).items():
+                if field in {"baseline", "best"}:
+                    if type(value) not in (int, float) or not math.isfinite(value):
+                        raise ValueError("invalid measurement")
+                elif field == "run_seed":
+                    if type(value) is not int:
+                        raise ValueError("invalid seed")
+                elif not isinstance(value, str):
+                    raise ValueError("invalid text field")
+            if entry.benchmark != name or entry.direction not in {"min", "max"}:
+                raise ValueError("invalid benchmark identity or direction")
+            entries[name] = entry
+        return entries
+    except (TypeError, ValueError) as exc:
+        raise LedgerReadError("malformed leader ledger") from exc
+
+
+def load_leader_strict(workspace: Path) -> dict[str, LeaderEntry]:
+    """Read for mutation; absence is empty, corruption or unreadability raises."""
+    try:
+        return parse_leader((workspace / LEADER_FILE).read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise LedgerReadError("unreadable leader ledger") from exc
 
 
 def load_leader(workspace: Path) -> dict[str, LeaderEntry]:
-    """The ledger from the target tree; tolerant of absence and corruption
-    (a broken ledger must not block an improvement — it gets rewritten)."""
-    path = workspace / LEADER_FILE
+    """Best-effort display read; never use this to authorize a branch write."""
     try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
+        return load_leader_strict(workspace)
+    except LedgerReadError:
+        log.warning("unreadable %s; displaying an empty ledger", workspace / LEADER_FILE)
         return {}
-    except (OSError, ValueError):
-        log.warning("unreadable %s; starting a fresh ledger", path)
-        return {}
-    entries: dict[str, LeaderEntry] = {}
-    if isinstance(raw, dict):
-        for name, item in raw.items():
-            if not isinstance(item, dict):
-                continue
-            known = {k: v for k, v in item.items() if k in LeaderEntry.__dataclass_fields__}
-            try:
-                entries[name] = LeaderEntry(**known)
-            except TypeError:
-                log.warning("skipping malformed leader entry %r", name)
-    return entries
+
+
+@dataclass(frozen=True)
+class PendingSubmission:
+    benchmark: str
+    metric: str
+    direction: str
+    baseline: float
+    candidate: float
+    run_id: str
+    run_seed: int
+    ruler: str
+    measurement_signature: str  # canonical JSON of Benchmark.measurement_signature()
+    measured_sha: str
+    pr_number: int
+    published_head: str
+    timestamp: str
+    kind: str = "SOLVER"  # SOLVER | RESET
+    status: str = "PENDING"
+
+    @property
+    def path(self) -> str:
+        return f"results/submissions/{self.run_id}/{self.published_head}.json"
+
+
+def parse_pending(content: str) -> PendingSubmission | None:
+    """Read a pending record or its removal tombstone, rejecting malformed data."""
+    try:
+        raw = json.loads(content)
+        if raw is None:
+            return None
+        pending = PendingSubmission(**raw)
+        for field, value in asdict(pending).items():
+            if field in {"baseline", "candidate"}:
+                if type(value) not in (int, float) or not math.isfinite(value):
+                    raise ValueError("invalid measurement")
+            elif field in {"run_seed", "pr_number"}:
+                if type(value) is not int:
+                    raise ValueError("invalid integer")
+            elif not isinstance(value, str) or not value:
+                raise ValueError("missing identity")
+        if pending.direction not in {"min", "max"} or pending.kind not in {"SOLVER", "RESET"}:
+            raise ValueError("invalid direction or kind")
+        for part in (pending.run_id, pending.published_head):
+            if part in {".", ".."} or any(
+                c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
+                for c in part
+            ):
+                raise ValueError("invalid submission path")
+        if pending.status != "PENDING":
+            raise ValueError("invalid submission status")
+        if pending.pr_number <= 0:
+            raise ValueError("invalid PR number")
+        return pending
+    except (TypeError, ValueError) as exc:
+        raise LedgerReadError("malformed pending submission") from exc
+
+
+def record_pending(pending: PendingSubmission) -> dict[str, str]:
+    """Return the file patch for a validated submission; does not advance a leader."""
+    content = json.dumps(asdict(pending), indent=2, allow_nan=False) + "\n"
+    parse_pending(content)
+    return {pending.path: content}
+
+
+def reject(pending: PendingSubmission) -> dict[str, str]:
+    """Drop a submission using a tombstone; never change the leader."""
+    record_pending(pending)
+    return {pending.path: "null\n"}
+
+
+def confirm(
+    entries: dict[str, LeaderEntry],
+    pending: PendingSubmission,
+    main_commit: str,
+    *,
+    is_ancestor: Callable[[str, str], bool],
+) -> dict[str, LeaderEntry]:
+    """Fold a measured merge into the leader using verified base-branch ancestry.
+
+    The caller verifies the merge corresponds to the measured tree and processes
+    ruler changes before their solvers in base-branch ancestry order. Ancestry
+    checks must raise on unavailable history, never guess from timestamps.
+    """
+    record_pending(pending)
+    if not main_commit:
+        raise ValueError("confirmation requires a merge commit")
+    old = entries.get(pending.benchmark)
+    if old and old.reset_commit and is_ancestor(main_commit, old.reset_commit):
+        return dict(entries)
+    if old and old.reset_commit and not is_ancestor(old.reset_commit, main_commit):
+        raise ValueError("merge is not on the reset ancestry")
+    if old and old.main_commit == main_commit:
+        return dict(entries)
+    result = dict(entries)
+    if pending.kind == "RESET":
+        if old and old.main_commit and is_ancestor(main_commit, old.main_commit):
+            beats_reset = (
+                old.best > pending.candidate
+                if pending.direction == "max"
+                else old.best < pending.candidate
+            )
+            if (
+                old.measurement_signature == pending.measurement_signature
+                and old.ruler == pending.ruler
+                and beats_reset
+            ):
+                result[pending.benchmark] = replace(
+                    old, baseline=pending.candidate, reset_commit=main_commit
+                )
+                return result
+        baseline = pending.candidate
+        reset_commit = main_commit
+    else:
+        if old:
+            if old.measurement_signature and (
+                old.measurement_signature != pending.measurement_signature
+                or old.ruler != pending.ruler
+            ):
+                return result
+            if old.metric != pending.metric or old.direction != pending.direction:
+                raise ValueError("solver changed the ruler without a reset")
+            beats = (
+                pending.candidate > old.best
+                if pending.direction == "max"
+                else pending.candidate < old.best
+            )
+            if not beats:
+                return result
+        baseline = old.baseline if old else pending.baseline
+        reset_commit = old.reset_commit if old else ""
+    result[pending.benchmark] = LeaderEntry(
+        benchmark=pending.benchmark,
+        metric=pending.metric,
+        direction=pending.direction,
+        baseline=baseline,
+        best=pending.candidate,
+        best_run=pending.run_id,
+        updated=pending.timestamp,
+        run_seed=pending.run_seed,
+        main_commit=main_commit,
+        measured_sha=pending.measured_sha,
+        measurement_signature=pending.measurement_signature,
+        reset_commit=reset_commit,
+        ruler=pending.ruler,
+    )
+    return result
 
 
 def update_leader(
@@ -132,19 +296,24 @@ def render_markdown(
         "",
         f"Autonomous improvement record for `{target}`. Every number in this",
         "table was measured by the orchestrator re-running the contract's",
-        "eval command — never taken from an agent's claim — and updated as",
-        "part of the pull request that achieved it.",
+        "eval command. Published results are pending until their PR merges.",
         "",
-        "| benchmark | metric | baseline | best | progress | last improved | by run |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| benchmark | metric | baseline | best | progress | last improved | by run | "
+        "main commit |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name in sorted(entries):
         e = entries[name]
         arrow = "↓" if e.direction == "min" else "↑"
         d = (digits or {}).get(e.benchmark)
+        provenance = (
+            f"[{e.main_commit[:9]}](https://github.com/{target}/commit/{e.main_commit})"
+            if e.main_commit
+            else "provenance unknown"
+        )
         lines.append(
             f"| {e.benchmark} | `{e.metric}` {arrow} | {fmt_metric(e.baseline, d)} | "
-            f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` |"
+            f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` | {provenance} |"
         )
     lines += [
         "",

@@ -662,3 +662,209 @@ def test_network_git_refuses_an_empty_token_before_any_call(monkeypatch, tmp_pat
     # no token at all is a different case: an anonymous call is allowed
     monkeypatch.setattr(github_mod, "_run_git", lambda *a, **k: "ok")
     assert github_mod._run_git_with_credential(["git", "fetch"], None, tmp_path) == "ok"
+
+
+def _ledger_tree(*paths):
+    return {"truncated": False, "tree": [{"path": p, "type": "blob"} for p in paths]}
+
+
+def _ledger_content(content):
+    return {
+        "type": "file",
+        "encoding": "base64",
+        "content": base64.b64encode(content.encode()).decode(),
+    }
+
+
+def test_ledger_pinned_read_and_removed_pending(provider):
+    from outerloop.ledger_branch import read_ledger
+    from outerloop.progress import LEADER_FILE
+
+    transport = FakeTransport(
+        [
+            {"object": {"sha": "pinned"}},
+            _ledger_tree(LEADER_FILE, "results/submissions/run/head.json"),
+            _ledger_content("{}"),
+            _ledger_content("null"),
+        ]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    assert read_ledger(client, "org/repo") == ("pinned", {}, {})
+    assert all("ref=pinned" in r.full_url for r in transport.requests[2:])
+
+
+@pytest.mark.parametrize(
+    "tree", [{"truncated": True, "tree": []}, {}, {"truncated": False, "tree": None}]
+)
+def test_ledger_refuses_incomplete_tree(provider, tree):
+    from outerloop.ledger_branch import read_ledger
+    from outerloop.progress import LedgerReadError
+
+    client = GitHubClient(
+        auth=provider, transport=FakeTransport([{"object": {"sha": "pin"}}, tree])
+    )
+    with pytest.raises(LedgerReadError):
+        read_ledger(client, "org/repo")
+
+
+def test_ledger_corrupt_read_never_writes(provider, monkeypatch):
+    from outerloop.ledger_branch import write_ledger
+    from outerloop.progress import LEADER_FILE, LedgerReadError
+
+    client = GitHubClient(
+        auth=provider, transport=FakeTransport([_ledger_tree(LEADER_FILE), _ledger_content("{")])
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("must not write corrupt ledger")
+
+    monkeypatch.setattr(client, "put_files", forbidden)
+    with pytest.raises(LedgerReadError):
+        write_ledger(client, "org/repo", "pin", lambda leader, pendings: {})
+
+
+@pytest.mark.parametrize("conflicts", [1, 3])
+def test_ledger_cas_recomputes_and_bounds_retries(provider, monkeypatch, conflicts):
+    from dataclasses import asdict
+
+    from outerloop.ledger_branch import LedgerWriteError, write_ledger
+    from outerloop.progress import LEADER_FILE, PROGRESS_FILE, LeaderEntry, render_markdown
+
+    concurrent = LeaderEntry("other", "score", "max", 1.0, 2.0, "other-run", "today")
+    encoded = json.dumps({"other": asdict(concurrent)})
+    responses: list[object] = [_ledger_tree()]
+    for index in range(conflicts):
+        responses.append({"object": {"sha": f"head-{index + 1}"}})
+        if index < 2:
+            responses.extend([_ledger_tree(LEADER_FILE), _ledger_content(encoded)])
+    client = GitHubClient(auth=provider, transport=FakeTransport(responses))
+    seen = []
+    writes = []
+
+    def edit(leader, pendings):
+        seen.append(dict(leader))
+        return {LEADER_FILE: json.dumps({k: asdict(v) for k, v in leader.items()})}
+
+    def put(repo, files, branch, message, expected_head=None):
+        writes.append((expected_head, files))
+        assert branch == "research-log"
+        return len(writes) > conflicts
+
+    monkeypatch.setattr(client, "put_files", put)
+    if conflicts == 3:
+        with pytest.raises(LedgerWriteError, match="three"):
+            write_ledger(client, "org/repo", "head-0", edit)
+        assert len(writes) == 3
+    else:
+        write_ledger(client, "org/repo", "head-0", edit)
+        assert len(writes) == 2
+    assert seen[0] == {} and seen[1] == {"other": concurrent}
+    assert writes[1][0] == "head-1"
+    assert writes[1][1][PROGRESS_FILE] == render_markdown({"other": concurrent}, "org/repo")
+    assert json.loads(writes[1][1][LEADER_FILE])["other"] == asdict(concurrent)
+
+
+@pytest.mark.parametrize("head", ["existing", ""])
+def test_ledger_branch_creation_uses_only_callers_pin(provider, head):
+    from outerloop.ledger_branch import ensure_ledger_branch
+
+    transport = FakeTransport([{}])
+    client = GitHubClient(auth=provider, transport=transport)
+    from unittest.mock import patch
+
+    with patch.object(client, "branch_head", return_value=head):
+        ensure_ledger_branch(client, "org/repo", "pinned-main")
+    assert len(transport.requests) == (0 if head else 1)
+    if not head:
+        payload = transport.requests[0].data
+        assert isinstance(payload, bytes)
+        assert json.loads(payload) == {
+            "ref": "refs/heads/research-log",
+            "sha": "pinned-main",
+        }
+
+
+def test_shared_research_branch_constant():
+    import outerloop.attempt as attempt
+    import outerloop.climbboard as board
+    import outerloop.tick as tick
+    from outerloop.ledger_branch import RESEARCH_LOG_BRANCH
+
+    assert (
+        attempt.RESEARCH_LOG_BRANCH
+        == tick.RESEARCH_LOG_BRANCH
+        == board.BOARD_BRANCH
+        == RESEARCH_LOG_BRANCH
+    )
+    for module in (attempt, tick, board):
+        assert module.__file__ is not None
+        text = Path(module.__file__).read_text()
+        assert 'BRANCH = "research-log"' not in text
+        assert "from outerloop.ledger_branch import RESEARCH_LOG_BRANCH" in text
+
+
+def test_ledger_pending_publish_and_reject_are_atomic(provider, monkeypatch):
+    from outerloop.ledger_branch import read_ledger, write_ledger
+    from outerloop.progress import (
+        LEADER_FILE,
+        PROGRESS_FILE,
+        PendingSubmission,
+        record_pending,
+        reject,
+    )
+
+    pending = PendingSubmission(
+        "bench",
+        "score",
+        "max",
+        0.123456789012345,
+        0.234567890123456,
+        "run",
+        123456789,
+        "ruler",
+        "signature",
+        "sealed",
+        12,
+        "head",
+        "today",
+    )
+    transport = FakeTransport(
+        [
+            {"object": {"sha": "pin"}},
+            _ledger_tree(pending.path),
+            _ledger_content(record_pending(pending)[pending.path]),
+            _ledger_tree(pending.path),
+            _ledger_content(record_pending(pending)[pending.path]),
+            _ledger_tree(pending.path),
+            _ledger_content("null"),
+        ]
+    )
+    client = GitHubClient(auth=provider, transport=transport)
+    head, leader, pendings = read_ledger(client, "org/repo")
+    assert leader == {} and pendings == {pending.path: pending}
+    writes = []
+
+    def put(repo, files, branch, message, expected_head=None):
+        writes.append(files)
+        assert expected_head == "pin"
+        return True
+
+    monkeypatch.setattr(client, "put_files", put)
+    write_ledger(client, "org/repo", head, lambda leader, pendings: reject(pending))
+    # Replaying after a successful write remains safe.
+    write_ledger(client, "org/repo", head, lambda leader, pendings: reject(pending))
+    for files in writes:
+        assert files[pending.path] == "null\n"
+        assert json.loads(files[LEADER_FILE]) == {}
+        assert PROGRESS_FILE in files
+
+
+@pytest.mark.parametrize("head", [None, ""])
+def test_ledger_unavailable_head_refuses_read(provider, monkeypatch, head):
+    from outerloop.ledger_branch import read_ledger
+    from outerloop.progress import LedgerReadError
+
+    client = GitHubClient(auth=provider, transport=FakeTransport([]))
+    monkeypatch.setattr(client, "branch_head", lambda *args: head)
+    with pytest.raises(LedgerReadError):
+        read_ledger(client, "org/repo")

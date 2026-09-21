@@ -31,12 +31,12 @@ from typing import Any
 from outerloop.hypothesis import MAX_HYPOTHESIS_CHARS as MAX_HYPOTHESIS_CHARS
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import wake_pending
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as BOARD_BRANCH
 from outerloop.markers import marker
 from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
 
 log = logging.getLogger("outerloop.climbboard")
 
-BOARD_BRANCH = "research-log"
 MAX_SUMMARY_CHARS = 90  # what the table shows; the full line stays in the row
 MAX_CURVE_POINTS = 160
 MAX_CURVE_RUNS_PER_AGENT = 5  # at most this many curves per agent, so one

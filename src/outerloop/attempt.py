@@ -68,6 +68,7 @@ from outerloop.harness import (
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -1808,7 +1809,6 @@ def _launch_refund(
     return launch_hours_refund(launches, elapsed, gpus=gpus)
 
 
-RESEARCH_LOG_BRANCH = "research-log"
 MAX_ARCHIVED_REPORTS = 30  # materialized for the session to read; newest first
 MAX_ARCHIVED_REPORT_CHARS = 100_000  # per report; branch content is remote-controlled
 

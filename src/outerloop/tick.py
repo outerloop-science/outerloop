@@ -43,6 +43,7 @@ from outerloop.compute import (
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
+from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.limits import EffectiveLimits, effective_limits
 from outerloop.markers import has_marker, marker
 from outerloop.runstate import (
@@ -1165,7 +1166,6 @@ def cancel_ended_launches(
     return cancelled
 
 
-RESEARCH_LOG_BRANCH = "research-log"
 RESEARCH_LOG_MARKER = marker("research-log")
 RESEARCH_LOG_PER_TICK = 3
 
