@@ -18,10 +18,12 @@ Versions follow [SemVer](https://semver.org).
 - Parked runs keep their recorded author backend and model; resumed panels now inherit from that author. Set an explicit model for any panel lens using another backend.
 - Set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` if any Claude role lacks an explicit or inherited model, including the steward when its key is configured.
 - Restart local loops after installing; they do not auto-update or reload `.env`.
+- No action is needed for inbox messages already delivered: kernel messages written before this version stay readable, and any output they quote stays fenced as data.
 - No action is needed for `end` requests already staged: old requests stay valid, and a saved withdrawal is finished by the next tick.
 
 ### Fixed
 
+- Messages the kernel writes itself now render as its instructions; output the kernel quotes from elsewhere stays fenced as data.
 - Merged results are confirmed again: the observer compares the merge commit's tree with the published head's tree instead of fetching the never-pushed measured commit.
 
 - Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
