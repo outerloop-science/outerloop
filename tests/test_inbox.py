@@ -1012,6 +1012,17 @@ def test_legacy_base_moved_wordings_render_as_kernel_text_but_other_bodies_stay_
     ]
     rendered = render_inbox(legacy_ok, budgets="b")
     assert "Quoted data" not in rendered and "```" not in rendered
+    long_tip = "c" * 64
+    long_msg = Message(
+        4,
+        "base-moved",
+        "git",
+        "t",
+        0.0,
+        f"base:{long_tip}:2",
+        {"text": base_moved_text(long_tip, "main"), "base_sha": long_tip},
+    )
+    assert "```" not in render_inbox([long_msg], budgets="b")
     hostile = Message(
         3,
         "base-moved",
