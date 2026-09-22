@@ -142,6 +142,15 @@ def _check_end(root: Path, verb: str) -> None:
 
 
 def cmd_end(root: Path, args: argparse.Namespace) -> str:
+    if args.withdraw is not None:
+        try:
+            open_pr = json.loads((root / DIR / BUDGET).read_text()).get("open_pr") is True
+        except (OSError, ValueError):
+            open_pr = False
+        if not open_pr:
+            raise ToolError("Withdrawal requires an open PR.")
+        if not args.withdraw.strip() or len(args.withdraw) > MAX_REPLY_CHARS:
+            raise ToolError(f"withdrawal reason must contain 1 to {MAX_REPLY_CHARS} chars")
     staged = _load_staged(root)
     abi = _dir(root) / ABI
     payload = json.loads(abi.read_text()) if abi.exists() else {}
@@ -161,10 +170,15 @@ def cmd_end(root: Path, args: argparse.Namespace) -> str:
             raise ToolError(f"report file could not be read: {exc}") from exc
         if not report.strip() or len(report) > MAX_REPORT_CHARS:
             raise ToolError(f"report must contain 1 to {MAX_REPORT_CHARS} chars")
-    encoded = json.dumps({"type": "end", "report": report, "messages": payload.get("messages", [])})
+    ending = {"type": "end", "report": report, "messages": payload.get("messages", [])}
+    if args.withdraw is not None:
+        ending["withdraw"] = args.withdraw.strip()
+    encoded = json.dumps(ending)
     if len(encoded.encode("utf-8")) > MAX_REQUEST_BYTES:
         raise ToolError(f"staged request exceeds {MAX_REQUEST_BYTES} bytes")
     abi.write_text(encoded)
+    if args.withdraw is not None:
+        return "withdrawal staged; END YOUR TURN. The PR closes on the kernel's next pass."
     return "end staged; END YOUR TURN to end the run or park its open PR."
 
 
@@ -571,6 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="stage an end; then end your turn. The session ends here.",
         description="The session ends here.",
     )
+    end.add_argument("--withdraw", metavar="REASON", help="close your open PR and end the run")
     end.add_argument("--report", default="", help="file containing your final report")
     # judge verbs
     fi = sub.add_parser("finding", help="record one finding")

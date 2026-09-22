@@ -8,6 +8,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Upgrading
 
+- No action is needed for confirmations to resume: pending records already carry the published head the observer now compares.
 - No contract change; existing contract files need no edits.
 - The `research-log` ledger branch is created from the default branch on first publish if it is missing.
 - An existing `research-log` branch may carry a stale copy of main's ledger, so check `BENCHMARKS.md` there. If it is missing, run `outerloop migrate-ledger --target OWNER/REPO --main-sha <current main sha> --dry-run`, then repeat without `--dry-run`. If it is stale, add `--force` to both runs; it replaces the whole table and erases confirmed rows, so look at the existing table first.
@@ -18,10 +19,13 @@ Versions follow [SemVer](https://semver.org).
 - Set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` if any Claude role lacks an explicit or inherited model, including the steward when its key is configured.
 - Restart local loops after installing; they do not auto-update or reload `.env`.
 - No action is needed for inbox messages already delivered: kernel messages written before this version stay readable, and any output they quote stays fenced as data.
+- No action is needed for `end` requests already staged: old requests stay valid, and a saved withdrawal is finished by the next tick.
 
 ### Fixed
 
 - Messages the kernel writes itself now render as its instructions; output the kernel quotes from elsewhere stays fenced as data.
+- Merged results are confirmed again: the observer compares the merge commit's tree with the published head's tree instead of fetching the never-pushed measured commit.
+
 - Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
 - A candidate whose base moved again during measurement is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so restoring an older version is still refused.
 - A submit made after the base moves is saved before any gate measurement or staged experiments run. The author is told to fold the base and submit again, or to submit again after the measurement base is refreshed.
@@ -32,6 +36,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Authors can withdraw a superseded open PR with `end --withdraw "<reason>"`; the kernel closes it with the reason and ends the run.
 - `outerloop migrate-ledger --target OWNER/REPO --main-sha SHA [--dry-run] [--force]` imports the ledger from the specified current main commit into `research-log`.
 - Full `outerloop init` requires and writes a Claude model even for a deployment without Claude roles, using `--claude-model`, then the shell's `OUTERLOOP_CLAUDE_MODEL`, then a required interactive prompt. A focused `init --github-app` run preserves existing `.env` settings it does not manage.
 

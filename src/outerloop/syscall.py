@@ -176,6 +176,7 @@ class SyscallRequest:
     # candidate whose eval runs longer is paid for here, not killed by a
     # fixed limit.
     eval_minutes: int | None = None
+    withdraw: str = ""
 
 
 @dataclass(frozen=True)
@@ -301,6 +302,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         "eval_minutes",
         "report",
         "messages",
+        "withdraw",
     }
     if unknown:
         raise SyscallError(f"unknown syscall keys: {sorted(unknown)}")
@@ -321,12 +323,18 @@ def read_request(workspace: Path) -> SyscallRequest | None:
             raise SyscallError("reply_to must be a positive integer or null")
     if data["type"] == "message" and set(data) - {"type", "messages"}:
         raise SyscallError("message syscall only accepts messages")
+    withdraw = data.get("withdraw", "")
+    if "withdraw" in data:
+        if data["type"] != "end":
+            raise SyscallError("withdraw only applies to end")
+        if not isinstance(withdraw, str) or not withdraw.strip() or len(withdraw) > MAX_REPLY_CHARS:
+            raise SyscallError(f"withdrawal reason must contain 1 to {MAX_REPLY_CHARS} chars")
     problem = ""
     if data["type"] == "end":
         # a conflicting end is refused and told, never a dead run
         if data.get("submit"):
             problem = "submit first, end after the verdict"
-        elif set(data) - {"type", "report", "messages"}:
+        elif set(data) - {"type", "report", "messages", "withdraw"}:
             problem = "end is final for the leg; it cannot accompany launch or sleep"
     submit = data.get("submit", False)
     if not isinstance(submit, bool):
@@ -417,6 +425,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         submit=submit,
         eval_minutes=eval_minutes,
         report=report.strip(),
+        withdraw=withdraw.strip(),
     )
 
 
@@ -658,6 +667,7 @@ def tool_update_note(channel: str) -> str:
         "and a code change is published only by `submit`. "
         "`end [--report <file>]` ends without a PR, or posts the report and parks "
         "with an open PR, at turn end. "
+        'Use `end --withdraw "<reason>"` to withdraw a superseded open PR. '
         "Submit works in review and publishes a credited tree by fast-forward. "
         "It needs no prior launch. `--report <file>` is optional. The "
         "report explains your hypothesis, what you ran and measured, why this should "
@@ -725,6 +735,7 @@ def write_budget(
     sleeps_remaining: int,
     gpu_hours_remaining: float | None = None,
     review_topup: str = "",
+    open_pr: bool = False,
 ) -> None:
     """Kernel-written budget the tool's `status` shows. Informational for the
     author's planning only — enforcement stays in `budget_error`. Never
@@ -739,6 +750,8 @@ def write_budget(
         "launches_remaining": launches_remaining,
         "sleeps_remaining": sleeps_remaining,
     }
+    if open_pr:
+        budget["open_pr"] = True
     if review_topup:
         budget["review_topup"] = review_topup
     if gpu_hours_remaining is not None:
@@ -764,6 +777,7 @@ def write_run_budget(
     bench: Benchmark,
     *,
     review_topup: bool,
+    open_pr: bool = False,
     launches_used: int = 0,
     sleeps_used: int = 0,
     gpu_hours_used: float = 0.0,
@@ -775,6 +789,7 @@ def write_run_budget(
         sleeps_remaining=max(0, sleep_ceiling - sleeps_used),
         gpu_hours_remaining=max(0.0, hour_ceiling - gpu_hours_used) if bench.gpus else None,
         review_topup=budgets.review_topup.note(review_topup),
+        open_pr=open_pr,
     )
 
 
