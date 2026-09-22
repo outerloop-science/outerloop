@@ -401,10 +401,14 @@ _OLD_BASE_MOVED = (
 def _legacy_base_moved(text: str) -> bool:
     """A base-moved body written before quoted_text existed is trusted only
     when it matches a wording those kernels used."""
-    for template in (_OLD_BASE_MOVED, base_moved_text("TIPTIP", "BASEBASE")):
+    sentinel = "f" * 40
+    for template in (
+        _OLD_BASE_MOVED.replace("TIPTIP", sentinel),
+        base_moved_text(sentinel, "BASEBASE"),
+    ):
         pattern = (
             re.escape(template)
-            .replace("TIPTIP", r"[0-9a-f]{7,40}")
+            .replace(sentinel, r"[0-9a-f]{7,40}")
             .replace("BASEBASE", _REFNAME.pattern)
         )
         if re.fullmatch(pattern + r"( GitHub reports conflicts with the base\.)?", text):
@@ -687,6 +691,7 @@ def base_moved_key(tip: str) -> str:
 
 
 _REFNAME = re.compile(r"[A-Za-z0-9._/-]{1,120}")
+_SHA = re.compile(r"[0-9a-f]{7,64}")
 
 
 def base_moved_text(tip: str, base: str) -> str:
@@ -696,6 +701,7 @@ def base_moved_text(tip: str, base: str) -> str:
     words, so anything but a plain ref name is left out rather than guessed."""
     shown = _REFNAME.fullmatch(base) is not None
     name = base if shown else "the base branch"
+    tip_text = f"the current base tip {tip}" if _SHA.fullmatch(tip) else "the current base tip"
     merge = (
         f"`git merge --no-edit origin/{base}`"
         if shown
@@ -703,7 +709,7 @@ def base_moved_text(tip: str, base: str) -> str:
         "so it is not shown here)"
     )
     return (
-        f"Your head does not contain the current base tip {tip}. Fold it: from a HEAD "
+        f"Your head does not contain {tip_text}. Fold it: from a HEAD "
         f"that contains your PR head, run {merge}; that "
         "merge commit is allowed. If git stops the merge, fix the listed files, stage "
         "them, and finish the same merge with `git commit --no-edit`, taking the base's version "
