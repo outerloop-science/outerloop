@@ -17,6 +17,7 @@ Versions follow [SemVer](https://semver.org).
 - Parked runs keep their recorded author backend and model; resumed panels now inherit from that author. Set an explicit model for any panel lens using another backend.
 - Set `OUTERLOOP_CLAUDE_MODEL=<model>` in `.env` if any Claude role lacks an explicit or inherited model, including the steward when its key is configured.
 - Restart local loops after installing; they do not auto-update or reload `.env`.
+- No action is needed for `end` requests already staged: old requests stay valid, and a saved withdrawal is finished by the next tick.
 
 ### Fixed
 
@@ -30,6 +31,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Authors can withdraw a superseded open PR with `end --withdraw "<reason>"`; the kernel closes it with the reason and ends the run.
 - `outerloop migrate-ledger --target OWNER/REPO --main-sha SHA [--dry-run] [--force]` imports the ledger from the specified current main commit into `research-log`.
 - Full `outerloop init` requires and writes a Claude model even for a deployment without Claude roles, using `--claude-model`, then the shell's `OUTERLOOP_CLAUDE_MODEL`, then a required interactive prompt. A focused `init --github-app` run preserves existing `.env` settings it does not manage.
 

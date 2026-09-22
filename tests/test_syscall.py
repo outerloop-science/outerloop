@@ -1259,3 +1259,37 @@ def test_budget_is_never_written_into_a_channel_the_target_tracks(tmp_path, capl
     assert shipped_channel(ws) == ""
     write_budget(ws, launches_remaining=2, sleeps_remaining=3)
     assert '"launches_remaining": 2' in (ws / ".outerloop" / "budget.json").read_text()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "sleep", "withdraw": "reason"},
+        {"type": "end", "withdraw": ""},
+        {"type": "end", "withdraw": " "},
+        {"type": "end", "withdraw": 1},
+        {"type": "end", "withdraw": "x" * 20001},
+    ],
+)
+def test_invalid_withdraw_request(tmp_path, payload):
+    import json
+
+    from outerloop.syscall import SyscallError, read_request
+
+    (tmp_path / ".outerloop").mkdir()
+    (tmp_path / ".outerloop/syscall.json").write_text(json.dumps(payload))
+    with pytest.raises(SyscallError):
+        read_request(tmp_path)
+
+
+def test_legacy_end_request_remains_valid(tmp_path):
+    from outerloop.syscall import read_request
+
+    (tmp_path / ".outerloop").mkdir()
+    path = tmp_path / ".outerloop/syscall.json"
+    # Pre-withdrawal ABI fixture; absent optional fields retain their meaning.
+    for _ in range(2):
+        path.write_text('{"type":"end","report":"done","messages":[]}')
+        request = read_request(tmp_path)
+        assert request and request.end and request.report == "done" and request.withdraw == ""
+        assert read_request(tmp_path) is None

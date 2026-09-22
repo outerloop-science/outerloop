@@ -431,6 +431,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 STAGE_RETAINED_KEYS = (
     LEDGER_RETRY,
+    "withdraw_reason",
     "ledger_digits",
     "launches_used",
     "sleeps_used",
@@ -466,7 +467,7 @@ def _clear_stage(record: RunRecord, run_root: Path) -> RunRecord:
         for k in STAGE_RETAINED_KEYS
         if record.stage
         and k in record.stage
-        and (record.state != ENDED or k not in ("base_sha", "base_branch"))
+        and (record.state != ENDED or k not in ("base_sha", "base_branch", "withdraw_reason"))
     }
     if record.state == ENDED and (jobs := stage_launch_job_ids(record)):
         kept["launch_afterany"] = "afterany:" + ":".join(jobs)
@@ -1252,6 +1253,11 @@ def run_author_leg(
         gpu_hours_used=hours,
         review_topup=review_topup,
         on_replies=post_leg_replies if owned else None,
+        on_withdraw=(lambda reason: withdraw_pr(run_root, record, github, reason, secrets))
+        if owned
+        and record.pr_url
+        and github.get_pull_request(record.target, _pr_number(record.pr_url)).get("state") == "open"
+        else None,
         on_meter=lambda launches, sleeps, hours: save_meter(
             run_root, record.run_id, launches, sleeps, hours
         ),
@@ -1643,6 +1649,7 @@ def _wake_author_sleep(
     if record.pr_url and result.outcome == "review" and result.session is not None:
         from outerloop.review import APPROVAL_PATTERN, REDACTED
 
+        (run_dir / "report.md").write_text(result.report(config, redact_secrets=secrets))
         deliver_messages(record, github, (), secrets, run_dir)
         reply = APPROVAL_PATTERN.sub(REDACTED, redact(result.session.final_text, secrets))[
             :MAX_REPLY_CHARS
@@ -5065,8 +5072,30 @@ def _ledger_digits(record: RunRecord) -> dict[str, int]:
     )
 
 
+def withdraw_pr(
+    run_root: Path,
+    record: RunRecord,
+    github: GitHubClient,
+    reason: str,
+    secrets: tuple[str, ...] = (),
+) -> str:
+    """Journal the redacted intent before any GitHub write."""
+    record = load_record(run_root, record.run_id)
+    if not record.pr_url or record.ended():
+        return "Withdrawal requires an open PR."
+    pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+    if pr.get("state") != "open" or pr.get("merged") or pr.get("merged_at"):
+        return "Withdrawal requires an open PR."
+    from outerloop.review import APPROVAL_PATTERN, REDACTED
+
+    reason = APPROVAL_PATTERN.sub(REDACTED, redact(reason, secrets))
+    record = dc_replace(record, stage={**record.stage, "withdraw_reason": reason})
+    save_record(run_root, record, time.time())
+    return ""
+
+
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
-    """Route a human PR ending through the run terminal."""
+    """Finish a withdrawal intent, then route the PR ending through the run terminal."""
     from outerloop.github import GitHubError
     from outerloop.runstate import MERGED, REJECTED
 
@@ -5078,6 +5107,14 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
         if exc.status != 404:
             raise
         pr = {"state": "closed"}
+    reason = str(record.stage.get("withdraw_reason") or "")
+    if reason and pr.get("state") == "open" and not (pr.get("merged") or pr.get("merged_at")):
+        number = _pr_number(record.pr_url)
+        body = f"{marker('withdraw')}\nAuthor withdrew: {reason}"
+        if not any(c.get("body") == body for c in github.list_comments(record.target, number)):
+            github.comment(record.target, number, body)
+        github.close_issue(record.target, number)
+        pr = github.get_pull_request(record.target, number)
     ending = (
         MERGED
         if pr.get("merged") or pr.get("merged_at")
@@ -5092,6 +5129,8 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
     except Exception as exc:
         raise LedgerWriteError("branch ledger observation deferred") from exc
     note = "PR merged" if ending == MERGED else "PR closed unmerged"
+    if ending == REJECTED and reason:
+        note = f"Author withdrew: {reason}"
     if _pr_number(record.pr_url) in unmeasured:
         note = "PR merged; merged tree was not measured, leaderboard unchanged"
         if not any(

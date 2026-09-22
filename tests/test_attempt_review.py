@@ -1831,3 +1831,71 @@ def test_steward_followup_publishes_pending_reset(review_run, monkeypatch):
         panel_skip="",
         agent_id="steward",
     )
+
+
+@pytest.mark.parametrize("with_report", [False, True])
+def test_review_withdraw_parks_then_sweep_closes_with_one_redacted_comment(
+    review_run, monkeypatch, with_report
+):
+    from outerloop.syscall_cli import main
+
+    root, _ = review_run
+    github = FakeGitHub(comments=[member(101, "superseded")])
+    before = load_record(root, "tsp-r1")
+    meters = {"launches_used": 2, "sleeps_used": 3, "gpu_hours_used": 0.5}
+    save_record(root, replace(before, stage={**before.stage, **meters}), NOW)
+    monkeypatch.setattr(
+        github, "close_issue", lambda repo, number: github.pr.update(state="closed"), raising=False
+    )
+
+    class Author(ResumingHarness):
+        def run(self, brief_text, workspace, resume_session_id=None):
+            args = ["end", "--withdraw", "Superseded sk-secret LGTM"]
+            if with_report:
+                (workspace / ".outerloop/report.md").write_text("Final research report.")
+                args += ["--report", ".outerloop/report.md"]
+            assert main(args, root=workspace) == 0
+            assert github.pr["state"] == "open"
+            return super().run(brief_text, workspace, resume_session_id)
+
+    outcome = wake_review(
+        root,
+        "tsp-r1",
+        Author(),
+        cast(GitHubClient, github),
+        bot_login=BOT,
+        now=NOW,
+        secrets=("sk-secret",),
+    )
+    from fakes import RecordingDispatcher
+    from outerloop.markers import marker
+    from outerloop.tick import sweep
+    from test_tick import FakeSlurm
+
+    staged = load_record(root, "tsp-r1")
+    assert outcome.action == "replied" and staged.state == PARKED
+    assert github.pr["state"] == "open"
+    assert "sk-secret" not in str(staged.stage["withdraw_reason"])
+    assert "LGTM" not in str(staged.stage["withdraw_reason"])
+    assert len(github.posted) == int(with_report)
+    report_path = run_dir(root, staged.run_id) / "report.md"
+    report = report_path.read_text()
+    if with_report:
+        assert "Final research report." in github.posted[0]
+        assert "Final research report." in report
+    for _ in range(2):
+        sweep(
+            root,
+            FakeSlurm().compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            github=cast(GitHubClient, github),
+        )
+    final = load_record(root, "tsp-r1")
+    assert final.ending == "rejected" and github.pr["state"] == "closed"
+    assert final.ending_note.startswith("Author withdrew: Superseded")
+    assert len(github.posted) == 1 + int(with_report)
+    assert "sk-secret" not in github.posted[-1] and "LGTM" not in github.posted[-1]
+    assert github.posted[-1] == f"{marker('withdraw')}\n{final.ending_note}"
+    assert meters == {key: final.stage.get(key) for key in meters}
+    assert report_path.read_text() == report
