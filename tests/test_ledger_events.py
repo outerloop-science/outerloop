@@ -454,3 +454,180 @@ def test_kernel_refuses_withdraw_without_open_pr(tmp_path, state):
     assert withdraw_pr(tmp_path, r, github, "Superseded") == "Withdrawal requires an open PR."
     assert not fake.comments
     assert "withdraw_reason" not in load_record(tmp_path, r.run_id).stage
+
+
+@pytest.fixture
+def rebless_run(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from outerloop.runstate import RECORD_NAME, read_lease, run_dir
+
+    directory = run_dir(tmp_path, "run-1")
+    directory.mkdir(parents=True)
+    (directory / RECORD_NAME).write_text(
+        (Path(__file__).parent / "fixtures/base_moved_cc4e5d7.json").read_text()
+    )
+    r = load_record(tmp_path, "run-1")
+    fake, _ = client()
+    pr = fake.pull_requests[1]
+    pr.update(state="open", merged=False, base={"ref": "main"}, mergeable_state="clean")
+    fake.ancestry = ["d8acd6b9", "ff302409", "published", "merge"]
+    merges, bodies = [], []
+    monkeypatch.setattr(fake, "branch_sha", lambda *args: "d8acd6b9")
+    monkeypatch.setattr(
+        fake, "get_file_content", lambda *a: CONTRACT + "\nmerge: auto\n", raising=False
+    )
+    monkeypatch.setattr(fake, "list_pr_reviews", lambda *a: [], raising=False)
+    monkeypatch.setattr(fake, "list_pr_review_comments", lambda *a: [], raising=False)
+    monkeypatch.setattr(fake, "list_check_runs", lambda *a: [], raising=False)
+    monkeypatch.setattr(fake, "allowed_merge_methods", lambda *a: ["MERGE"], raising=False)
+    monkeypatch.setattr(fake, "append_pull_body", lambda *a: bodies.append(a[-1]), raising=False)
+
+    def merge(repo, number, method, expected_head):
+        assert read_lease(tmp_path, r.run_id) is not None
+        assert expected_head == "published"
+        merges.append(number)
+        pr.update(state="closed", merged=True)
+        return True
+
+    monkeypatch.setattr(fake, "merge_pull", merge, raising=False)
+    return r, fake, merges, bodies
+
+
+def run_rebless_sweep(root, github, now=3):
+    from fakes import RecordingDispatcher
+    from outerloop.tick import sweep
+    from test_tick import FakeSlurm
+
+    return sweep(root, FakeSlurm().compute(), RecordingDispatcher(), now, github=github)
+
+
+@pytest.mark.parametrize("wording", ["old", "new", "structured"])
+def test_sweep_reblesses_legacy_and_confirms_same_tick(tmp_path, rebless_run, wording):
+    r, fake, merges, bodies = rebless_run
+    if wording == "new":
+        r = replace(
+            r,
+            auto_bless_reason=(
+                "base moved: origin/main tip d8acd6b9 moved past measured base ff302409"
+            ),
+        )
+    elif wording == "structured":
+        r = replace(
+            r,
+            auto_bless_reason="wording can change",
+            auto_bless_reason_kind="base_moved",
+            auto_bless_base="ff302409",
+            auto_publish_head="published",
+        )
+    save_record(tmp_path, r, 2)
+    report = run_rebless_sweep(tmp_path, fake)
+    latest = load_record(tmp_path, r.run_id)
+    assert latest.auto_blessed_head == "published"
+    assert latest.auto_bless_reason == ""
+    assert latest.auto_bless_base == "ff302409"
+    assert latest.auto_publish_head == "published"
+    assert latest.state == ENDED and latest.ending == MERGED
+    assert report.review_ended == ((r.run_id, MERGED),)
+    assert merges == [1]
+    assert bodies == ["Self-merge: armed at published"]
+    assert json.loads(fake.ledger_files[LEADER_FILE])["bench"]["main_commit"] == "merge"
+    writes = len(fake.ledger_writes)
+    run_rebless_sweep(tmp_path, fake, 4)
+    assert merges == [1] and len(fake.ledger_writes) == writes
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        "advanced",
+        "head",
+        "draft",
+        "checks",
+        "message",
+        "panel",
+        "unreadable",
+        "structured-panel",
+        "malformed",
+    ],
+)
+def test_sweep_rebless_refusals(tmp_path, rebless_run, monkeypatch, blocked):
+    from outerloop.inbox import Message, append
+    from outerloop.runstate import run_dir
+
+    r, fake, merges, bodies = rebless_run
+    if blocked == "advanced":
+        fake.ancestry = ["ff302409", "d8acd6b9", "published", "merge"]
+    elif blocked == "head":
+        fake.pull_requests[1]["head"] = {"sha": "merge"}
+    elif blocked == "draft":
+        fake.pull_requests[1]["draft"] = True
+    elif blocked == "checks":
+        fake.pull_requests[1]["mergeable_state"] = "blocked"
+    elif blocked == "message":
+        append(
+            run_dir(tmp_path, r.run_id),
+            Message(0, "note", "kernel", "org/repo#1", 2, "note", {"text": "feedback"}),
+        )
+    else:
+        reason = {
+            "panel": "panel blocking or degraded",
+            "unreadable": "HEAD unreadable: empty revision",
+            "structured-panel": r.auto_bless_reason,
+            "malformed": "base moved: origin/main d8acd6b9 != measured ff302409;bad",
+        }[blocked]
+        r = replace(
+            r,
+            auto_bless_reason=reason,
+            auto_bless_base="ff302409",
+            auto_publish_head="published",
+            auto_bless_reason_kind="other" if blocked == "structured-panel" else "",
+        )
+        save_record(tmp_path, r, 2)
+    run_rebless_sweep(tmp_path, fake)
+    assert not merges and not bodies
+    assert not load_record(tmp_path, r.run_id).auto_blessed_head
+
+
+@pytest.mark.parametrize("failure", ["body", "merge", "observe"])
+def test_rebless_interruption_retries_without_second_merge(
+    tmp_path, rebless_run, monkeypatch, caplog, failure
+):
+    from outerloop import attempt
+
+    r, fake, merges, _bodies = rebless_run
+    if failure == "observe":
+        # A failed confirmation must not fall through to the stuck-run terminal.
+        save_record(tmp_path, replace(r, wake_attempts=99, deadline=1), 2)
+    name = {"body": "append_pull_body", "merge": "merge_pull", "observe": "observe_target"}[failure]
+    owner = attempt if failure == "observe" else fake
+    original = getattr(owner, name)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(owner, name, fail)
+    run_rebless_sweep(tmp_path, fake)
+    assert load_record(tmp_path, r.run_id).state == PARKED
+    assert merges == ([1] if failure == "observe" else [])
+    assert "GitHub polling failed" in caplog.text
+    monkeypatch.setattr(owner, name, original)
+    run_rebless_sweep(tmp_path, fake, 4)
+    assert load_record(tmp_path, r.run_id).state == ENDED
+    assert merges == [1]
+    assert json.loads(fake.ledger_files[LEADER_FILE])["bench"]["main_commit"] == "merge"
+
+
+def test_same_tick_merge_observation_respects_ledger_hold(tmp_path, rebless_run, monkeypatch):
+    r, fake, merges, _bodies = rebless_run
+    save_record(tmp_path, replace(r, stage={**r.stage, LEDGER_RETRY: {"waiting": True}}), 2)
+    monkeypatch.setattr("outerloop.ledger_events.retry_pending", lambda root, r, *a: r)
+    run_rebless_sweep(tmp_path, fake)
+    assert merges == [1]
+    assert load_record(tmp_path, r.run_id).state == PARKED
+    assert LEADER_FILE not in fake.ledger_files
+    r = load_record(tmp_path, r.run_id)
+    save_record(tmp_path, replace(r, stage={}), 4)
+    run_rebless_sweep(tmp_path, fake, 5)
+    assert merges == [1]
+    assert load_record(tmp_path, r.run_id).state == ENDED

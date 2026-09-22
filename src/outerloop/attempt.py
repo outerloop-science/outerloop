@@ -3812,6 +3812,11 @@ def publish(
                 state=PARKED,
                 auto_blessed_head=blessed_head,
                 auto_bless_reason=bless_reason,
+                auto_bless_reason_kind="base_moved"
+                if bless_reason.startswith("base moved:")
+                else "other",
+                auto_bless_base=base_sha,
+                auto_publish_head=pushed_sha,
                 resume_session_id=result.session.session_id
                 if result.session
                 else record.resume_session_id,
@@ -3972,6 +3977,11 @@ def publish(
                 "stage": {**record.stage, "review_topup": True},
                 "auto_blessed_head": blessed_head,
                 "auto_bless_reason": bless_reason,
+                "auto_bless_reason_kind": "base_moved"
+                if bless_reason.startswith("base moved:")
+                else "other",
+                "auto_bless_base": base_sha,
+                "auto_publish_head": published_head,
                 "resume_session_id": result.session.session_id if result.session else "",
                 "ending_note": pr_url,
             }

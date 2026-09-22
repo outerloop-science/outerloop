@@ -605,6 +605,56 @@ def _observe_auto_pr(
         )
 
 
+def _rebless_candidate(root: Path, record: RunRecord, github: Any, tip: str) -> RunRecord:
+    """Recover only an ancestry refusal; all other merge guards still apply."""
+    from outerloop.attempt import _contains_tip
+    from outerloop.github import Workspace
+    from outerloop.ledger_branch import read_ledger
+
+    if record.auto_blessed_head:
+        return record
+    measured = record.auto_bless_base
+    if record.auto_bless_reason_kind:
+        if record.auto_bless_reason_kind != "base_moved":
+            return record
+    else:
+        sha = r"[0-9a-fA-F]{7,40}"
+        match = re.fullmatch(
+            rf"base moved: \S+ (?:{sha} != measured |tip {sha} moved past measured base )({sha})",
+            record.auto_bless_reason,
+        )
+        if not match:
+            return record
+        measured = match[1]
+    if not measured:
+        return record
+    head = record.auto_publish_head
+    if not head:
+        number = int(record.pr_url.rstrip("/").split("/")[-1])
+        _, _, pendings = read_ledger(github, record.target)
+        heads = {
+            p.published_head
+            for p in pendings.values()
+            if p.run_id == record.run_id and p.pr_number == number
+        }
+        if len(heads) != 1:
+            return record
+        head = heads.pop()
+    ws = Workspace(root=run_dir(root, record.run_id) / "ws")
+    if not head or not _contains_tip(ws, tip, measured, github, record.target):
+        return record
+    if not _contains_tip(ws, tip, head, github, record.target):
+        return record
+    return replace(
+        record,
+        auto_blessed_head=head,
+        auto_bless_reason="",
+        auto_bless_reason_kind="",
+        auto_bless_base=measured,
+        auto_publish_head=head,
+    )
+
+
 def _merge_blessed_pr(
     root: Path,
     record: RunRecord,
@@ -613,7 +663,7 @@ def _merge_blessed_pr(
     holder: str,
     now: float,
     bot_login: str = "",
-) -> None:
+) -> bool:
     from outerloop.github import GitHubError
     from outerloop.inbox import wake_pending
 
@@ -645,7 +695,7 @@ def _merge_blessed_pr(
         return next((reason for failed, reason in checks if failed), "")
 
     if not acquire_lease(root, record.run_id, holder, "", now):
-        return
+        return False
     try:
         # re-read both under the lease: a wake may have moved the record, and
         # the base may have moved since the sweep read the PR (the merge API
@@ -656,22 +706,24 @@ def _merge_blessed_pr(
         base_ref = str((pr.get("base") or {}).get("ref") or "")
         if not base_ref:
             log.warning("cannot merge PR without a base branch ref")
-            return
+            return False
         try:
             tip = github.branch_sha(record.target, base_ref)
         except GitHubError as exc:
             log.warning("cannot read PR base branch tip (GitHub status %s)", exc.status)
-            return
+            return False
         if not tip:
             log.warning("cannot merge PR without a base branch tip")
-            return
+            return False
+        saved = record
+        record = _rebless_candidate(root, record, github, tip)
         try:
             contains_base = bool(record.auto_blessed_head) and github.head_contains(
                 record.target, tip, record.auto_blessed_head
             )
         except GitHubError as exc:
             log.warning("cannot compare PR head with base tip (GitHub status %s)", exc.status)
-            return
+            return False
         reason = why_not(record, pr, dial, tip, contains_base)
         if reason:
             from outerloop.github import is_own_login
@@ -681,7 +733,7 @@ def _merge_blessed_pr(
             log.info("merge of %s#%s waits: %s", record.target, number, reason)
             if dial != "auto":
                 # a manual-merge PR is a human's to merge; nothing to explain
-                return
+                return False
             try:
                 comments = github.list_comments(record.target, number)
                 latest = next(
@@ -700,7 +752,7 @@ def _merge_blessed_pr(
                 log.warning(
                     "self-merge status lookup failed: %s", redact(str(exc), _client_secrets(github))
                 )
-                return
+                return False
             status = f"Self-merge waiting: {reason}."
             previous = (
                 latest.replace(marker("self-merge-status"), "")
@@ -709,13 +761,22 @@ def _merge_blessed_pr(
             )
             if previous != status:
                 github.comment(record.target, number, f"{marker('self-merge-status')}\n{status}")
-            return
+            return False
         methods = github.allowed_merge_methods(record.target)
         if not methods:
             log.warning("no allowed merge methods for %s; skipping merge this sweep", record.target)
-            return
-        github.merge_pull(
-            record.target, number, methods[0].lower(), expected_head=record.auto_blessed_head
+            return False
+        if record != saved:
+            from outerloop.attempt import _self_merge_line
+
+            github.append_pull_body(
+                record.target, number, _self_merge_line(record.auto_blessed_head, "")
+            )
+            save_record(root, record, now)
+        return bool(
+            github.merge_pull(
+                record.target, number, methods[0].lower(), expected_head=record.auto_blessed_head
+            )
         )
     finally:
         release_lease(root, record.run_id)
@@ -1065,6 +1126,7 @@ def sweep(
                     migrate_inbox(root, record.run_id, now)
                 finally:
                     release_lease(root, record.run_id)
+            merged = False
             try:
                 if github is not None and record.pr_url and not dry_run:
                     from outerloop.attempt import close_if_done
@@ -1087,11 +1149,21 @@ def sweep(
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
+                        merged = _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
+                        if merged and record.target not in ledger_blocked:
+                            ending = close_if_done(
+                                root, load_record(root, record.run_id), github, now
+                            )
+                            if ending:
+                                ended.append((record.run_id, ending))
+                        if merged:
+                            continue
             except Exception as exc:
                 log.warning(
                     "GitHub polling failed on %s: %s: %s", record.run_id, type(exc).__name__, exc
                 )
+                if merged:
+                    continue
             if record.state != PARKED:
                 continue
             _sweep_one(

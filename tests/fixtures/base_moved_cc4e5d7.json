@@ -1,0 +1,33 @@
+{
+  "run_id": "run-1",
+  "target": "org/repo",
+  "task_title": "legacy base refusal",
+  "state": "parked",
+  "agent_id": "agent-01",
+  "experiment_job_id": "",
+  "run_job_id": "",
+  "resume_session_id": "",
+  "pr_url": "https://github.com/org/repo/pull/1",
+  "benchmark": "",
+  "author_backend": "",
+  "author_model": "",
+  "author_key_file": "",
+  "inbox_seq": 0,
+  "auto_blessed_head": "",
+  "auto_bless_reason": "base moved: origin/main d8acd6b9 != measured ff302409",
+  "issue_number": 0,
+  "wake_attempts": 0,
+  "deadline": 999999,
+  "terminal_seen": 0.0,
+  "stage": {
+    "base_sha": "d8acd6b9",
+    "ledger_digits": {
+      "bench": 3
+    }
+  },
+  "ending": "",
+  "ending_note": "",
+  "created": 0.0,
+  "updated": 0.0,
+  "workspace_shed": 0.0
+}

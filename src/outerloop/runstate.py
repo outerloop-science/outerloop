@@ -149,9 +149,12 @@ class RunRecord:
     # (same measured bytes), cleared by any code-changing push. Binding the
     # blessing to a sha — not a flag — means a crashed responder, a live
     # one, or any unrecorded push simply fails the equality: the tick arms
-    # only when GitHub's head IS this sha. Empty = never arm (legacy too).
+    # only when GitHub's head IS this sha. An ancestry refusal may be rechecked.
     auto_blessed_head: str = ""
     auto_bless_reason: str = ""
+    auto_bless_reason_kind: str = ""
+    auto_bless_base: str = ""  # measured base at the blessing decision
+    auto_publish_head: str = ""
     issue_number: int = 0  # the requesting issue, when the requested lane started this run
     wake_attempts: int = 0
     deadline: float = 0.0  # unix; submit+walltime+slack, re-based on start
