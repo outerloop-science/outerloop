@@ -21,7 +21,7 @@ import re
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
@@ -33,7 +33,6 @@ from outerloop.appauth import add_credential_args, resolve_bot_auth
 from outerloop.brief import BudgetState, distill_lessons
 from outerloop.compute import LocalCompute
 from outerloop.contract import (
-    RECORD_PATHS,
     Benchmark,
     Contract,
     contract_text_in_tree,
@@ -1545,13 +1544,6 @@ def _wake_author_sleep(
     # and park the run as a CANDIDATE). Seals retain the session's HEAD ancestry.
     snapshots: list[Snapshot] = []
     wake_line = _line_ref_for(bench, config.agent_id)
-    primary_base = base_sha
-    secondary_bases: tuple[str, ...] = ()
-    if record.pr_url:
-        pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
-        # Only kernel-written records may match the PR head or the folded base.
-        primary_base = f"refs/remotes/origin/{base_branch}"
-        secondary_bases = (str((pr.get("head") or {}).get("sha") or base_sha), base_sha)
 
     def snapshot() -> str:
         snap = snapshot_tree(
@@ -1564,7 +1556,9 @@ def _wake_author_sleep(
         return snap.commit
 
     def changed_paths() -> list[str]:
-        return submission_paths(ws, primary_base, bool(wake_line), secondary=secondary_bases)
+        return submission_paths(
+            ws, f"refs/remotes/origin/{base_branch}", exclude_memory=bool(wake_line)
+        )
 
     panel_runner = (
         build_panel_runner(
@@ -1640,6 +1634,8 @@ def _wake_author_sleep(
         if sleep_ref:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
+    except ScopeHistoryError as exc:
+        return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     finally:
         for snap in snapshots:
             if parked and kept_ref and snap.ref == kept_ref:
@@ -2275,72 +2271,64 @@ def _checkout_line(
     return line
 
 
-def _resolved_bases(ws: Workspace, bases: Sequence[str], fallback: str = "") -> list[str]:
-    commits = []
-    for base in bases:
-        try:
-            commits.append(ws.git("rev-parse", "--verify", f"{base}^{{commit}}").strip())
-        except GitError:
-            continue
-    return commits or ([fallback] if fallback else [])
+class ScopeHistoryError(GitError):
+    """Publishing requires shared history with the fetched base."""
+
+    def __init__(self, base_ref: str) -> None:
+        branch = base_ref.removeprefix("refs/remotes/origin/")
+        super().__init__(
+            f"Publish refused: cannot find shared history between the candidate and {branch}; "
+            "fetch the base and fold it, then submit again."
+        )
+
+
+def _scope_revision(ws: Workspace, base_ref: str, candidate_ref: str = "") -> str:
+    """Resolve scope ancestry, refusing only absent refs or unrelated history."""
+    args = (
+        ("merge-base", base_ref, candidate_ref)
+        if candidate_ref
+        else ("rev-parse", "--verify", "-q", f"{base_ref}^{{commit}}")
+    )
+    try:
+        revision = ws.git(*args).strip()
+    except GitError as exc:
+        # Both merge-base and quiet rev-parse use silent status 1 for absence.
+        absent = exc.returncode == 1 and not exc.stdout.strip() and not exc.stderr.strip()
+        unknown = exc.returncode == 128 and exc.stderr.startswith(
+            ("fatal: Not a valid object name ", "fatal: ambiguous argument ")
+        )
+        if unknown and exc.stderr.startswith("fatal: ambiguous argument "):
+            unknown = ": unknown revision or path not in the working tree." in exc.stderr
+        if absent or unknown:
+            raise ScopeHistoryError(base_ref) from exc
+        raise
+    if not revision:
+        raise GitError(f"git {args[0]} succeeded without a revision")
+    return revision
 
 
 def submission_paths(
     ws: Workspace,
-    primary: str,
-    exclude_memory: bool,
-    candidate_sha: str = "",
+    base_ref: str,
+    candidate_ref: str = "",
     *,
-    secondary: Sequence[str] = (),
+    exclude_memory: bool = False,
 ) -> list[str]:
-    """Paths differing from primary, excusing secondary matches only for records."""
-    commits = _resolved_bases(ws, [primary], "HEAD") + _resolved_bases(ws, secondary)
-    if not candidate_sha:
+    """Diff the candidate tree against its merge-base with the fetched base.
+
+    An empty candidate_ref uses the working tree, with HEAD as its ancestry.
+    """
+    ensure_regular_git_dir(ws.root)
+    common = _scope_revision(ws, base_ref, candidate_ref or "HEAD")
+    if not candidate_ref:
         ws.git("add", "-A")
     try:
-        paths: set[str] | None = None
-        for base in commits:
-            revisions = (base, candidate_sha) if candidate_sha else ("--cached", base)
-            differs = set(ws.git("diff", "--name-only", "-z", *revisions).split("\0")) - {""}
-            paths = differs if paths is None else paths - (set(RECORD_PATHS) - differs)
-        return sorted(p for p in paths or () if not (exclude_memory and _is_line_memory(p)))
+        revisions = (common, candidate_ref) if candidate_ref else ("--cached", common)
+        paths = ws.git("diff", "--no-renames", "--name-only", "-z", *revisions).split("\0")
+        return sorted(p for p in paths if p and not (exclude_memory and _is_line_memory(p)))
     finally:
-        if not candidate_sha:
+        if not candidate_ref:
             ws.git("reset")
-
-
-def _paths_changed_from_base(
-    ws: Workspace,
-    primary: str,
-    exclude_memory: bool,
-    fallback: str = "HEAD",
-    *,
-    secondary: Sequence[str] = (),
-) -> list[str]:
-    """Count staged changes differing from primary, with secondary record exemptions.
-
-    Legacy main-ledger edits can be staged against a stale HEAD. Only
-    record paths may match a secondary reference; other paths always
-    count when they differ from primary. Unresolved secondaries are skipped.
-    """
-    commits = _resolved_bases(ws, [primary], fallback) + _resolved_bases(ws, secondary)
-    ws.git("add", "-A")
-    try:
-        staged = ws.staged_paths()
-        if not staged:
-            return []
-        differs = set(staged)
-        for index, base in enumerate(commits):
-            changed = set(
-                ws.git("diff", "--cached", "--name-only", "-z", base, "--", *staged).split("\0")
-            )
-            if index == 0:
-                differs.intersection_update(changed)
-            else:
-                differs.difference_update(set(RECORD_PATHS) - changed)
-    finally:
-        ws.git("reset")
-    return [p for p in staged if p in differs and not (exclude_memory and _is_line_memory(p))]
 
 
 def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
@@ -2551,7 +2539,12 @@ def resume_run(
         ws.fetch_origin()
     except Exception as exc:
         log.warning("wake fetch failed for %s: %s", run_id, exc)
-    pinned_tip = _rev(ws, f"refs/remotes/origin/{stage.get('base_branch') or base_branch}")
+    scope_base = f"refs/remotes/origin/{stage.get('base_branch') or base_branch}"
+    try:
+        pinned_tip = _scope_revision(ws, scope_base)
+    except ScopeHistoryError as exc:
+        # An unresolvable base cannot be scope-checked: refuse, never guess.
+        return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
 
     if record.pr_url and not stage.get("phase"):
         base_branch = str(stage.get("base_branch") or base_branch)
@@ -2607,22 +2600,17 @@ def resume_run(
     measurer = dispatch.measurer(
         run_dir, repo_root=workspace, eval_minutes=int(eval_minutes or 0), run_tag=run_id
     )
-    primary_base = base_sha
-    secondary_bases: tuple[str, ...] = ()
-    if record.pr_url:
-        pr = github.get_pull_request(record.target, int(record.pr_url.rstrip("/").split("/")[-1]))
-        # Only kernel-written records may match the PR head or the folded base.
-        primary_base = f"refs/remotes/origin/{base_branch}"
-        secondary_bases = (str((pr.get("head") or {}).get("sha") or base_sha), base_sha)
-    measured_paths = tuple(
-        submission_paths(
-            ws,
-            primary_base,
-            bool(_line_ref_for(bench, config.agent_id)),
-            candidate_sha,
-            secondary=secondary_bases,
+    try:
+        measured_paths = tuple(
+            submission_paths(
+                ws,
+                f"refs/remotes/origin/{base_branch}",
+                candidate_sha,
+                exclude_memory=bool(_line_ref_for(bench, config.agent_id)),
+            )
         )
-    )
+    except ScopeHistoryError as exc:
+        return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     seed = int(stage["seed"])  # type: ignore[call-overload]
     suite_seed = int(stage["suite_seed"])  # type: ignore[call-overload]
     panel_reads = int(stage.get("panel_reads", 0))  # type: ignore[call-overload]
@@ -3649,7 +3637,10 @@ def publish(
         if (
             not landed
             and head
-            and not submission_paths(ws, head, bool(line_ref), result.candidate_sha)
+            and not any(
+                p and not (line_ref and _is_line_memory(p))
+                for p in ws.git("diff", "--name-only", "-z", head, result.candidate_sha).split("\0")
+            )
         ):
             return refuse("Publish refused: no code change; metric noise.")
         assert result.candidate is not None
@@ -4244,9 +4235,9 @@ def live_attempt(
             syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id))
 
         def changed_paths() -> list[str]:
-            # against the base branch head, never the line tip a conflicted
-            # merge can leave HEAD on (see _paths_changed_from_base)
-            return _paths_changed_from_base(ws, f"refs/remotes/origin/{base_branch}", lines_active)
+            return submission_paths(
+                ws, f"refs/remotes/origin/{base_branch}", exclude_memory=lines_active
+            )
 
         if issue_number:
             from outerloop.intake import CLAIM_MARKER

@@ -126,6 +126,19 @@ class GitHubError(RuntimeError):
 class GitError(RuntimeError):
     """A git subcommand failed; carries git's own explanation."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int | None = None,
+        stderr: str = "",
+        stdout: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = stdout
+
 
 class NothingToCommit(GitError):
     """Nothing staged — an ordinary outcome, not a crash."""
@@ -1497,7 +1510,12 @@ def _run_git(args: list[str], env: dict[str, str], timeout: float | None = None)
             (a for i, a in enumerate(args[1:], 1) if a not in skip and args[i - 1] not in skip),
             "?",
         )
-        raise GitError(f"git {subcommand} failed: {detail}")
+        raise GitError(
+            f"git {subcommand} failed: {detail}",
+            returncode=result.returncode,
+            stderr=result.stderr or "",
+            stdout=result.stdout or "",
+        )
     return result.stdout.strip()
 
 

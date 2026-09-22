@@ -1048,7 +1048,18 @@ def test_no_improvement_ends_negative_result_and_pushes_nothing(tmp_path, target
     assert record.ending == "negative-result"
 
 
-def test_out_of_scope_edit_aborts_without_pr(tmp_path, target_repo) -> None:
+@pytest.mark.parametrize("committed", [False, True])
+def test_out_of_scope_edit_aborts_without_pr(tmp_path, target_repo, monkeypatch, committed) -> None:
+    if committed:
+        original = ScriptedHarness.run
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            session = original(self, brief_text, workspace, resume_session_id)
+            _git(workspace, "add", "-A")
+            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "author")
+            return session
+
+        monkeypatch.setattr(ScriptedHarness, "run", run)
     outcome, github = run_live(
         tmp_path,
         target_repo,
@@ -5114,72 +5125,6 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     assert _git(bare, "show", f"{head}:config.txt").strip() == "s2"
 
 
-def test_changed_paths_ignore_files_a_stale_line_merge_brought_to_base(tmp_path: Path) -> None:
-    """A line behind main merges main at run start; when that merge conflicts
-    it stays uncommitted, and git's auto-merged files (the kernel's ledger)
-    are staged against the stale HEAD yet identical to base. They are not the
-    agent's edits and must not count; a real edit still does."""
-    import subprocess
-
-    from outerloop.attempt import _paths_changed_from_base
-    from outerloop.github import Workspace
-
-    root = tmp_path / "ws"
-    root.mkdir()
-
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-
-    git("init", "-q", "-b", "main")
-    (root / "BENCHMARKS.md").write_text("best 8640\n")
-    (root / "train.py").write_text("warmdown = 2048\n")
-    git("add", "-A")
-    git("commit", "-q", "-m", "line state")
-    stale_head = git("rev-parse", "HEAD")
-    # main moved on: the ledger and train.py both changed
-    (root / "BENCHMARKS.md").write_text("best 8192\n")
-    (root / "train.py").write_text("warmdown = 3072\n")
-    git("add", "-A")
-    git("commit", "-q", "-m", "main: improve speedrun")
-    base_sha = git("rev-parse", "HEAD")
-    # back on the stale line HEAD with main's ledger auto-merged in (identical
-    # to base) and train.py carrying the agent's own, different edit
-    git("checkout", "-q", stale_head)
-    (root / "BENCHMARKS.md").write_text("best 8192\n")
-    (root / "train.py").write_text("warmdown = 2560\n")
-    (root / "agent_memory").mkdir()
-    (root / "agent_memory" / "note.md").write_text("x\n")
-
-    ws = Workspace(root=root)
-    assert _paths_changed_from_base(ws, base_sha, True) == ["train.py"]
-    # the real call sites pass the base BRANCH ref; an unresolvable ref falls
-    # back (here to the same base) rather than crashing
-    git("update-ref", "refs/remotes/origin/main", base_sha)
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/main", True) == ["train.py"]
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True, fallback=base_sha) == [
-        "train.py"
-    ]
-    # falling back to HEAD restores the old staged-vs-HEAD reading
-    assert _paths_changed_from_base(ws, "refs/remotes/origin/nope", True) == [
-        "BENCHMARKS.md",
-        "train.py",
-    ]
-    # memory not excluded (lines off): an ordinary path; the ledger still drops
-    assert _paths_changed_from_base(ws, base_sha, False) == ["agent_memory/note.md", "train.py"]
-    # nothing staged against HEAD -> nothing, even though HEAD differs from base
-    (root / "BENCHMARKS.md").write_text("best 8640\n")
-    (root / "train.py").write_text("warmdown = 2048\n")
-    (root / "agent_memory" / "note.md").unlink()
-    (root / "agent_memory").rmdir()
-    assert _paths_changed_from_base(ws, base_sha, True) == []
-
-
 def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path) -> None:
     """2026-09-03: an author copied .git/objects/pack into the container's /tmp
     and symlinked it, leaving the kernel's git with refs and no objects. Every
@@ -5188,7 +5133,7 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     missing control file, and object alternates."""
     import os
 
-    from outerloop.attempt import _paths_changed_from_base
+    from outerloop.attempt import submission_paths
     from outerloop.github import GitError, Workspace, ensure_regular_git_dir
 
     root = tmp_path / "ws"
@@ -5215,7 +5160,7 @@ def test_a_session_that_reshapes_git_is_refused_with_a_plain_note(tmp_path: Path
     with pytest.raises(GitError, match=r"altered by the session: \.git/objects/pack is a symlink"):
         ws.git("status")  # EVERY kernel git call refuses
     with pytest.raises(GitError, match="altered by the session"):
-        _paths_changed_from_base(ws, base, False)
+        submission_paths(ws, base)
     os.unlink(pack)
     pack.mkdir()
     for f in elsewhere.iterdir():
@@ -6329,41 +6274,6 @@ def test_wake_releases_its_lease_when_panel_setup_fails(tmp_path, monkeypatch):
     assert calls == [(tmp_path, "run-1")]
 
 
-def test_changed_paths_only_excuse_secondary_matches_for_records(tmp_path: Path) -> None:
-    from outerloop.attempt import _paths_changed_from_base, submission_paths
-    from outerloop.github import Workspace
-
-    root = tmp_path / "ws"
-    root.mkdir()
-    _git(root, "init", "-q")
-    for name in ("BENCHMARKS.md", "code", "deleted", "unchanged"):
-        (root / name).write_text("A\n")
-    _git(root, "add", "-A")
-    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "A")
-    base_a = _git(root, "rev-parse", "HEAD").strip()
-    for name in ("BENCHMARKS.md", "code", "unchanged"):
-        (root / name).write_text("B\n")
-    _git(root, "add", "-A")
-    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B")
-    base_b = _git(root, "rev-parse", "HEAD").strip()
-    _git(root, "checkout", "--detach", base_b)
-    (root / "BENCHMARKS.md").write_text("A\n")
-    (root / "unchanged").write_text("A\n")
-    (root / "code").write_text("session\n")
-    (root / "new").write_text("new\n")
-    (root / "deleted").unlink()
-    ws = Workspace(root=root)
-    expected = ["code", "deleted", "new", "unchanged"]
-    secondary = [base_a, "refs/remotes/origin/missing"]
-    assert _paths_changed_from_base(ws, base_b, False, secondary=secondary) == expected
-    assert submission_paths(ws, base_b, False, secondary=secondary) == expected
-    _git(root, "add", "-A")
-    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "session")
-    candidate = _git(root, "rev-parse", "HEAD").strip()
-    assert _paths_changed_from_base(ws, base_b, False, secondary=secondary) == []
-    assert submission_paths(ws, base_b, False, candidate, secondary=secondary) == expected
-
-
 @pytest.mark.parametrize("wake", [False, True], ids=["first-pass", "non-pr-wake"])
 def test_measurable_seal_preserves_session_fold(tmp_path, monkeypatch, wake):
     from dataclasses import replace
@@ -6873,12 +6783,15 @@ def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger=False, 
     (root / "src/pilot/solvers/tsp.py").write_text("author's candidate\n")
     if edit_ledger:
         (root / "BENCHMARKS.md").write_text("author's ledger\n")
-    if rollback_to:
-        reference = head if rollback_to == "head" else base
-        _git(root, "checkout", reference, "--", "docs/roadmap.md")
     snap = snapshot_tree(ws, base)
     _git(root, "reset", "--hard", base)
-    base_commit("B2")
+    newest = base_commit("B2")
+    if rollback_to:
+        (root / "src/pilot/solvers/tsp.py").write_text("author's candidate\n")
+        reference = head if rollback_to == "head" else base
+        _git(root, "checkout", reference, "--", "docs/roadmap.md")
+        snap = snapshot_tree(ws, newest)
+        _git(root, "reset", "--hard", newest)
     _git(root, "push", "origin", "HEAD:main")
     save_record(
         state,
@@ -6926,3 +6839,247 @@ def _candidate_wake_two_base_moves(tmp_path, monkeypatch, *, edit_ledger=False, 
     assert outcome.outcome == (
         "scope-violation" if edit_ledger or rollback_to else "no-improvement"
     )
+
+
+@pytest.mark.parametrize("committed", [False, True])
+@pytest.mark.parametrize("folded", [False, True])
+@pytest.mark.parametrize(
+    "path", ["src/pilot/solvers/tsp.py", "docs/roadmap.md", "BENCHMARKS.md", "results/leader.json"]
+)
+def test_scope_merge_base_counts_only_author_changes(tmp_path, committed, folded, path):
+    from outerloop.attempt import submission_paths
+    from outerloop.contract import load_contract
+    from outerloop.github import Workspace
+    from outerloop.orchestrator import out_of_scope
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+
+    def write(name, content):
+        dest = root / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+
+    def commit(message):
+        _git(root, "add", "-A")
+        _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message)
+
+    write("seed", "base")
+    commit("base")
+    _git(root, "branch", "author")
+    write("src/pilot/solvers/main.py", "main in scope")
+    write("docs/main.md", "main outside scope")
+    commit("main advances")
+    _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(root, "checkout", "author")
+    write(path, "author")
+    commit("author changes")
+    if folded:
+        _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-edit", "main")
+    if committed:
+        _git(root, "checkout", "main")
+    else:
+        write(path, "author working tree")
+    ws = Workspace(root=root)
+    paths = submission_paths(ws, "refs/remotes/origin/main", "author" if committed else "")
+    assert paths == [path]
+    violations = out_of_scope(paths, load_contract(CONTRACT, "org/pilot"))
+    assert bool(violations) == (path != "src/pilot/solvers/tsp.py")
+
+
+@pytest.mark.parametrize("base", ["unrelated", "missing", "refs/remotes/origin/main"])
+def test_scope_merge_base_requires_shared_history(tmp_path, base):
+    from outerloop.attempt import ScopeHistoryError, submission_paths
+    from outerloop.github import Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "code").write_text("base")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    _git(root, "checkout", "--orphan", "unrelated")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "unrelated")
+    _git(root, "checkout", "main")
+    branch = base.removeprefix("refs/remotes/origin/")
+    with pytest.raises(ScopeHistoryError) as exc:
+        submission_paths(Workspace(root=root), base)
+    assert str(exc.value) == (
+        f"Publish refused: cannot find shared history between the candidate and {branch}; "
+        "fetch the base and fold it, then submit again."
+    )
+    from outerloop.github import GitError
+
+    cause = exc.value.__cause__
+    assert isinstance(cause, GitError)
+    assert cause.returncode == (1 if base == "unrelated" else 128)
+    assert cause.stdout == ""
+    assert bool(cause.stderr) == (base != "unrelated")
+
+
+@pytest.mark.parametrize("failure", ["unrelated", "missing"])
+def test_missing_scope_history_refuses_publish(tmp_path, target_repo, monkeypatch, failure):
+    original = ScriptedHarness.run
+
+    def run(self, brief_text, workspace, resume_session_id=None):
+        session = original(self, brief_text, workspace, resume_session_id)
+        if failure == "missing":
+            _git(workspace, "update-ref", "-d", "refs/remotes/origin/main")
+        else:
+            _git(workspace, "checkout", "--orphan", "unrelated")
+            _git(workspace, "add", "-A")
+            _git(
+                workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "unrelated"
+            )
+        return session
+
+    monkeypatch.setattr(ScriptedHarness, "run", run)
+    outcome, github = run_live(
+        tmp_path, target_repo, edits={"src/pilot/solvers/tsp.py": "author"}, values=[]
+    )
+    assert outcome.outcome == "attempt-error"
+    assert github.prs == []
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert "Publish refused: cannot find shared history" in record.ending_note
+    assert "fetch the base and fold it, then submit again." in record.ending_note
+
+
+@pytest.mark.parametrize("phase", ["candidate", "author-sleep"])
+@pytest.mark.parametrize("history", ["unrelated", "unfetched"])
+def test_resumed_scope_missing_history_ends_without_publish(tmp_path, monkeypatch, phase, history):
+    from dataclasses import replace
+
+    from outerloop.github import Workspace
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch)
+    record = load_record(state, run_id)
+    root = state / "runs" / run_id / "ws"
+    _git(root, "checkout", "--orphan", "unrelated")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "unrelated")
+    candidate = _git(root, "rev-parse", "HEAD").strip()
+    stage = {**record.stage, "phase": phase, "candidate_sha": candidate}
+    if history == "unfetched":
+
+        def unexpected_collector(*args, **kwargs):
+            pytest.fail("missing base must be refused before collecting paths")
+
+        monkeypatch.setattr("outerloop.attempt.submission_paths", unexpected_collector)
+        monkeypatch.setattr(Workspace, "fetch_origin", lambda self: None)
+        stage["base_branch"] = "private-secret-base"
+        record = replace(record, pr_url="https://github.com/org/pilot/pull/23")
+    save_record(
+        state,
+        replace(record, stage=stage),
+        1_000_001.0,
+    )
+    github = FakeGitHub()
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=github,  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        secrets=("private-secret",),
+    )
+    assert outcome.outcome == "attempt-error"
+    assert github.prs == []
+    record = load_record(state, run_id)
+    assert record.ending == "aborted"
+    assert "Publish refused: cannot find shared history" in record.ending_note
+    assert "private-secret" not in record.ending_note
+    assert "refs/remotes/origin/" not in record.ending_note
+
+
+def test_scope_merge_base_counts_rename_source_and_preserves_memory_filter(tmp_path):
+    from outerloop.attempt import submission_paths
+    from outerloop.github import Workspace
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "protected").write_text("protected content")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    (root / "protected").rename(root / "code")
+    (root / "agent_memory").mkdir()
+    (root / "agent_memory/note.md").write_text("memory")
+    ws = Workspace(root=root)
+    assert submission_paths(ws, "main") == ["agent_memory/note.md", "code", "protected"]
+    assert submission_paths(ws, "main", exclude_memory=True) == ["code", "protected"]
+
+
+@pytest.mark.parametrize("operation", ["merge-base", "rev-parse"])
+@pytest.mark.parametrize(
+    "returncode,stderr,stdout,refused",
+    [
+        (None, "", "", False),
+        (1, "", "", True),
+        (1, "I/O error", "", False),
+        (1, "", "unexpected output", False),
+        (128, "fatal: Not a valid object name missing", "", True),
+        (
+            128,
+            "fatal: ambiguous argument 'missing': "
+            "unknown revision or path not in the working tree.",
+            "",
+            True,
+        ),
+        (128, "fatal: packed object ab0123 is corrupt", "", False),
+        (128, "fatal: cannot lock ref", "", False),
+        (2, "fatal: Not a valid object name missing", "", False),
+    ],
+)
+def test_scope_git_failure_classification(
+    tmp_path, monkeypatch, operation, returncode, stderr, stdout, refused
+):
+    from outerloop.attempt import ScopeHistoryError, _scope_revision, submission_paths
+    from outerloop.github import GitError, Workspace
+
+    error = GitError("git failed", returncode=returncode, stderr=stderr, stdout=stdout)
+
+    def fail(self, *args):
+        assert args[0] == operation
+        raise error
+
+    monkeypatch.setattr(Workspace, "git", fail)
+    ws = Workspace(root=tmp_path)
+    with pytest.raises(ScopeHistoryError if refused else GitError) as caught:
+        if operation == "merge-base":
+            submission_paths(ws, "missing")
+        else:
+            _scope_revision(ws, "missing")
+    if refused:
+        assert caught.value.__cause__ is error
+    else:
+        assert caught.value is error
+
+
+@pytest.mark.parametrize("operation", ["merge-base", "rev-parse"])
+def test_scope_git_failure_keeps_wake_retryable(tmp_path, monkeypatch, operation):
+    from outerloop.github import GitError, Workspace
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch)
+    before = load_record(state, run_id)
+    real_git = Workspace.git
+    error = GitError("transient I/O error", returncode=128, stderr="fatal: I/O error")
+
+    def git(self, *args, **kwargs):
+        if args[0] == operation:
+            raise error
+        return real_git(self, *args, **kwargs)
+
+    monkeypatch.setattr(Workspace, "git", git)
+    with pytest.raises(GitError) as caught:
+        resume_run(
+            state,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100.0,
+        )
+    assert caught.value is error
+    assert load_record(state, run_id) == before

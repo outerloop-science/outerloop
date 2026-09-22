@@ -27,7 +27,6 @@ Versions follow [SemVer](https://semver.org).
 - Merged results are confirmed again: the observer compares the merge commit's tree with the published head's tree instead of fetching the never-pushed measured commit.
 
 - Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
-- A candidate whose base moved again during measurement is no longer refused for the leaderboard files the kernel itself writes. Every other protected file must match the current main, so restoring an older version is still refused.
 - A submit made after the base moves is saved before any gate measurement or staged experiments run. The author is told to fold the base and submit again, or to submit again after the measurement base is refreshed.
 - After folding the base, an author is told to submit directly and repeat its experiment only if the new base changes its hypothesis. PR updates and saved snapshots retain the measured base in their history, and a saved gate result is reused only for the same base and code.
 - Updates brought in from the base no longer count as the author's changes when checking a resumed PR's allowed files. Authors receive a reason when an attempt ends but its open PR leaves the run parked for further work.
@@ -42,6 +41,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Scope checks compare the full candidate tree with its merge-base against the fetched base tip; changes that landed on the base branch never count as the author's, and author edits to the ledger files are refused like any other out-of-scope path.
+- Publish is refused when the candidate shares no history with the base; fetch the base and fold it before submitting again.
 - The leaderboard moves from PR branches and main to the `research-log` branch.
 - Results are pending when published and confirmed when the kernel observes their PR merge, provided the final PR head and merged files match the measurement.
 - The leaderboard shows the main commit at which each result was confirmed; imported rows say their provenance is unknown.

@@ -538,7 +538,18 @@ def test_marker_spoofing_by_strangers_moves_nothing() -> None:
     assert pick_steward_issue(G(thread3), "org/pilot", contract, BOT) is not None
 
 
-def test_solver_territory_edit_is_aborted(tmp_path, steward_repo) -> None:
+@pytest.mark.parametrize("committed", [False, True])
+def test_solver_territory_edit_is_aborted(tmp_path, steward_repo, monkeypatch, committed) -> None:
+    if committed:
+        original = EnvEditingHarness.run
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            session = original(self, brief_text, workspace, resume_session_id)
+            _git(workspace, "add", "-A")
+            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "author")
+            return session
+
+        monkeypatch.setattr(EnvEditingHarness, "run", run)
     outcome, github, _ = run_steward(
         tmp_path,
         edits={
