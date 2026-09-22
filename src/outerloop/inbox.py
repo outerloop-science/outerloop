@@ -695,6 +695,7 @@ def base_moved_text(tip: str, base: str) -> str:
     The branch name comes from GitHub and is rendered as the kernel's own
     words, so anything but a plain ref name is left out rather than guessed."""
     shown = _REFNAME.fullmatch(base) is not None
+    name = base if shown else "the base branch"
     merge = (
         f"`git merge --no-edit origin/{base}`"
         if shown
@@ -706,9 +707,9 @@ def base_moved_text(tip: str, base: str) -> str:
         f"that contains your PR head, run {merge}; that "
         "merge commit is allowed. If git stops the merge, fix the listed files, stage "
         "them, and finish the same merge with `git commit --no-edit`, taking the base's version "
-        f"of BENCHMARKS.md and results/leader.json. Do not replace your branch with {base}. "
+        f"of BENCHMARKS.md and results/leader.json. Do not replace your branch with {name}. "
         "Inspect the result and submit directly. The gate measures the folded candidate; "
-        f"re-run your own experiment only if what landed in {base} changes your hypothesis."
+        f"re-run your own experiment only if what landed in {name} changes your hypothesis."
     )
 
 
