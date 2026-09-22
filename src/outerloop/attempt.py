@@ -430,6 +430,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 STAGE_RETAINED_KEYS = (
     LEDGER_RETRY,
+    "withdraw_reason",
     "ledger_digits",
     "launches_used",
     "sleeps_used",
@@ -465,7 +466,7 @@ def _clear_stage(record: RunRecord, run_root: Path) -> RunRecord:
         for k in STAGE_RETAINED_KEYS
         if record.stage
         and k in record.stage
-        and (record.state != ENDED or k not in ("base_sha", "base_branch"))
+        and (record.state != ENDED or k not in ("base_sha", "base_branch", "withdraw_reason"))
     }
     if record.state == ENDED and (jobs := stage_launch_job_ids(record)):
         kept["launch_afterany"] = "afterany:" + ":".join(jobs)
@@ -986,9 +987,8 @@ def deliver_messages(
                     time.time(),
                     f"message-refused:{record.run_id}:{entry['counter']}",
                     {
-                        "text": (
-                            f"Message #{index} to {item.get('to')!r} was not delivered: {reason}."
-                        ),
+                        "text": f"Message #{index} was not delivered: {reason}.",
+                        "quoted_text": f"Recipient: {item.get('to')!r}",
                         "context_only": True,
                     },
                 )
@@ -1251,6 +1251,11 @@ def run_author_leg(
         gpu_hours_used=hours,
         review_topup=review_topup,
         on_replies=post_leg_replies if owned else None,
+        on_withdraw=(lambda reason: withdraw_pr(run_root, record, github, reason, secrets))
+        if owned
+        and record.pr_url
+        and github.get_pull_request(record.target, _pr_number(record.pr_url)).get("state") == "open"
+        else None,
         on_meter=lambda launches, sleeps, hours: save_meter(
             run_root, record.run_id, launches, sleeps, hours
         ),
@@ -1322,10 +1327,10 @@ def _wake_author_sleep(
                     role="steward" if record.agent_id.startswith("steward") else "solver",
                 )
                 attempts = max(0, attempts - 1)
-            note = f"Your attempt ended with {result.outcome}: {result.note or result.outcome}"
+            note = f"Your attempt ended with {result.outcome}."
             if result.outcome == "scope-violation":
                 note += (
-                    ". Only in-scope paths may differ from the bases; "
+                    " Only in-scope paths may differ from the bases; "
                     "restore the rest and submit again."
                 )
             append(
@@ -1337,7 +1342,7 @@ def _wake_author_sleep(
                     thread_for(record),
                     now,
                     f"terminal:{result.outcome}:{latest.stage.get('sleeps_used', 0)}",
-                    {"text": redact(note, secrets)},
+                    {"text": redact(note, secrets), "quoted_text": redact(result.note, secrets)},
                 ),
             )
             save_record(
@@ -1485,7 +1490,10 @@ def _wake_author_sleep(
                 thread,
                 now,
                 f"pacing:{sleep_ref}:{sleeps_used}",
-                {"text": "\n".join(pacing) + " (the contract's ceiling applies)."},
+                {
+                    "text": "The contract's ceiling applies to these sweeps.",
+                    "quoted_text": "\n".join(pacing),
+                },
                 origin=record.run_id,
             ),
         )
@@ -1503,14 +1511,15 @@ def _wake_author_sleep(
                     "git",
                     thread,
                     now,
-                    f"base:{fresh_base}",
+                    f"base-advanced:{fresh_base}",
                     {
                         "text": (
                             "The base moved while you were asleep. "
                             f"origin/{base_branch} advanced and has been fetched; your change "
                             "is measured and scope-checked against this base from now on. "
-                            f"What landed:\n{digest}"
+                            "What landed:"
                         ),
+                        "quoted_text": digest,
                         "base_sha": fresh_base,
                     },
                 ),
@@ -1639,6 +1648,7 @@ def _wake_author_sleep(
     if record.pr_url and result.outcome == "review" and result.session is not None:
         from outerloop.review import APPROVAL_PATTERN, REDACTED
 
+        (run_dir / "report.md").write_text(result.report(config, redact_secrets=secrets))
         deliver_messages(record, github, (), secrets, run_dir)
         reply = APPROVAL_PATTERN.sub(REDACTED, redact(result.session.final_text, secrets))[
             :MAX_REPLY_CHARS
@@ -2494,7 +2504,7 @@ def resume_run(
                 thread_for(record),
                 now,
                 f"panel-skip:{record.inbox_seq}:{panel_skip}",
-                {"text": f"panel read skipped: {panel_skip}"},
+                {"text": "Panel read skipped.", "quoted_text": panel_skip},
                 origin=record.run_id,
             ),
         )
@@ -2904,7 +2914,8 @@ def resume_run(
                 now,
                 f"gate:{candidate_sha}:{stage.get('sleeps_used', 0)}",
                 {
-                    "text": result.note or result.outcome,
+                    "text": f"Gate: {result.outcome}.",
+                    "quoted_text": result.note,
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -2973,8 +2984,9 @@ def resume_run(
                 f"gate:{candidate_sha}:{record.stage.get('sleeps_used', 0)}",
                 {
                     "text": "Your `submit` did NOT clear the gate: "
-                    f"{result.note or result.outcome} "
+                    f"{result.outcome} "
                     f"(baseline {result.baseline}, candidate {result.candidate}).",
+                    "quoted_text": result.note,
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -3004,6 +3016,7 @@ def resume_run(
                         f"Gate: {result.outcome} "
                         f"(baseline {result.baseline}, candidate {result.candidate})."
                     ),
+                    "quoted_text": "",
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
@@ -3508,7 +3521,9 @@ def publish(
     )
     bench = _benchmark(contract, config.benchmark)
 
-    def refuse(text: str, head: str = "", *, moved: bool = False) -> AttemptOutcome:
+    def refuse(
+        text: str, head: str = "", *, moved: bool = False, quoted_text: str = ""
+    ) -> AttemptOutcome:
         append(
             run_dir,
             Message(
@@ -3518,7 +3533,12 @@ def publish(
                 thread_for(record),
                 now,
                 f"publish-refused:{result.candidate_sha}:{head}:{text}",
-                {"text": text, "pr_head": head, "sealed_sha": result.candidate_sha},
+                {
+                    "text": text,
+                    "quoted_text": quoted_text,
+                    "pr_head": head,
+                    "sealed_sha": result.candidate_sha,
+                },
                 origin="" if moved else record.run_id,
             ),
         )
@@ -3584,7 +3604,8 @@ def publish(
             return refuse("Publish refused: the base contract's measurement signature changed.")
     except Exception as exc:
         return refuse(
-            f"Publish refused: cannot confirm the base contract: {redact(str(exc), secrets)}"
+            "Publish refused: cannot confirm the base contract.",
+            quoted_text=redact(str(exc), secrets),
         )
 
     if record.pr_url:
@@ -3643,7 +3664,8 @@ def publish(
                 common = ws.git("merge-base", base_sha, head).strip()
             except Exception as exc:
                 return refuse(
-                    f"Publish refused: cannot confirm PR base ancestry: {redact(str(exc), secrets)}"
+                    "Publish refused: cannot confirm PR base ancestry.",
+                    quoted_text=redact(str(exc), secrets),
                 )
             parents = ["-p", head]
             if common != base_sha:
@@ -5056,8 +5078,30 @@ def _ledger_digits(record: RunRecord) -> dict[str, int]:
     )
 
 
+def withdraw_pr(
+    run_root: Path,
+    record: RunRecord,
+    github: GitHubClient,
+    reason: str,
+    secrets: tuple[str, ...] = (),
+) -> str:
+    """Journal the redacted intent before any GitHub write."""
+    record = load_record(run_root, record.run_id)
+    if not record.pr_url or record.ended():
+        return "Withdrawal requires an open PR."
+    pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
+    if pr.get("state") != "open" or pr.get("merged") or pr.get("merged_at"):
+        return "Withdrawal requires an open PR."
+    from outerloop.review import APPROVAL_PATTERN, REDACTED
+
+    reason = APPROVAL_PATTERN.sub(REDACTED, redact(reason, secrets))
+    record = dc_replace(record, stage={**record.stage, "withdraw_reason": reason})
+    save_record(run_root, record, time.time())
+    return ""
+
+
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
-    """Route a human PR ending through the run terminal."""
+    """Finish a withdrawal intent, then route the PR ending through the run terminal."""
     from outerloop.github import GitHubError
     from outerloop.runstate import MERGED, REJECTED
 
@@ -5069,6 +5113,14 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
         if exc.status != 404:
             raise
         pr = {"state": "closed"}
+    reason = str(record.stage.get("withdraw_reason") or "")
+    if reason and pr.get("state") == "open" and not (pr.get("merged") or pr.get("merged_at")):
+        number = _pr_number(record.pr_url)
+        body = f"{marker('withdraw')}\nAuthor withdrew: {reason}"
+        if not any(c.get("body") == body for c in github.list_comments(record.target, number)):
+            github.comment(record.target, number, body)
+        github.close_issue(record.target, number)
+        pr = github.get_pull_request(record.target, number)
     ending = (
         MERGED
         if pr.get("merged") or pr.get("merged_at")
@@ -5083,6 +5135,8 @@ def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: 
     except Exception as exc:
         raise LedgerWriteError("branch ledger observation deferred") from exc
     note = "PR merged" if ending == MERGED else "PR closed unmerged"
+    if ending == REJECTED and reason:
+        note = f"Author withdrew: {reason}"
     if _pr_number(record.pr_url) in unmeasured:
         note = "PR merged; merged tree was not measured, leaderboard unchanged"
         if not any(

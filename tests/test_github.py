@@ -52,13 +52,41 @@ def test_branch_sha_reads_current_ref(provider: FileTokenProvider) -> None:
     )
 
 
+def test_commit_tree_reads_commit_tree(provider):
+    transport = FakeTransport([{"sha": "commit", "tree": {"sha": "root-tree"}}])
+    client = GitHubClient(auth=provider, transport=transport)
+    assert client.commit_tree("org/repo", "feature/head") == "root-tree"
+    assert transport.requests[0].get_method() == "GET"
+    assert transport.requests[0].full_url == (
+        "https://api.github.com/repos/org/repo/git/commits/feature%2Fhead"
+    )
+
+
+def test_commit_tree_missing_commit(provider, monkeypatch):
+    from email.message import Message
+
+    def missing(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr("outerloop.github.AUTH_SAFE_OPENER.open", missing)
+    client = GitHubClient(auth=provider)
+    with pytest.raises(GitHubError) as error:
+        client.commit_tree("org/repo", "missing")
+    assert error.value.status == 404
+
+
+@pytest.mark.parametrize("response", [None, {}, {"tree": {}}, {"tree": {"sha": ""}}])
+def test_commit_tree_rejects_missing_tree(provider, response):
+    client = GitHubClient(auth=provider, transport=FakeTransport([response]))
+    with pytest.raises(GitHubError):
+        client.commit_tree("org/repo", "commit")
+
+
 def test_public_tree_and_create_ref(provider, caplog):
-    transport = FakeTransport([{"sha": "tree"}, {"sha": "tree"}, {}])
+    transport = FakeTransport([{"sha": "tree"}, {}])
     client = GitHubClient(auth=provider, transport=transport)
     assert client.get_tree("org/repo", "feature/head") == {"sha": "tree"}
     assert transport.requests[-1].full_url.endswith("/git/trees/feature%2Fhead?recursive=1")
-    client.get_tree("org/repo", "commit", recursive=False)
-    assert transport.requests[-1].full_url.endswith("/git/trees/commit")
     client.create_ref("org/repo", "refs/heads/research-log", "pin")
     request = transport.requests[-1]
     assert request.get_method() == "POST"
@@ -66,7 +94,7 @@ def test_public_tree_and_create_ref(provider, caplog):
     assert json.loads(request.data) == {"ref": "refs/heads/research-log", "sha": "pin"}
     client.dry_run = True
     client.create_ref("org/repo", "refs/heads/research-log", "pin")
-    assert len(transport.requests) == 3
+    assert len(transport.requests) == 2
     assert provider.token() not in caplog.text
 
 

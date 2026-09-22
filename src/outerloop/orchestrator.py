@@ -46,6 +46,7 @@ from outerloop.inbox import (
     AUTHOR_PROTOCOL,
     Message,
     append,
+    base_moved_key,
     base_moved_text,
     budgets_line,
     panel_payload,
@@ -1213,6 +1214,7 @@ def attempt_once(
     judged: tuple[str, str, AttemptResult] | None = None,
     on_replies: Callable[[tuple[dict, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
+    on_withdraw: Callable[[str], str] | None = None,
     review_topup: bool = False,
     on_meter: Callable[[int, int, float], None] | None = None,
     scope_validator: Callable[[list[str], Contract], list[str]] = out_of_scope,
@@ -1346,6 +1348,7 @@ def attempt_once(
             contract.budgets,
             bench,
             review_topup=review_topup,
+            open_pr=on_withdraw is not None,
             launches_used=launches_used,
             sleeps_used=sleeps_used,
             gpu_hours_used=gpu_hours_used,
@@ -1560,6 +1563,13 @@ def attempt_once(
                 )
             if request is None:
                 break
+            if request.withdraw and not request.problem:
+                problem = (
+                    on_withdraw(request.withdraw)
+                    if on_withdraw is not None
+                    else "Withdrawal requires an open PR."
+                )
+                request = dc_replace(request, problem=problem)
             if request.problem:
                 # told once, and the leg goes on with nothing staged honoured;
                 # a second conflicting request in one pass ends the leg as a
@@ -1577,8 +1587,8 @@ def attempt_once(
                         time.time(),
                         f"refusal:{session.session_id}:{inbox_seq}",
                         {
-                            "text": "Your syscall request was REFUSED and nothing was launched: "
-                            f"{request.problem}"
+                            "text": "Your syscall request was REFUSED and nothing was launched.",
+                            "quoted_text": request.problem,
                         },
                         origin=inbox_dir.name,
                     )
@@ -1592,7 +1602,7 @@ def attempt_once(
                 if on_stop is not None:
                     if request.report and on_replies is not None:
                         on_replies(({"to": "thread", "text": request.report, "reply_to": None},))
-                    session = dc_replace(session, final_text="")
+                    session = dc_replace(session, final_text=request.report)
                     return on_stop(session)
                 return AttemptResult(
                     outcome="no-improvement",
@@ -1683,7 +1693,7 @@ def attempt_once(
                                 "git",
                                 inbox_thread,
                                 time.time(),
-                                f"base:{preflight.tip}",
+                                base_moved_key(preflight.tip),
                                 {
                                     "text": base_moved_text(preflight.tip, preflight.base_branch),
                                     "base_sha": preflight.tip,
@@ -1691,7 +1701,11 @@ def attempt_once(
                                 origin=inbox_dir.name,
                             ),
                         )
-                        receipt = "Your stale submit was checkpointed; no gate ran. "
+                        receipt = (
+                            "Your stale submit was checkpointed; no gate ran. Fold the base as "
+                            "the base-moved message says (that merge commit is allowed), inspect, "
+                            "and submit again. "
+                        )
                     else:
                         receipt = (
                             f"Your candidate contains {preflight.tip}, but the gate was pinned to "
@@ -1814,8 +1828,8 @@ def attempt_once(
                     time.time(),
                     f"refusal:{session.session_id}:{inbox_seq}",
                     {
-                        "text": "Your syscall request was REFUSED and nothing was launched: "
-                        f"{problem}"
+                        "text": "Your syscall request was REFUSED and nothing was launched.",
+                        "quoted_text": problem,
                     },
                     origin=inbox_dir.name,
                 )
@@ -1974,7 +1988,7 @@ def attempt_once(
                 # silent terminal. Rounds stay bounded by sleep_k.
                 failed_gate = (base_sha, candidate_sha, outcome)
                 verdict_text = (
-                    f"{outcome.note or outcome.outcome} "
+                    f"{outcome.outcome} "
                     f"(baseline {outcome.baseline}, candidate {outcome.candidate})."
                 )
                 if unchanged:
@@ -1995,6 +2009,7 @@ def attempt_once(
                         f"gate:{candidate_sha}:{sleeps_used}",
                         {
                             "text": lead + _not_run_note(submitted),
+                            "quoted_text": outcome.note,
                             "sealed_sha": candidate_sha,
                             "base_sha": base_sha,
                             "measurement_signature": bench.measurement_signature(),
@@ -2085,6 +2100,7 @@ def attempt_once(
                 f"gate:{candidate_sha}:{sleeps_used}",
                 {
                     "text": f"Gate: improved (baseline {baseline}, candidate {candidate}).",
+                    "quoted_text": "",
                     "sealed_sha": candidate_sha,
                     "base_sha": base_sha,
                     "measurement_signature": bench.measurement_signature(),
