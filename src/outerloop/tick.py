@@ -1127,6 +1127,7 @@ def sweep(
                 finally:
                     release_lease(root, record.run_id)
             merged = False
+            blessed_before = record.auto_blessed_head
             try:
                 if github is not None and record.pr_url and not dry_run:
                     from outerloop.attempt import close_if_done
@@ -1164,6 +1165,11 @@ def sweep(
                 )
                 if merged:
                     continue
+            if github is not None and record.pr_url and not dry_run:
+                # the merge pass may have saved a new blessing; never write back a stale copy
+                record = load_record(root, record.run_id)
+                if record.auto_blessed_head and not blessed_before:
+                    continue  # just blessed: its next step is a merge, not a wake
             if record.state != PARKED:
                 continue
             _sweep_one(

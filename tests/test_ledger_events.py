@@ -618,6 +618,23 @@ def test_rebless_interruption_retries_without_second_merge(
     assert json.loads(fake.ledger_files[LEADER_FILE])["bench"]["main_commit"] == "merge"
 
 
+def test_refused_merge_keeps_the_saved_blessing_for_the_next_tick(
+    tmp_path, rebless_run, monkeypatch
+):
+    r, fake, merges, _bodies = rebless_run
+    save_record(tmp_path, replace(r, wake_attempts=99), 2)
+    original = fake.merge_pull
+    monkeypatch.setattr(fake, "merge_pull", lambda *a, **k: False, raising=False)
+    run_rebless_sweep(tmp_path, fake)
+    latest = load_record(tmp_path, r.run_id)
+    assert latest.state == PARKED
+    assert latest.auto_blessed_head == "published"
+    monkeypatch.setattr(fake, "merge_pull", original, raising=False)
+    run_rebless_sweep(tmp_path, fake, 4)
+    assert merges == [1]
+    assert load_record(tmp_path, r.run_id).state == ENDED
+
+
 def test_same_tick_merge_observation_respects_ledger_hold(tmp_path, rebless_run, monkeypatch):
     r, fake, merges, _bodies = rebless_run
     save_record(tmp_path, replace(r, stage={**r.stage, LEDGER_RETRY: {"waiting": True}}), 2)
