@@ -3996,6 +3996,12 @@ def test_auto_publish_only_records_blessed_head(panel_ran):
         def git(self, *args):
             if args == ("for-each-ref", "--format=%(refname)", "refs/remotes/origin/main"):
                 return "refs/remotes/origin/main"
+            if args in [
+                ("cat-file", "-e", "base^{commit}"),
+                ("cat-file", "-e", "blessed^{commit}"),
+                ("merge-base", "--is-ancestor", "base", "blessed"),
+            ]:
+                return ""
             assert args in [
                 ("rev-parse", "HEAD"),
                 ("rev-parse", "--verify", "-q", "origin/main^{commit}"),
@@ -6144,8 +6150,8 @@ def test_resumed_line_publish_bless_decision(tmp_path, monkeypatch, base_moved, 
     latest = load_record(state, run_id)
     assert latest.auto_blessed_head == ("" if base_moved else pushed)
     expected_reason = (
-        f"base moved: origin/main {record.stage['candidate_sha']} "
-        f"!= measured {record.stage['base_sha']}"
+        f"base moved: origin/main tip {record.stage['candidate_sha']} "
+        f"moved past measured base {record.stage['base_sha']}"
         if base_moved
         else ""
     )
@@ -7083,3 +7089,86 @@ def test_scope_git_failure_keeps_wake_retryable(tmp_path, monkeypatch, operation
         )
     assert caught.value is error
     assert load_record(state, run_id) == before
+
+
+@pytest.mark.parametrize("relation", ["equal", "line-ahead", "base-ahead", "diverged"])
+def test_bless_measured_base_contains_tip(tmp_path, relation, caplog):
+    from types import SimpleNamespace
+    from typing import Any
+
+    from outerloop.attempt import _arm_unless_base_moved, _bless_decision
+    from outerloop.github import Workspace
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "commit", "--allow-empty", "-qm", "main")
+    base = _git(tmp_path, "rev-parse", "HEAD").strip()
+    _git(tmp_path, "commit", "--allow-empty", "-qm", "line snapshot")
+    line = _git(tmp_path, "rev-parse", "HEAD").strip()
+    tip, measured = {
+        "equal": (base, base),
+        "line-ahead": (base, line),
+        "base-ahead": (line, base),
+        "diverged": (base, line),
+    }[relation]
+    if relation == "diverged":
+        _git(tmp_path, "checkout", "--detach", base)
+        _git(tmp_path, "commit", "--allow-empty", "-qm", "main advanced separately")
+        tip = _git(tmp_path, "rev-parse", "HEAD").strip()
+    _git(tmp_path, "update-ref", "refs/heads/main", tip)
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", tip)
+    _git(tmp_path, "checkout", "--detach", line)
+    _git(tmp_path, "commit", "--allow-empty", "-qm", "candidate improvement")
+    candidate = _git(tmp_path, "rev-parse", "HEAD").strip()
+    ws = Workspace(root=tmp_path, url=str(tmp_path))
+    result = SimpleNamespace(panel_rounds=1, panel_blocking_open=False, panel_degraded=False)
+    expected = relation in ("equal", "line-ahead")
+    head, reason = _bless_decision(ws, result, SimpleNamespace(merge="auto"), "main", measured)
+    assert head == (candidate if expected else "")
+    refusal = f"base moved: origin/main tip {tip} moved past measured base {measured}"
+    assert reason == ("" if expected else refusal)
+
+    class GitHub:
+        armed = False
+
+        def arm_auto_merge_when_review_required(self, target, number):
+            assert (target, number) == ("o/r", 27)
+            self.armed = True
+
+        def head_contains(self, *args):
+            pytest.fail("local objects must own the ancestry decision")
+
+    github = GitHub()
+    caplog.set_level("INFO")
+    _arm_unless_base_moved(cast(Any, github), ws, "o/r", "27", "main", measured, ())
+    assert github.armed is expected
+    if not expected:
+        assert f"main tip {tip} moved past measured base {measured}" in caplog.text
+
+    # A measured base containing main cannot bless a head that the sweep refuses.
+    _git(tmp_path, "checkout", "--orphan", "unrelated")
+    _git(tmp_path, "commit", "--allow-empty", "-qm", "unrelated head")
+    unrelated = _git(tmp_path, "rev-parse", "HEAD").strip()
+    head, reason = _bless_decision(ws, result, SimpleNamespace(merge="auto"), "main", tip)
+    assert head == ""
+    assert reason == f"HEAD {unrelated} does not contain the base tip {tip}"
+
+
+@pytest.mark.parametrize("answer", [True, False, None])
+def test_contains_tip_falls_back_for_missing_objects(tmp_path, answer):
+    from typing import Any
+
+    from outerloop.attempt import _contains_tip
+    from outerloop.github import GitHubError, Workspace
+
+    class GitHub:
+        def head_contains(self, target, base, head):
+            assert (target, base, head) == ("o/r", "tip", "measured")
+            if answer is None:
+                raise GitHubError(503, "/compare", "unavailable")
+            return answer
+
+    ws = Workspace(root=tmp_path)
+    assert _contains_tip(ws, "tip", "measured", cast(Any, GitHub()), "o/r") is bool(answer)
+    assert not _contains_tip(ws, "tip", "measured")

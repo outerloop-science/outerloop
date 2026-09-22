@@ -258,6 +258,29 @@ def target_clone_url(target: str) -> str:
     return f"https://github.com/{target}.git"
 
 
+def _contains_tip(
+    ws: Workspace,
+    tip: str,
+    head: str,
+    github: GitHubClient | None = None,
+    target: str = "",
+) -> bool:
+    """Use local ancestry when both commits exist, otherwise ask GitHub."""
+    if tip == head:
+        return bool(tip)
+    try:
+        for sha in (tip, head):
+            ws.git("cat-file", "-e", f"{sha}^{{commit}}")
+    except Exception:
+        if github is None:
+            return False
+        try:
+            return github.head_contains(target, tip, head)
+        except Exception:
+            return False
+    return _is_ancestor(ws, tip, head)
+
+
 def _bless_decision(
     ws: Workspace,
     result: Any,
@@ -267,6 +290,8 @@ def _bless_decision(
     secrets: tuple[str, ...] = (),
     *,
     panel_skip: str = "",
+    github: GitHubClient | None = None,
+    target: str = "",
 ) -> tuple[str, str]:
     """Decide once; share the reason between the record, PR and log."""
     head, reason, revision = "", "", "not read"
@@ -287,13 +312,16 @@ def _bless_decision(
         else:
             if not revision:
                 reason = f"{ref} absent"
-            elif revision != base_sha:
-                reason = f"base moved: {ref} {revision} != measured {base_sha}"
+            elif not _contains_tip(ws, revision, base_sha, github, target):
+                reason = f"base moved: {ref} tip {revision} moved past measured base {base_sha}"
             else:
                 try:
                     head = ws.git("rev-parse", "HEAD").strip()
                     if not head:
                         reason = "HEAD unreadable: empty revision"
+                    elif not _contains_tip(ws, revision, head, github, target):
+                        reason = f"HEAD {head} does not contain the base tip {revision}"
+                        head = ""
                 except Exception as exc:
                     reason = f"HEAD unreadable: {type(exc).__name__}: {exc}"
     reason = redact(" ".join(reason.split()), secrets)[:480]
@@ -334,22 +362,22 @@ def _arm_unless_base_moved(
     secrets: tuple[str, ...],
     merge_mode: str = "manual",
 ) -> None:
-    """Manual arming requires the measured base to remain current."""
+    """Manual arming requires the measured base to contain the current tip."""
     if merge_mode == "auto":
         return
 
     def _check_and_arm() -> None:
         ws.git_network("fetch", str(ws.url or ws.remote_url()), base_branch)
         fresh = ws.git("rev-parse", "FETCH_HEAD").strip()
-        if fresh != measured_base_sha:
+        if not _contains_tip(ws, fresh, measured_base_sha, github, target):
             log.info(
-                "not arming auto-merge on %s#%s: %s moved since the claim was "
-                "measured (%s -> %s); a human merges this one",
+                "not arming auto-merge on %s#%s: %s tip %s moved past measured base %s; "
+                "a human merges this one",
                 target,
                 pr_number,
                 base_branch,
-                measured_base_sha[:12],
-                fresh[:12],
+                fresh,
+                measured_base_sha,
             )
             return
         github.arm_auto_merge_when_review_required(target, int(pr_number))
@@ -3754,7 +3782,15 @@ def publish(
             record.target, number, result.candidate, digits=bench.display_digits
         )
         blessed_head, bless_reason = _bless_decision(
-            ws, result, contract, base_branch, base_sha, secrets, panel_skip=panel_skip
+            ws,
+            result,
+            contract,
+            base_branch,
+            base_sha,
+            secrets,
+            panel_skip=panel_skip,
+            github=github,
+            target=config.target,
         )
         # a failed body edit is a log line; the record below holds the decision
         _best_effort(
@@ -3906,7 +3942,14 @@ def publish(
                 merge_mode=getattr(contract, "merge", "manual"),
             )
         blessed_head, bless_reason = _bless_decision(
-            ws, result, contract, base_branch, base_sha, secrets
+            ws,
+            result,
+            contract,
+            base_branch,
+            base_sha,
+            secrets,
+            github=github,
+            target=config.target,
         )
         if pr_number.isdigit():
             # the PR exists by now; a failed body edit is a log line, not an
