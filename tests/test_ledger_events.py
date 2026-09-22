@@ -78,7 +78,7 @@ def record(root):
 
 def client():
     fake = LedgerGitHub()
-    fake.trees = {"sealed": "tree-1", "merge": "tree-1"}
+    fake.commit_trees = {"published": "tree-1", "merge": "tree-1"}
     fake.pull_requests[1] = {
         "state": "closed",
         "merged": True,
@@ -88,6 +88,37 @@ def client():
     fake.ancestry = ["merge"]
     fake.ledger_files.update(record_pending(pending()))
     return fake, cast(GitHubClient, fake)
+
+
+@pytest.mark.parametrize("same_tree", [True, False])
+def test_observe_uses_published_tree_without_local_measured_commit(same_tree, monkeypatch):
+    fake, github = client()
+    with pytest.raises(GitHubError) as error:
+        github.commit_tree("org/repo", pending().measured_sha)
+    assert error.value.status == 404
+    if not same_tree:
+        fake.commit_trees["merge"] = "different-tree"
+
+    original = fake.put_files
+    monkeypatch.setattr(fake, "put_files", lambda *args, **kwargs: False)
+    with pytest.raises(LedgerWriteError):
+        observe_target(github, "org/repo", {})
+    assert json.loads(fake.ledger_files[pending().path]) == asdict(pending())
+    monkeypatch.setattr(fake, "put_files", original)
+
+    expected = set() if same_tree else {1}
+    assert observe_target(github, "org/repo", {}) == expected
+    leader = json.loads(fake.ledger_files[LEADER_FILE])
+    if same_tree:
+        assert leader["bench"]["main_commit"] == "merge"
+        assert leader["bench"]["measured_sha"] == "sealed"
+        assert fake.ledger_files[pending().path] == "null\n"
+    else:
+        assert leader == {}
+        assert json.loads(fake.ledger_files[pending().path])["status"] == "UNMEASURED"
+    writes = len(fake.ledger_writes)
+    assert observe_target(github, "org/repo", {}) == expected
+    assert len(fake.ledger_writes) == writes
 
 
 @pytest.mark.parametrize("merged", [True, False])
@@ -154,7 +185,7 @@ def test_unmeasured_merge_finishes_with_terminal_submission_and_one_comment(
     tmp_path, monkeypatch, edited_head
 ):
     fake, github = client()
-    fake.trees["merge"] = "human-edited"
+    fake.commit_trees["merge"] = "human-edited"
     if edited_head:
         fake.pull_requests[1]["head"]["sha"] = "human-head"
     r = record(tmp_path)
@@ -230,7 +261,7 @@ def test_reset_first_then_solvers_in_ancestry_order(monkeypatch):
             "merge_commit_sha": f"m{n}",
             "head": {"sha": f"p{n}"},
         }
-        fake.trees[f"s{n}"] = fake.trees[f"m{n}"] = f"t{n}"
+        fake.commit_trees[f"p{n}"] = fake.commit_trees[f"m{n}"] = f"t{n}"
     fake.ancestry = ["m1", "m2", "m3"]
     from outerloop.progress import confirm
 

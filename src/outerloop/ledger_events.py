@@ -174,12 +174,9 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
                     terminal.append(pending)
                     unmeasured.add(pending.pr_number)
                 continue
-            merge_tree = github.get_tree(target, sha, recursive=False).get("sha")
-            measured_tree = github.get_tree(target, pending.measured_sha, recursive=False).get(
-                "sha"
-            )
-            if not merge_tree or not measured_tree:
-                raise ValueError("missing measurement tree")
+            merge_tree = github.commit_tree(target, sha)
+            # Publish carries the measured tree; the sealed commit stays local.
+            measured_tree = github.commit_tree(target, pending.published_head)
             if merge_tree != measured_tree:
                 log.warning("merged PR has an unmeasured tree; leaderboard unchanged")
                 terminal.append(pending)

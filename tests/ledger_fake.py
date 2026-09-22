@@ -15,7 +15,7 @@ class LedgerGitHub:
     ledger_snapshots: dict[str, dict[str, str]] = field(default_factory=dict)
     ledger_writes: list[dict[str, str]] = field(default_factory=list)
     ledger_fail: bool = False
-    trees: dict[str, str] = field(default_factory=dict)
+    commit_trees: dict[str, str] = field(default_factory=dict)
     ancestry: list[str] = field(default_factory=list)
     pull_requests: dict[int, dict] = field(default_factory=dict)
 
@@ -33,11 +33,14 @@ class LedgerGitHub:
         assert ref == "refs/heads/research-log" and sha == "main-pin"
         self.ledger_head = sha
 
-    def get_tree(self, repo, sha, recursive=True):
+    def commit_tree(self, repo, sha):
+        if sha not in self.commit_trees:
+            raise GitHubError(404, "commit", "missing")
+        return self.commit_trees[sha]
+
+    def get_tree(self, repo, sha):
         if self.ledger_fail:
             raise GitHubError(503, "tree", "unavailable")
-        if not recursive:
-            return {"sha": self.trees[sha]}
         files = self.ledger_snapshots.get(sha, self.ledger_files)
         return {
             "truncated": False,
