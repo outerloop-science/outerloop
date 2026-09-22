@@ -271,12 +271,21 @@ class GitHubClient:
             raise GitHubError(200, path, "missing branch SHA")
         return sha
 
-    def get_tree(self, repo: str, sha: str, recursive: bool = True) -> dict:
-        """Read a Git tree by commit or tree SHA; callers check truncation."""
+    def commit_tree(self, repo: str, sha: str) -> str:
+        """Read the root tree SHA from a commit."""
         ref = urllib.parse.quote(sha, safe="")
-        path = f"/repos/{urllib.parse.quote(repo)}/git/trees/{ref}"
-        if recursive:
-            path += "?recursive=1"
+        path = f"/repos/{urllib.parse.quote(repo)}/git/commits/{ref}"
+        data = self._expect_dict(self._request("GET", path), path)
+        tree = self._expect_dict(data.get("tree"), path)
+        tree_sha = tree.get("sha")
+        if not isinstance(tree_sha, str) or not tree_sha:
+            raise GitHubError(200, path, "missing commit tree SHA")
+        return tree_sha
+
+    def get_tree(self, repo: str, sha: str) -> dict:
+        """Read a recursive Git tree; callers check truncation."""
+        ref = urllib.parse.quote(sha, safe="")
+        path = f"/repos/{urllib.parse.quote(repo)}/git/trees/{ref}?recursive=1"
         return self._expect_dict(self._request("GET", path), path)
 
     def create_ref(self, repo: str, ref: str, sha: str) -> None:
