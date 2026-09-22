@@ -690,7 +690,7 @@ def base_moved_key(tip: str) -> str:
     return f"base:{tip}:2"
 
 
-_REFNAME = re.compile(r"[A-Za-z0-9._/-]{1,120}")
+_REFNAME = re.compile(r"[A-Za-z0-9._/+@=,-]{1,120}")
 _SHA = re.compile(r"[0-9a-f]{7,64}")
 
 
@@ -705,8 +705,8 @@ def base_moved_text(tip: str, base: str) -> str:
     merge = (
         f"`git merge --no-edit origin/{base}`"
         if shown
-        else "`git merge --no-edit` on the base branch (its name is not a plain ref name, "
-        "so it is not shown here)"
+        else "`git merge --no-edit origin/<your PR's base branch>` (its name is not a "
+        "plain ref name, so it is not shown here)"
     )
     return (
         f"Your head does not contain {tip_text}. Fold it: from a HEAD "
