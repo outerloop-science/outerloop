@@ -408,7 +408,7 @@ def _legacy_base_moved(text: str) -> bool:
     ):
         pattern = (
             re.escape(template)
-            .replace(sentinel, r"[0-9a-f]{7,40}")
+            .replace(sentinel, _SHA.pattern)
             .replace("BASEBASE", _REFNAME.pattern)
         )
         if re.fullmatch(pattern + r"( GitHub reports conflicts with the base\.)?", text):
