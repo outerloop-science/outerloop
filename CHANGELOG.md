@@ -23,6 +23,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Research line improvements can be blessed when their measured base contains the current base tip.
+
 - Messages the kernel writes itself now render as its instructions; output the kernel quotes from elsewhere stays fenced as data.
 - Merged results are confirmed again: the observer compares the merge commit's tree with the published head's tree instead of fetching the never-pushed measured commit.
 
