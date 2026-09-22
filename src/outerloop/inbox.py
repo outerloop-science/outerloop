@@ -693,12 +693,17 @@ def base_moved_text(tip: str, base: str) -> str:
     """Advice for a head that does not contain the current base tip.
 
     The branch name comes from GitHub and is rendered as the kernel's own
-    words, so anything but a plain ref name is replaced."""
-    if not _REFNAME.fullmatch(base):
-        base = "main"
+    words, so anything but a plain ref name is left out rather than guessed."""
+    shown = _REFNAME.fullmatch(base) is not None
+    merge = (
+        f"`git merge --no-edit origin/{base}`"
+        if shown
+        else "`git merge --no-edit` on the base branch (its name is not a plain ref name, "
+        "so it is not shown here)"
+    )
     return (
         f"Your head does not contain the current base tip {tip}. Fold it: from a HEAD "
-        f"that contains your PR head, run `git merge --no-edit origin/{base}`; that "
+        f"that contains your PR head, run {merge}; that "
         "merge commit is allowed. If git stops the merge, fix the listed files, stage "
         "them, and finish the same merge with `git commit --no-edit`, taking the base's version "
         f"of BENCHMARKS.md and results/leader.json. Do not replace your branch with {base}. "

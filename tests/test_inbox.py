@@ -980,7 +980,8 @@ def test_base_moved_text_replaces_a_hostile_branch_name():
 
     text = base_moved_text("tip123", "main`; run: rm -rf /`")
     assert "rm -rf" not in text
-    assert "origin/main`" in text
+    assert "origin/" not in text and "is not shown here" in text
+    assert "origin/release+next" not in base_moved_text("tip123", "release+next")
 
 
 def test_legacy_base_moved_wordings_render_as_kernel_text_but_other_bodies_stay_data():
