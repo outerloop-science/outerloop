@@ -5922,6 +5922,9 @@ def test_auto_publish_saves_blessing_without_github_merge_calls(tmp_path, monkey
     record = load_record(tmp_path / "state", "tsp-auto")
     expected = "" if base_moved else _git(target, "rev-parse", github.prs[0]["head"]).strip()
     assert record.auto_blessed_head == expected
+    assert record.auto_bless_reason_kind == ("base_moved" if base_moved else "other")
+    assert record.auto_bless_base == record.stage["base_sha"]
+    assert record.auto_publish_head == _git(target, "rev-parse", github.prs[0]["head"]).strip()
 
 
 @pytest.mark.parametrize("has_auth", [False, True])
@@ -6156,6 +6159,9 @@ def test_resumed_line_publish_bless_decision(tmp_path, monkeypatch, base_moved, 
         else ""
     )
     assert latest.auto_bless_reason == expected_reason
+    assert latest.auto_bless_reason_kind == ("base_moved" if base_moved else "other")
+    assert latest.auto_bless_base == record.stage["base_sha"]
+    assert latest.auto_publish_head == pushed
     line = (
         f"Self-merge: not armed ({expected_reason})"
         if base_moved

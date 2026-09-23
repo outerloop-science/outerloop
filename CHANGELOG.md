@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Upgrading
 
+- No action needed; a PR held only by a base-moved blessing heals on the next tick.
+
 - No action is needed for confirmations to resume: pending records already carry the published head the observer now compares.
 - No contract change; existing contract files need no edits.
 - The `research-log` ledger branch is created from the default branch on first publish if it is missing.
@@ -42,6 +44,9 @@ Versions follow [SemVer](https://semver.org).
 - Full `outerloop init` requires and writes a Claude model even for a deployment without Claude roles, using `--claude-model`, then the shell's `OUTERLOOP_CLAUDE_MODEL`, then a required interactive prompt. A focused `init --github-app` run preserves existing `.env` settings it does not manage.
 
 ### Changed
+
+- The sweep rechecks ancestry for PRs held only by a base-moved blessing.
+- Merges performed by the sweep are observed and confirmed in the same tick.
 
 - Scope checks compare the full candidate tree with its merge-base against the fetched base tip; changes that landed on the base branch never count as the author's, and author edits to the ledger files are refused like any other out-of-scope path.
 - Publish is refused when the candidate shares no history with the base; fetch the base and fold it before submitting again.
