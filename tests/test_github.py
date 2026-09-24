@@ -914,3 +914,32 @@ def test_ledger_unavailable_head_refuses_read(provider, monkeypatch, head):
     monkeypatch.setattr(client, "branch_head", lambda *args: head)
     with pytest.raises(LedgerReadError):
         read_ledger(client, "org/repo")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_mark_ready_for_review(provider, dry_run):
+    transport = FakeTransport([{"node_id": "PR_node"}, {"data": {}}])
+    client = GitHubClient(auth=provider, transport=transport, dry_run=dry_run)
+    client.mark_ready_for_review("org/repo", 29)
+    if dry_run:
+        assert not transport.requests
+    else:
+        assert transport.requests[0].full_url.endswith("/repos/org/repo/pulls/29")
+        data = transport.requests[1].data
+        assert isinstance(data, bytes)
+        mutation = json.loads(data)
+        assert "markPullRequestReadyForReview" in mutation["query"]
+        assert mutation["variables"] == {"pr": "PR_node"}
+
+
+@pytest.mark.parametrize(
+    "responses",
+    [
+        [{"node_id": "PR_node"}, {"errors": [{"message": "denied"}]}],
+        [{}],
+    ],
+)
+def test_mark_ready_for_review_reports_failure(provider, responses):
+    client = GitHubClient(auth=provider, transport=FakeTransport(responses))
+    with pytest.raises(GitHubError):
+        client.mark_ready_for_review("org/repo", 29)

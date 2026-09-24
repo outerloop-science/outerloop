@@ -1165,3 +1165,40 @@ def test_legacy_mixed_kernel_payload_is_data_on_repeated_read_and_retry(
     append(tmp_path, message(key="next", text="Continue."))
     assert render_inbox(pending(tmp_path, 0)[:1], budgets="budget") == rendered
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("state", ["parked", "ended"])
+def test_legacy_panel_wake_flag_loads_renders_and_retries(tmp_path, monkeypatch, state):
+    import json
+
+    import outerloop.inbox as inbox
+
+    fixture = json.loads((Path(__file__).parent / "fixtures/panel_wake_9ca3d7c.json").read_text())
+    raw = fixture["record"]
+    raw["state"] = state
+    directory = run_dir(tmp_path, raw["run_id"])
+    (directory / "inbox").mkdir(parents=True)
+    (directory / "state.json").write_text(json.dumps(raw))
+    path = directory / "inbox/000001.json"
+    original = json.dumps(fixture["message"])
+    path.write_text(original)
+    for _ in range(2):
+        record = load_record(tmp_path, raw["run_id"])
+        messages = pending(directory, record.inbox_seq)
+        assert messages[0].payload["wake_author"] is False
+        assert "Legacy panel verdict" in render_inbox(messages, budgets="budget")
+        assert inbox.wake_pending(directory, record)
+        save_record(tmp_path, record, 124)
+        assert path.read_text() == original
+    with monkeypatch.context() as patch:
+
+        def interrupted(*args, **kwargs):
+            raise OSError("interrupted")
+
+        patch.setattr(inbox.os, "replace", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
+            append(directory, message(key="next", text="Continue."))
+    append(directory, message(key="next", text="Continue."))
+    assert len(pending(directory, 0)) == 2
+    assert path.read_text() == original
+    assert append(directory, Message(**fixture["message"])).seq == 1

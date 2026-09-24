@@ -1667,7 +1667,11 @@ def test_blocking_on_a_plain_finish_stays_open_for_a_draft_pr(tmp_path: Path) ->
 def test_panel_pr_body_carries_banner_and_transcript(tmp_path: Path) -> None:
     result, _h, _e, _p = _run_panel_climb(tmp_path, [13.9, 13.1], [_verdict(True, 1)])
     body = pr_body(result, CONFIG, redact_secrets=())
-    assert body.startswith("> **Draft")
+    assert body.startswith(
+        "> **Draft — the verification panel found blocking issues.** "
+        "They are listed under Pre-PR verification below; "
+        "the author has been asked to address them."
+    )
     assert "## Pre-PR verification" in body
     assert "Verification round 1" in body
 

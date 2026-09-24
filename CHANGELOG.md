@@ -8,6 +8,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Upgrading
 
+- No action needed; an author's report-only answer to the panel now updates the PR, and a PR whose panel clears is marked ready for review.
+
 - No action needed; a PR held only by a base-moved blessing heals on the next tick.
 
 - No action is needed for confirmations to resume: pending records already carry the published head the observer now compares.
@@ -24,6 +26,9 @@ Versions follow [SemVer](https://semver.org).
 - No action is needed for `end` requests already staged: old requests stay valid, and a saved withdrawal is finished by the next tick.
 
 ### Fixed
+
+- Report-only submissions update the PR report and panel verdict without pushing a commit.
+- Draft PRs are marked ready for review when the latest panel read clears. Blocking draft banners tell the author to address the findings.
 
 - Research line improvements can be blessed when their measured base contains the current base tip.
 

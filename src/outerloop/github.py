@@ -565,6 +565,21 @@ class GitHubClient:
         ]
         return [m for m, key in order if settings.get(key)]
 
+    def mark_ready_for_review(self, repo: str, number: int) -> None:
+        """Mark a draft PR ready after a clean panel read."""
+        if self.dry_run:
+            log.info("[dry-run] mark PR ready for review %s#%d", repo, number)
+            return
+        node_id = self.get_pull_request(repo, number).get("node_id")
+        if not node_id:
+            raise GitHubError(0, f"/repos/{repo}/pulls/{number}", "no node_id in PR payload")
+        mutation = (
+            "mutation($pr: ID!) {"
+            " markPullRequestReadyForReview(input: {pullRequestId: $pr})"
+            " { pullRequest { number } } }"
+        )
+        self._graphql(mutation, {"pr": str(node_id)})
+
     def enable_auto_merge(
         self, repo: str, number: int, method: str = "MERGE", expected_head: str = ""
     ) -> None:
