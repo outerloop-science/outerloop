@@ -3663,11 +3663,19 @@ def publish(
             and journal.get("sealed_sha") == result.candidate_sha
             and journal.get("head") == head
         )
-        report_only = bool(
-            head
-            and not any(
-                p and not (line_ref and _is_line_memory(p))
-                for p in ws.git("diff", "--name-only", "-z", head, result.candidate_sha).split("\0")
+        # Decided once and journaled: a retried code publish finds its own pushed
+        # tree at the head and must not be mistaken for a report-only update.
+        report_only = (
+            bool(journal.get("report_only"))
+            if landed and isinstance(journal, dict)
+            else bool(
+                head
+                and not any(
+                    p and not (line_ref and _is_line_memory(p))
+                    for p in ws.git("diff", "--name-only", "-z", head, result.candidate_sha).split(
+                        "\0"
+                    )
+                )
             )
         )
         assert result.candidate is not None
@@ -3728,6 +3736,7 @@ def publish(
                         "head": pushed_head,
                         "prior_best": prior.best if prior else None,
                         "floor_note": floor_note,
+                        "report_only": report_only,
                     },
                 },
             )
@@ -3743,9 +3752,9 @@ def publish(
                         moved,
                         moved=True,
                     )
-        # Same code, new report: keep the measurement already recorded for this head,
-        # so re-submitting unchanged code cannot fish for a luckier number.
-        if not (report_only and _pending_recorded(github, record, pushed_sha)):
+        # Same code, new report: the measurement recorded at the first publish
+        # stands, so re-submitting unchanged code cannot fish for a luckier number.
+        if not report_only:
             record = queue_pending(
                 run_root,
                 record,
@@ -3772,11 +3781,19 @@ def publish(
             if bench.direction == "max"
             else result.candidate > prior.best
         )
-        note = _measured_note(bench, result.candidate, result.candidate_sha)
-        note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
-        note += (
-            " Worse than the previous number; the ledger row is unchanged." if worse else floor_note
-        )
+        if report_only:
+            note = (
+                f"Report updated; the code is unchanged at `{pushed_sha}`, "
+                "so the recorded measurement stands."
+            )
+        else:
+            note = _measured_note(bench, result.candidate, result.candidate_sha)
+            note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
+            note += (
+                " Worse than the previous number; the ledger row is unchanged."
+                if worse
+                else floor_note
+            )
         panel_skip = str(
             (
                 journal.get("panel_skip")
@@ -3787,9 +3804,10 @@ def publish(
         )
         if panel_skip:
             note += f"\n\npanel read skipped: {panel_skip}"
-        github.update_candidate_row(
-            record.target, number, result.candidate, digits=bench.display_digits
-        )
+        if not report_only:
+            github.update_candidate_row(
+                record.target, number, result.candidate, digits=bench.display_digits
+            )
         blessed_head, bless_reason = _bless_decision(
             ws,
             result,
@@ -3808,7 +3826,7 @@ def publish(
         ):
             _best_effort(
                 "mark PR ready for review",
-                lambda: github.mark_ready_for_review(record.target, number),
+                lambda: github.mark_ready_for_review(record.target, number, pushed_sha),
                 secrets,
             )
         panel_section = (
@@ -5146,17 +5164,6 @@ def main() -> int:
         _signal.alarm(0)
     print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
     return 0
-
-
-def _pending_recorded(github: GitHubClient, record: RunRecord, head: str) -> bool:
-    """Whether research-log already holds this run's measurement for `head`."""
-    from outerloop.ledger_branch import read_ledger
-
-    try:
-        _, _, pendings = read_ledger(github, record.target)
-    except Exception:
-        return False
-    return f"results/submissions/{record.run_id}/{head}.json" in pendings
 
 
 def _ledger_digits(record: RunRecord) -> dict[str, int]:

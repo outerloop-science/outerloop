@@ -644,7 +644,7 @@ def test_publish_review_fast_forwards_and_applies_floor(
     ready_calls = []
 
     class GitHub(FakeGitHub):
-        def mark_ready_for_review(self, repo, number):
+        def mark_ready_for_review(self, repo, number, expected_head=""):
             ready_calls.append(number)
             if ready_fails:
                 raise RuntimeError("ready unavailable")
@@ -709,19 +709,22 @@ def test_publish_review_fast_forwards_and_applies_floor(
 
         monkeypatch.setattr(Workspace, "git", no_commit)
     if not submit_report:
-        update_row = github.update_candidate_row
+        from outerloop import attempt as attempt_mod
+
+        bless = attempt_mod._bless_decision
         with monkeypatch.context() as patch:
 
             def crash_after_push(*args, **kwargs):
                 raise RuntimeError("crash after push")
 
-            patch.setattr(github, "update_candidate_row", crash_after_push)
+            # both the code and the report-only path reach the blessing
+            patch.setattr(attempt_mod, "_bless_decision", crash_after_push)
             with pytest.raises(RuntimeError, match="crash after push"):
                 publish(**publish_args)
         github.pr["head"]["sha"] = _git(bare, "rev-parse", PR_BRANCH).strip()
         publish_args["record"] = load_record(root, record.run_id)
         monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
-        assert github.update_candidate_row == update_row
+        assert attempt_mod._bless_decision is bless
     outcome = publish(**publish_args)
     assert outcome.outcome == "improved"
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
@@ -756,25 +759,35 @@ def test_publish_review_fast_forwards_and_applies_floor(
     else:
         assert submitted == head
     assert submitted == pushed
-    submission = next(
+    submissions = [
         json.loads(v)
         for k, v in github.ledger_files.items()
         if k.startswith("results/submissions/")
-    )
-    assert submission["measured_sha"] == snap.commit
-    assert submission["published_head"] == pushed
-    assert submission["candidate"] == candidate
-    assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
+    ]
+    if unchanged:
+        # report-only: the measurement recorded at first publish stands
+        assert submissions == []
+        assert "the recorded measurement stands" in github.body_addenda[0]
+    else:
+        (submission,) = submissions
+        assert submission["measured_sha"] == snap.commit
+        assert submission["published_head"] == pushed
+        assert submission["candidate"] == candidate
+        assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
+        assert snap.commit[:12] in github.body_addenda[0]
+        assert f"pushed as `{submitted}`" in github.body_addenda[0]
     assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
-    assert snap.commit[:12] in github.body_addenda[0]
-    assert f"pushed as `{submitted}`" in github.body_addenda[0]
     assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == (
         "submitted\n" if unchanged else "updated\n"
     )
     assert load_leader(ws)["tsp"].best == 12
     assert json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"] == 12
     assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
-    assert github.row_updates == [candidate]
+    # a retried publish rewrites the same number; report-only writes none
+    if unchanged:
+        assert github.row_updates == []
+    else:
+        assert github.row_updates and set(github.row_updates) == {candidate}
     if candidate > 12:
         assert "Worse" in github.posted[0]
     assert "## Pre-PR verification\n\nLatest panel verdict" in github.body_addenda[0]
@@ -801,16 +814,12 @@ def test_publish_review_fast_forwards_and_applies_floor(
     )
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
     if unchanged:
-        # a later report-only answer with a different number keeps the recorded one
+        # a later report-only answer with a different number records nothing
         publish_args["record"] = load_record(root, record.run_id)
         publish_args["result"] = replace(result, candidate=candidate - 1.0)
         publish(**publish_args)
-        again = next(
-            json.loads(v)
-            for k, v in github.ledger_files.items()
-            if k.startswith("results/submissions/")
-        )
-        assert again["candidate"] == candidate
+        assert not any(k.startswith("results/submissions/") for k in github.ledger_files)
+        assert github.row_updates == []
 
 
 @pytest.mark.parametrize("reason", ["human", "disarm", "contract", "push", "closed", "no-code"])

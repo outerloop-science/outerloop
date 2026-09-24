@@ -932,6 +932,13 @@ def test_mark_ready_for_review(provider, dry_run):
         assert mutation["variables"] == {"pr": "PR_node"}
 
 
+def test_mark_ready_for_review_skips_a_moved_head(provider):
+    transport = FakeTransport([{"node_id": "PR_node", "head": {"sha": "newer"}}])
+    client = GitHubClient(auth=provider, transport=transport)
+    client.mark_ready_for_review("org/repo", 29, expected_head="read")
+    assert len(transport.requests) == 1
+
+
 @pytest.mark.parametrize(
     "responses",
     [

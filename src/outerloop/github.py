@@ -565,12 +565,17 @@ class GitHubClient:
         ]
         return [m for m, key in order if settings.get(key)]
 
-    def mark_ready_for_review(self, repo: str, number: int) -> None:
-        """Mark a draft PR ready after a clean panel read."""
+    def mark_ready_for_review(self, repo: str, number: int, expected_head: str = "") -> None:
+        """Mark a draft PR ready after a clean panel read of `expected_head`."""
         if self.dry_run:
             log.info("[dry-run] mark PR ready for review %s#%d", repo, number)
             return
-        node_id = self.get_pull_request(repo, number).get("node_id")
+        pr = self.get_pull_request(repo, number)
+        head = str((pr.get("head") or {}).get("sha") or "")
+        if expected_head and head != expected_head:
+            log.info("not marking %s#%d ready: head moved since the panel read", repo, number)
+            return
+        node_id = pr.get("node_id")
         if not node_id:
             raise GitHubError(0, f"/repos/{repo}/pulls/{number}", "no node_id in PR payload")
         mutation = (
