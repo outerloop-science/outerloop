@@ -764,18 +764,15 @@ def test_publish_review_fast_forwards_and_applies_floor(
         for k, v in github.ledger_files.items()
         if k.startswith("results/submissions/")
     ]
-    if unchanged:
-        # report-only: the measurement recorded at first publish stands
-        assert submissions == []
-        assert "the recorded measurement stands" in github.body_addenda[0]
-    else:
-        (submission,) = submissions
-        assert submission["measured_sha"] == snap.commit
-        assert submission["published_head"] == pushed
-        assert submission["candidate"] == candidate
-        assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
-        assert snap.commit[:12] in github.body_addenda[0]
-        assert f"pushed as `{submitted}`" in github.body_addenda[0]
+    # the fixture record predates the ledger, so even a report-only answer
+    # records the head's one measurement
+    (submission,) = submissions
+    assert submission["measured_sha"] == snap.commit
+    assert submission["published_head"] == pushed
+    assert submission["candidate"] == candidate
+    assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
+    assert snap.commit[:12] in github.body_addenda[0]
+    assert f"pushed as `{submitted}`" in github.body_addenda[0]
     assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
     assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == (
         "submitted\n" if unchanged else "updated\n"
@@ -783,11 +780,8 @@ def test_publish_review_fast_forwards_and_applies_floor(
     assert load_leader(ws)["tsp"].best == 12
     assert json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"] == 12
     assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
-    # a retried publish rewrites the same number; report-only writes none
-    if unchanged:
-        assert github.row_updates == []
-    else:
-        assert github.row_updates and set(github.row_updates) == {candidate}
+    # a retried publish rewrites the same number
+    assert github.row_updates and set(github.row_updates) == {candidate}
     if candidate > 12:
         assert "Worse" in github.posted[0]
     assert "## Pre-PR verification\n\nLatest panel verdict" in github.body_addenda[0]
@@ -814,12 +808,20 @@ def test_publish_review_fast_forwards_and_applies_floor(
     )
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
     if unchanged:
-        # a later report-only answer with a different number records nothing
+        # once recorded, a later report-only answer with a different number
+        # keeps the recorded measurement and row
+        rows = list(github.row_updates)
         publish_args["record"] = load_record(root, record.run_id)
         publish_args["result"] = replace(result, candidate=candidate - 1.0)
         publish(**publish_args)
-        assert not any(k.startswith("results/submissions/") for k in github.ledger_files)
-        assert github.row_updates == []
+        again = [
+            json.loads(v)
+            for k, v in github.ledger_files.items()
+            if k.startswith("results/submissions/")
+        ]
+        assert [s["candidate"] for s in again] == [candidate]
+        assert github.row_updates == rows
+        assert "the recorded measurement stands" in github.body_addenda[-1]
 
 
 @pytest.mark.parametrize("reason", ["human", "disarm", "contract", "push", "closed", "no-code"])

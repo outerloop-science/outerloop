@@ -3752,9 +3752,11 @@ def publish(
                         moved,
                         moved=True,
                     )
-        # Same code, new report: the measurement recorded at the first publish
-        # stands, so re-submitting unchanged code cannot fish for a luckier number.
-        if not report_only:
+        # Same code, new report: if this kernel already recorded a measurement for
+        # the head, it stands, so re-submitting cannot fish for a luckier number.
+        # A head published before the ledger gets its one measurement here.
+        measured_before = report_only and record.auto_publish_head == pushed_sha
+        if not measured_before:
             record = queue_pending(
                 run_root,
                 record,
@@ -3781,7 +3783,7 @@ def publish(
             if bench.direction == "max"
             else result.candidate > prior.best
         )
-        if report_only:
+        if measured_before:
             note = (
                 f"Report updated; the code is unchanged at `{pushed_sha}`, "
                 "so the recorded measurement stands."
@@ -3804,7 +3806,7 @@ def publish(
         )
         if panel_skip:
             note += f"\n\npanel read skipped: {panel_skip}"
-        if not report_only:
+        if not measured_before:
             github.update_candidate_row(
                 record.target, number, result.candidate, digits=bench.display_digits
             )
