@@ -78,6 +78,7 @@ from outerloop.ledger_events import (
 from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
+    MAX_REPORT_BODY,
     AttemptResult,
     EvalError,
     Measurer,
@@ -2897,7 +2898,7 @@ def resume_run(
                 thread_for(record),
                 now,
                 f"panel:{candidate_sha}:{stage.get('sleeps_used', 0)}:{reads}",
-                {**panel_payload(verdict, candidate_sha), "wake_author": False},
+                panel_payload(verdict, candidate_sha),
                 origin=record.run_id,
             )
             append(run_dir, panel_message)
@@ -3662,51 +3663,63 @@ def publish(
             and journal.get("sealed_sha") == result.candidate_sha
             and journal.get("head") == head
         )
-        if (
-            not landed
-            and head
-            and not any(
-                p and not (line_ref and _is_line_memory(p))
-                for p in ws.git("diff", "--name-only", "-z", head, result.candidate_sha).split("\0")
+        # Decided once and journaled: a retried code publish finds its own pushed
+        # tree at the head and must not be mistaken for a report-only update.
+        report_only = (
+            bool(journal.get("report_only"))
+            if landed and isinstance(journal, dict)
+            else bool(
+                head
+                and not any(
+                    p and not (line_ref and _is_line_memory(p))
+                    for p in ws.git("diff", "--name-only", "-z", head, result.candidate_sha).split(
+                        "\0"
+                    )
+                )
             )
-        ):
-            return refuse("Publish refused: no code change; metric noise.")
+        )
         assert result.candidate is not None
         if landed:
             assert isinstance(journal, dict)
             pushed_sha = str(journal.get("pushed_sha", result.candidate_sha))
             prior = display_leader(github, config.target).get(bench.name)
             floor_note = str(journal.get("floor_note", ""))
+            # Bless the published commit even if a retry resumed on the candidate.
+            ws.git("checkout", "-f", "-B", branch, pushed_sha)
+            ws.git("clean", "-fd")
         else:
-            if not head or not _is_ancestor(ws, head, result.candidate_sha):
-                return refuse(
-                    f"Publish refused: PR head {head} is not contained in "
-                    f"sealed commit {result.candidate_sha}.",
-                    head,
-                    moved=True,
-                )
-            assert result.candidate is not None
-            title = (result.submit_report or "").splitlines()
-            summary = redact(title[0].strip(), secrets) if title else ""
-            try:
-                common = ws.git("merge-base", base_sha, head).strip()
-            except Exception as exc:
-                return refuse(
-                    "Publish refused: cannot confirm PR base ancestry.",
-                    quoted_text=redact(str(exc), secrets),
-                )
-            parents = ["-p", head]
-            if common != base_sha:
-                parents += ["-p", base_sha]
-            pushed_sha = ws.git(
-                *git_identity(config.bot_login),
-                "commit-tree",
-                ws.git("rev-parse", f"{result.candidate_sha}^{{tree}}").strip(),
-                *parents,
-                "-m",
-                f"agent: {summary or 'submitted change'} "
-                f"({bench.metric}={fmt_metric(result.candidate, bench.display_digits)})",
-            ).strip()
+            if report_only:
+                pushed_sha = head
+            else:
+                if not head or not _is_ancestor(ws, head, result.candidate_sha):
+                    return refuse(
+                        f"Publish refused: PR head {head} is not contained in "
+                        f"sealed commit {result.candidate_sha}.",
+                        head,
+                        moved=True,
+                    )
+                assert result.candidate is not None
+                title = (result.submit_report or "").splitlines()
+                summary = redact(title[0].strip(), secrets) if title else ""
+                try:
+                    common = ws.git("merge-base", base_sha, head).strip()
+                except Exception as exc:
+                    return refuse(
+                        "Publish refused: cannot confirm PR base ancestry.",
+                        quoted_text=redact(str(exc), secrets),
+                    )
+                parents = ["-p", head]
+                if common != base_sha:
+                    parents += ["-p", base_sha]
+                pushed_sha = ws.git(
+                    *git_identity(config.bot_login),
+                    "commit-tree",
+                    ws.git("rev-parse", f"{result.candidate_sha}^{{tree}}").strip(),
+                    *parents,
+                    "-m",
+                    f"agent: {summary or 'submitted change'} "
+                    f"({bench.metric}={fmt_metric(result.candidate, bench.display_digits)})",
+                ).strip()
             ws.git("checkout", "-f", "-B", branch, pushed_sha)
             ws.git("clean", "-fd")
             prior, floor_note = _ledger_comparison(github, bench, result.candidate, config.target)
@@ -3723,51 +3736,66 @@ def publish(
                         "head": pushed_head,
                         "prior_best": prior.best if prior else None,
                         "floor_note": floor_note,
+                        "report_only": report_only,
                     },
                 },
             )
             save_record(run_root, record, now)
-            try:
-                ws.push(branch)
-            except GitError:
-                latest_pr = github.get_pull_request(record.target, number)
-                moved = str((latest_pr.get("head") or {}).get("sha", ""))
-                return refuse(
-                    f"Publish refused: fast-forward push failed; PR head is {moved}.",
-                    moved,
-                    moved=True,
-                )
-        record = queue_pending(
-            run_root,
-            record,
-            github,
-            measurement_pending(
-                ws,
-                contract,
-                bench,
+            if not report_only:
+                try:
+                    ws.push(branch)
+                except GitError:
+                    latest_pr = github.get_pull_request(record.target, number)
+                    moved = str((latest_pr.get("head") or {}).get("sha", ""))
+                    return refuse(
+                        f"Publish refused: fast-forward push failed; PR head is {moved}.",
+                        moved,
+                        moved=True,
+                    )
+        # Same code, new report: if this kernel already recorded a measurement for
+        # the head, it stands, so re-submitting cannot fish for a luckier number.
+        # A head published before the ledger gets its one measurement here.
+        measured_before = report_only and record.auto_publish_head == pushed_sha
+        if not measured_before:
+            record = queue_pending(
+                run_root,
                 record,
-                result.baseline if result.baseline is not None else result.candidate,
-                result.candidate,
-                result.run_seed,
-                result.candidate_sha,
-                number,
-                pushed_sha,
-                date,
-                kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
-            ),
-            contract,
-            now,
-        )
+                github,
+                measurement_pending(
+                    ws,
+                    contract,
+                    bench,
+                    record,
+                    result.baseline if result.baseline is not None else result.candidate,
+                    result.candidate,
+                    result.run_seed,
+                    result.candidate_sha,
+                    number,
+                    pushed_sha,
+                    date,
+                    kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+                ),
+                contract,
+                now,
+            )
         worse = prior is not None and (
             result.candidate < prior.best
             if bench.direction == "max"
             else result.candidate > prior.best
         )
-        note = _measured_note(bench, result.candidate, result.candidate_sha)
-        note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
-        note += (
-            " Worse than the previous number; the ledger row is unchanged." if worse else floor_note
-        )
+        if measured_before:
+            note = (
+                f"Report updated; the code is unchanged at `{pushed_sha}`, "
+                "so the recorded measurement stands."
+            )
+        else:
+            note = _measured_note(bench, result.candidate, result.candidate_sha)
+            note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
+            note += (
+                " Worse than the previous number; the ledger row is unchanged."
+                if worse
+                else floor_note
+            )
         panel_skip = str(
             (
                 journal.get("panel_skip")
@@ -3778,9 +3806,10 @@ def publish(
         )
         if panel_skip:
             note += f"\n\npanel read skipped: {panel_skip}"
-        github.update_candidate_row(
-            record.target, number, result.candidate, digits=bench.display_digits
-        )
+        if not measured_before:
+            github.update_candidate_row(
+                record.target, number, result.candidate, digits=bench.display_digits
+            )
         blessed_head, bless_reason = _bless_decision(
             ws,
             result,
@@ -3792,6 +3821,22 @@ def publish(
             github=github,
             target=config.target,
         )
+        if (
+            pr.get("draft")
+            and result.panel_rounds > 0
+            and not (panel_skip or result.panel_blocking_open or result.panel_degraded)
+        ):
+            _best_effort(
+                "mark PR ready for review",
+                lambda: github.mark_ready_for_review(record.target, number, pushed_sha),
+                secrets,
+            )
+        panel_section = (
+            "\n\n## Pre-PR verification\n\n"
+            + redact(result.panel_transcript[:MAX_REPORT_BODY], secrets)
+            if result.panel_transcript
+            else ""
+        )
         # a failed body edit is a log line; the record below holds the decision
         _best_effort(
             "submit addendum",
@@ -3800,7 +3845,8 @@ def publish(
                 number,
                 f"---\n**Edit ({date}, submit):** {note}\n\n"
                 f"{progress_link(config.target)}\n\n"
-                f"{redact(result.submit_report or 'no report was given', secrets)}\n\n"
+                f"{redact(result.submit_report or 'no report was given', secrets)}"
+                f"{panel_section}\n\n"
                 f"{_self_merge_line(blessed_head, bless_reason)}",
             ),
             secrets,

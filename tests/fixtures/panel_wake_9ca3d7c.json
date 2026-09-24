@@ -1,0 +1,25 @@
+{
+  "record": {
+    "run_id": "legacy-panel",
+    "target": "org/repo",
+    "task_title": "Answer the panel",
+    "state": "parked",
+    "pr_url": "https://github.com/org/repo/pull/29",
+    "inbox_seq": 0,
+    "stage": {"panel_skip": ""}
+  },
+  "message": {
+    "seq": 1,
+    "kind": "panel-verdict",
+    "source": "panel",
+    "thread": "org/repo#29",
+    "arrived": 123.5,
+    "key": "panel:head:0:1",
+    "payload": {
+      "head": "head",
+      "findings": [],
+      "transcript": "Legacy panel verdict",
+      "wake_author": false
+    }
+  }
+}

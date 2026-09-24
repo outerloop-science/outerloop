@@ -2076,7 +2076,7 @@ def attempt_once(
             inbox_thread,
             time.time(),
             f"panel:{candidate_sha}:{sleeps_used}:{panel_reads}",
-            {**panel_payload(verdict, candidate_sha), "wake_author": False},
+            panel_payload(verdict, candidate_sha),
             origin=inbox_dir.name,
         )
         append(inbox_dir, panel_message)
@@ -2219,9 +2219,9 @@ def pr_body(
         ]
     if result.panel_blocking_open:
         banner = [
-            "> **Draft — the verification panel capped out with blocking "
-            "findings still open.** They are listed under Pre-PR "
-            "verification below; the human decides.",
+            "> **Draft — the verification panel found blocking issues.** "
+            "They are listed under Pre-PR verification below; "
+            "the author has been asked to address them.",
             "",
         ]
     elif result.panel_degraded:

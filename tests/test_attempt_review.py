@@ -587,6 +587,10 @@ def test_publish_review_fast_forwards_and_applies_floor(
     submit_report,
     panel_skip,
     agent_id="solver",
+    draft=False,
+    blocking=False,
+    degraded=False,
+    ready_fails=False,
 ):
     import json
 
@@ -627,14 +631,25 @@ def test_publish_review_fast_forwards_and_applies_floor(
     )
     _git(ws, "add", "-A")
     _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "prior")
+    (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+    _git(ws, "add", "-A")
+    _git(ws, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "existing code")
     head = _git(ws, "rev-parse", "HEAD").strip()
     _git(ws, "push", "origin", f"HEAD:{PR_BRANCH}")
     if not unchanged:
-        (ws / "src/pilot/solvers/tsp.py").write_text("submitted\n")
+        (ws / "src/pilot/solvers/tsp.py").write_text("updated\n")
     workspace = Workspace(root=ws, url=str(bare))
     snap = snapshot_tree(workspace, head)
 
+    ready_calls = []
+
     class GitHub(FakeGitHub):
+        def mark_ready_for_review(self, repo, number, expected_head=""):
+            ready_calls.append(number)
+            if ready_fails:
+                raise RuntimeError("ready unavailable")
+            self.pr["draft"] = False
+
         def disable_auto_merge(self, *args):
             return True
 
@@ -642,13 +657,16 @@ def test_publish_review_fast_forwards_and_applies_floor(
             super().comment(repo, number, body)
             self.comments.append({"body": body})
 
-    github = GitHub(pr={"state": "open", "head": {"sha": head, "ref": PR_BRANCH}})
+    github = GitHub(pr={"state": "open", "draft": draft, "head": {"sha": head, "ref": PR_BRANCH}})
     result = AttemptResult(
         outcome="improved",
         baseline=14.0,
         candidate=candidate,
         submit_report=submit_report,
         panel_rounds=1,
+        panel_blocking_open=blocking,
+        panel_degraded=degraded,
+        panel_transcript="Latest panel verdict",
         candidate_sha=snap.commit,
         measured_paths=("src/pilot/solvers/tsp.py",),
     )
@@ -681,29 +699,33 @@ def test_publish_review_fast_forwards_and_applies_floor(
         date="2026-09-12",
     )
     github.ledger_files["results/leader.json"] = (ws / "results/leader.json").read_text()
-    if not unchanged and not submit_report:
-        update_row = github.update_candidate_row
+    if unchanged:
+        monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("report-only pushed"))
+        real_git = Workspace.git
+
+        def no_commit(self, *args, **kwargs):
+            assert "commit-tree" not in args
+            return real_git(self, *args, **kwargs)
+
+        monkeypatch.setattr(Workspace, "git", no_commit)
+    if not submit_report:
+        from outerloop import attempt as attempt_mod
+
+        bless = attempt_mod._bless_decision
         with monkeypatch.context() as patch:
 
             def crash_after_push(*args, **kwargs):
                 raise RuntimeError("crash after push")
 
-            patch.setattr(github, "update_candidate_row", crash_after_push)
+            # both the code and the report-only path reach the blessing
+            patch.setattr(attempt_mod, "_bless_decision", crash_after_push)
             with pytest.raises(RuntimeError, match="crash after push"):
                 publish(**publish_args)
         github.pr["head"]["sha"] = _git(bare, "rev-parse", PR_BRANCH).strip()
         publish_args["record"] = load_record(root, record.run_id)
         monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
-        assert github.update_candidate_row == update_row
+        assert attempt_mod._bless_decision is bless
     outcome = publish(**publish_args)
-    if unchanged:
-        from outerloop.inbox import pending
-
-        assert outcome.outcome == "publish-refused"
-        assert "no code change; metric noise" in pending(ws.parent, 0)[-1].payload["text"]
-        assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
-        assert not github.row_updates and not github.body_addenda
-        return
     assert outcome.outcome == "improved"
     pushed = _git(bare, "rev-parse", PR_BRANCH).strip()
     _git(ws, "merge-base", "--is-ancestor", head, pushed)
@@ -723,50 +745,83 @@ def test_publish_review_fast_forwards_and_applies_floor(
     assert _git(bare, "rev-parse", f"{submitted}^{{tree}}") == _git(
         ws, "rev-parse", f"{snap.commit}^{{tree}}"
     )
-    assert _git(bare, "rev-parse", f"{submitted}^").strip() == head
-    summary = submit_report.splitlines()[0] if submit_report else "submitted change"
-    assert (
-        _git(bare, "show", "-s", "--format=%s", submitted).strip()
-        == f"agent: {summary} (mean_tour_length={candidate})"
-    )
-    assert (
-        _git(bare, "show", "-s", "--format=%an|%ae|%cn|%ce", submitted).strip()
-        == f"{BOT}|{BOT}@users.noreply.github.com|{BOT}|{BOT}@users.noreply.github.com"
-    )
+    if not unchanged:
+        assert _git(bare, "rev-parse", f"{submitted}^").strip() == head
+        summary = submit_report.splitlines()[0] if submit_report else "submitted change"
+        assert (
+            _git(bare, "show", "-s", "--format=%s", submitted).strip()
+            == f"agent: {summary} (mean_tour_length={candidate})"
+        )
+        assert (
+            _git(bare, "show", "-s", "--format=%an|%ae|%cn|%ce", submitted).strip()
+            == f"{BOT}|{BOT}@users.noreply.github.com|{BOT}|{BOT}@users.noreply.github.com"
+        )
+    else:
+        assert submitted == head
     assert submitted == pushed
-    submission = next(
+    submissions = [
         json.loads(v)
         for k, v in github.ledger_files.items()
         if k.startswith("results/submissions/")
-    )
+    ]
+    # the fixture record predates the ledger, so even a report-only answer
+    # records the head's one measurement
+    (submission,) = submissions
     assert submission["measured_sha"] == snap.commit
     assert submission["published_head"] == pushed
     assert submission["candidate"] == candidate
     assert submission["kind"] == ("RESET" if agent_id.startswith("steward") else "SOLVER")
-    assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
     assert snap.commit[:12] in github.body_addenda[0]
     assert f"pushed as `{submitted}`" in github.body_addenda[0]
-    assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == "submitted\n"
+    assert "blob/research-log/BENCHMARKS.md" in github.body_addenda[0]
+    assert _git(bare, "show", f"{PR_BRANCH}:src/pilot/solvers/tsp.py") == (
+        "submitted\n" if unchanged else "updated\n"
+    )
     assert load_leader(ws)["tsp"].best == 12
     assert json.loads(_git(bare, "show", f"{PR_BRANCH}:results/leader.json"))["tsp"]["best"] == 12
     assert len(github.posted) == 1 and snap.commit[:12] in github.posted[0]
-    assert github.row_updates == [candidate]
+    # a retried publish rewrites the same number
+    assert github.row_updates and set(github.row_updates) == {candidate}
     if candidate > 12:
         assert "Worse" in github.posted[0]
+    assert "## Pre-PR verification\n\nLatest panel verdict" in github.body_addenda[0]
+    assert (submit_report or "no report was given") in github.body_addenda[0]
+    assert bool(ready_calls) == (draft and not (panel_skip or blocking or degraded))
+    assert github.pr["draft"] == (
+        draft and (ready_fails or bool(panel_skip) or blocking or degraded)
+    )
     latest = load_record(root, record.run_id)
     assert latest.stage["review_topup"] is True
     assert latest.state == PARKED
-    assert latest.auto_blessed_head == ("" if panel_skip else pushed)
+    assert latest.auto_blessed_head == ("" if panel_skip or blocking or degraded else pushed)
     if panel_skip:
         assert f"panel read skipped: {panel_skip}" in github.body_addenda[0]
     github.pr["head"]["sha"] = pushed
     publish_args["record"] = load_record(root, record.run_id)
     monkeypatch.setattr(Workspace, "push", lambda *args: pytest.fail("retry pushed again"))
+    _git(ws, "checkout", "--detach", snap.commit)
     assert publish(**publish_args).outcome == "improved"
     assert len(github.posted) == 1
     assert load_record(root, record.run_id).stage["review_topup"] is True
-    assert load_record(root, record.run_id).auto_blessed_head == ("" if panel_skip else pushed)
+    assert load_record(root, record.run_id).auto_blessed_head == (
+        "" if panel_skip or blocking or degraded else pushed
+    )
     assert _git(bare, "rev-parse", PR_BRANCH).strip() == pushed
+    if unchanged:
+        # once recorded, a later report-only answer with a different number
+        # keeps the recorded measurement and row
+        rows = list(github.row_updates)
+        publish_args["record"] = load_record(root, record.run_id)
+        publish_args["result"] = replace(result, candidate=candidate - 1.0)
+        publish(**publish_args)
+        again = [
+            json.loads(v)
+            for k, v in github.ledger_files.items()
+            if k.startswith("results/submissions/")
+        ]
+        assert [s["candidate"] for s in again] == [candidate]
+        assert github.row_updates == rows
+        assert "the recorded measurement stands" in github.body_addenda[-1]
 
 
 @pytest.mark.parametrize("reason", ["human", "disarm", "contract", "push", "closed", "no-code"])
@@ -1292,10 +1347,9 @@ def test_review_submit_scope_includes_existing_pr_changes(
     messages = pending(ws.parent, 0)
     if edit == "none":
         # Existing PR code still differs from main and must pass scope/the gate;
-        # the publish guard independently refuses an unchanged PR head.
+        # report-only publish preserves the current PR head.
         assert measured and published[0].measured_paths == ("src/pilot/solvers/tsp.py",)
-        assert outcome.note == "publish-refused"
-        assert any("no code change; metric noise" in m.payload.get("text", "") for m in messages)
+        assert outcome.note == "improved"
         assert _git(bare, "rev-parse", PR_BRANCH).strip() == head
     else:
         assert published[0].measured_paths == (path, "src/pilot/solvers/tsp.py")
@@ -1929,3 +1983,34 @@ def test_review_withdraw_parks_then_sweep_closes_with_one_redacted_comment(
     assert github.posted[-1] == f"{marker('withdraw')}\n{final.ending_note}"
     assert meters == {key: final.stage.get(key) for key in meters}
     assert report_path.read_text() == report
+
+
+@pytest.mark.parametrize(
+    "draft,blocking,degraded,ready_fails",
+    [
+        (True, False, False, False),
+        (True, False, False, True),
+        (True, True, False, False),
+        (True, False, True, False),
+        (False, True, False, False),
+        (False, False, True, False),
+    ],
+)
+def test_report_only_panel_updates_draft(
+    review_run, monkeypatch, caplog, draft, blocking, degraded, ready_fails
+):
+    test_publish_review_fast_forwards_and_applies_floor(
+        review_run,
+        monkeypatch,
+        11.4,
+        11.4,
+        True,
+        "Revised report",
+        "",
+        draft=draft,
+        blocking=blocking,
+        degraded=degraded,
+        ready_fails=ready_fails,
+    )
+    if ready_fails:
+        assert "mark PR ready for review failed" in caplog.text
