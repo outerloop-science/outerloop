@@ -4620,13 +4620,13 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
     assert "A session ends whenever" in brief
 
 
-def test_panel_claim_carries_the_one_contribution_mandate() -> None:
+def test_panel_claim_carries_the_one_idea_mandate() -> None:
     from outerloop.attempt import _panel_claim_body
 
     lines = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=True)
-    assert "ONE clean contribution" in lines and "BLOCKING finding" in lines
+    assert "ONE idea" in lines and "BLOCKING" in lines
     plain = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=False)
-    assert "ONE clean contribution" not in plain
+    assert "ONE idea" not in plain
     assert "measured by the orchestrator" in plain
 
 

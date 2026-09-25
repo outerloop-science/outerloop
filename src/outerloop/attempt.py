@@ -3215,14 +3215,16 @@ def _panel_claim_body(
     benchmark: str, baseline: float, candidate: float, report: str, *, lines: bool
 ) -> str:
     """The synthetic claim the panel judges. On a research-lines target the
-    one-contribution mandate is part of the claim itself: the panel is the
+    one-idea mandate is part of the claim itself: the panel is the
     backstop against a line's accumulated tweaks reaching main as one PR
     (docs/design/research-lines.md)."""
     mandate = (
-        "\n\nThis target runs research lines: a PR to main must be ONE "
-        "clean contribution, extracted onto the base branch. A diff that "
-        "bundles unrelated or unablated changes is a BLOCKING finding — "
-        "name the pieces that should be separated."
+        "\n\nThis target runs research lines: a PR to main is ONE idea, "
+        "extracted onto the base branch. An idea may bring the few changes "
+        "it needs, such as the hyperparameters it shifts, when the report "
+        "documents each change's own effect. Independent ideas bundled "
+        "together, or a win the report does not attribute, is a BLOCKING "
+        "finding: name the pieces that should be separated."
         if lines
         else ""
     )

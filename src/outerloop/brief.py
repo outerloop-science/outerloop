@@ -459,8 +459,13 @@ def render(brief: SessionBrief) -> str:
     parts += [
         "",
         "# Ground rules",
-        "Work only within the contract's allowed paths. One hypothesis, one "
-        "change-set. Do not push or open PRs, and do not commit, with one "
+        "Work only within the contract's allowed paths. One idea per PR: an "
+        "idea may bring the few changes it needs, such as the hyperparameters "
+        "it shifts, and the report gives each change's own effect. A larger "
+        "idea that touches several places is welcome; state its mechanism and "
+        "what it replaces. Sweep a hyperparameter or size in one array launch "
+        "rather than one value per attempt, and show the landscape around the "
+        "value you pick. Do not push or open PRs, and do not commit, with one "
         "exception: when the kernel tells you the base moved, fold it with "
         "`git merge --no-edit origin/<base>` from a HEAD that contains your PR "
         "head; if it conflicts, resolve and stage the files, then finish that "
@@ -474,7 +479,10 @@ def render(brief: SessionBrief) -> str:
         "When done (or blocked), write a short research report: hypothesis, "
         "what you did, outcome with numbers, takeaways, and the most "
         "promising next step. A negative result reported clearly is a "
-        "success. The report is published in the PR (redacted and "
+        "success, and so is an idea with a clear mechanism that does not yet "
+        "beat the best or needs other hyperparameters to get there: report it, "
+        "and your research line keeps it for a later attempt to build on. "
+        "The report is published in the PR (redacted and "
         "length-capped); state budget and measurement facts only as the "
         "syscall CLI prints them, never from memory.",
         "",
