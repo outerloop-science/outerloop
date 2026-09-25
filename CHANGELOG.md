@@ -6,13 +6,12 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-25
+
 ### Upgrading
 
 - No action needed; an author's report-only answer to the panel now updates the PR, and a PR whose panel clears is marked ready for review.
-
 - No action needed; a PR held only by a base-moved blessing heals on the next tick.
-
-- No action is needed for confirmations to resume: pending records already carry the published head the observer now compares.
 - No contract change; existing contract files need no edits.
 - The `research-log` ledger branch is created from the default branch on first publish if it is missing.
 - An existing `research-log` branch may carry a stale copy of main's ledger, so check `BENCHMARKS.md` there. If it is missing, run `outerloop migrate-ledger --target OWNER/REPO --main-sha <current main sha> --dry-run`, then repeat without `--dry-run`. If it is stale, add `--force` to both runs; it replaces the whole table and erases confirmed rows, so look at the existing table first.
@@ -29,12 +28,8 @@ Versions follow [SemVer](https://semver.org).
 
 - Report-only submissions update the PR report and panel verdict without pushing a commit.
 - Draft PRs are marked ready for review when the latest panel read clears. Blocking draft banners tell the author to address the findings.
-
 - Research line improvements can be blessed when their measured base contains the current base tip.
-
 - Messages the kernel writes itself now render as its instructions; output the kernel quotes from elsewhere stays fenced as data.
-- Merged results are confirmed again: the observer compares the merge commit's tree with the published head's tree instead of fetching the never-pushed measured commit.
-
 - Authors are now told they may fold a moved base with one merge commit, including resolving conflicts within that merge.
 - A submit made after the base moves is saved before any gate measurement or staged experiments run. The author is told to fold the base and submit again, or to submit again after the measurement base is refreshed.
 - After folding the base, an author is told to submit directly and repeat its experiment only if the new base changes its hypothesis. PR updates and saved snapshots retain the measured base in their history, and a saved gate result is reused only for the same base and code.
@@ -52,7 +47,6 @@ Versions follow [SemVer](https://semver.org).
 
 - The sweep rechecks ancestry for PRs held only by a base-moved blessing.
 - Merges performed by the sweep are observed and confirmed in the same tick.
-
 - Scope checks compare the full candidate tree with its merge-base against the fetched base tip; changes that landed on the base branch never count as the author's, and author edits to the ledger files are refused like any other out-of-scope path.
 - Publish is refused when the candidate shares no history with the base; fetch the base and fold it before submitting again.
 - The leaderboard moves from PR branches and main to the `research-log` branch.
