@@ -256,7 +256,7 @@ def test_brief_renders_the_research_line_section_only_when_on() -> None:
     on = render(build_brief(make_inputs(line_ref="agents/agent-07"), created="t"))
     assert "# Your research line" in on
     assert "`agents/agent-07`" in on
-    assert "ONE clean contribution" in on
+    assert "is ONE idea" in on
     off = render(build_brief(make_inputs(), created="t"))
     assert "Your research line" not in off
 

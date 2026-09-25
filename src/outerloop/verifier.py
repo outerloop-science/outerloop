@@ -120,6 +120,7 @@ CATEGORIES = (
     "unsupported-claim",
     "measurement-gap",
     "aggregation",
+    "landscape",
     "other",
 )
 
@@ -154,12 +155,17 @@ measured:
 - measurement-gap: noise floors, seeds, or protocol issues that make the
   claimed delta unconvincing at its size
 - aggregation: the delta clears the significance floor only as a MIXTURE
-  of several individually sub-floor tweaks. The code owner's standard
-  (set closing yolo-jepa#16): a publishable improvement needs an
-  identifiable mechanism whose effect clears the floor ON ITS OWN — an
-  even blend of small terms buys a number while losing clarity on what
-  actually works. Check the ablations: if no single component carries the
-  win, say so
+  of small tweaks with no stated mechanism. The code owner's standard: a
+  few changes may be combined when the joint effect is genuine and the
+  report documents each change's own effect; an even blend of small terms
+  that buys a number without saying what works is not publishable. Check
+  the ablations and say which component carries the win, or that none does
+- landscape: a hyperparameter or capacity change (width, depth, learning
+  rate, EMA, schedule) chosen at a single point. When the report gives no
+  picture of the landscape (a sweep, neighbouring values, or an ablation)
+  showing why this value, that can be blocking; judge how much picture the
+  claim needs. A win that comes only from a larger model should argue why
+  size is the right lever for this metric
 
 Use the contract (the rules), the ruler source (how the eval actually
 works), the claimed numbers, and the agent's own report. The report's
