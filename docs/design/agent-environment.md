@@ -34,12 +34,14 @@ Pushing stays with the kernel.
 
 **2. Authors may publish branches under their own namespace.** One generic
 capability: stage a push of a named branch under `ideas/<agent-id>/`. The
-kernel checks three things and nothing else:
+kernel checks two things and nothing else:
 
 - the name stays inside the author's namespace and is a valid ref name;
 - the author's private memory (`AGENT_MEMORY.md`, `agent_memory/`) is left
-  out of the published tree;
-- an update fast-forwards from the branch's previous head.
+  out of the published tree.
+
+The author may also reset or delete its own branches. Work another author
+already merged survives in that author's line; only the shared name goes.
 
 Publishing costs no budget and earns no credit. A failed publish comes back
 to the author as a message.
@@ -71,10 +73,10 @@ Idea status fields, automatic parking, per-author caps, "best number"
 tracking, a separate discovery command, and an operator command for humans.
 Each can be added if the plain version shows a need.
 
-## Open questions
+## Decided
 
-- Should an author be able to delete or reset its own published branch?
-  Deletion is irreversible for anyone building on it; the plain version
-  allows fast-forward updates only.
-- Is `ideas/` the right namespace, or should it be neutral (for example
-  `lines/<agent-id>/`) so adopters can use it for things other than ideas?
+- Authors may reset or delete their own published branches (owner,
+  2026-09-25).
+- The namespace is `ideas/<agent-id>/`: it names the purpose and matches
+  the "one idea per PR" language of the brief and panel. Adopters may use
+  it for other purposes; the kernel only enforces ownership.
