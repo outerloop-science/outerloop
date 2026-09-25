@@ -277,9 +277,10 @@ def render(brief: SessionBrief) -> str:
             "lab notebook, not the main ledger. The base branch is already "
             "merged in; if that merge conflicted, resolving it is your first "
             "task (your divergence debt coming due). A PR to main is cut only "
-            "from a credited win and must be ONE clean contribution: check "
-            "out the base branch, re-apply the minimal winning change onto "
-            "it, and finish on that tree — never the whole line. Your memory "
+            "from a credited win and is ONE idea, with the few changes it needs "
+            "and each change's own effect in the report: check out the base "
+            "branch, re-apply the idea onto it, and finish on that tree — never "
+            "the whole line. Your memory "
             "(AGENT_MEMORY.md and agent_memory/) lives on this branch alone: "
             "it is excluded from measured trees and can never carry "
             "anything a run depends on.",

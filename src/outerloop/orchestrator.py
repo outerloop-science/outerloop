@@ -2265,7 +2265,7 @@ def pr_body(
         [
             *banner,
             f"Automated improvement attempt on `{config.benchmark}` "
-            f"(agent `{config.agent_id}`, one hypothesis per PR).",
+            f"(agent `{config.agent_id}`, one idea per PR).",
             "",
             "## Research report",
             "",
