@@ -41,8 +41,11 @@ kernel checks these things and nothing else:
   the published tree, and instruction-bearing files carry the base
   branch's reviewed versions, the same cleanup the kernel applies when it
   checks out a line;
-- the author stays within a bound: at most 20 published branches, and no
-  single file over 10 MB. These are defaults the contract can change.
+- the author stays within a bound: at most 20 published branches, and a
+  push that adds more than 50 MB of new objects is refused. The byte
+  bound applies to every push the kernel makes for an author, line
+  snapshots included, which today are unbounded. Both numbers are
+  defaults the contract can change.
 
 Memory is owned, not secret. Every session already fetches every agent
 line, so an author's memory is readable by its siblings today. Leaving it
