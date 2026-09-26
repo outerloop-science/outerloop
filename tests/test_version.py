@@ -9,4 +9,4 @@ def test_installed_metadata_matches_package_version() -> None:
 
 def test_release_version_is_pinned() -> None:
     # the release PR bumps this literal; a forgotten bump fails here
-    assert outerloop.__version__ == "0.2.0"
+    assert outerloop.__version__ == "0.2.1"
