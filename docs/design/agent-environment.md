@@ -27,18 +27,28 @@ mechanism then, not before.
 **1. Sessions may commit on their own line.** The rule "do not commit" guards
 no boundary. The sealed tree is what gets measured, the scope check guards
 what reaches the base branch, and the `.git` tamper guard protects the
-repository. The rule did cause harm: authors could not fold a moved base
-until a special permission was added, and merging another author's work
-would have needed another. Lifting it removes that class of exception.
+repository. The rule did cause harm: an author could not merge the updated
+base branch into its own work until a special permission was added, and
+merging another author's work would have needed another. Lifting it removes that class of exception.
 Pushing stays with the kernel.
 
 **2. Authors may publish branches under their own namespace.** One generic
 capability: stage a push of a named branch under `ideas/<agent-id>/`. The
-kernel checks two things and nothing else:
+kernel checks these things and nothing else:
 
 - the name stays inside the author's namespace and is a valid ref name;
-- the author's private memory (`AGENT_MEMORY.md`, `agent_memory/`) is left
-  out of the published tree.
+- the author's memory (`AGENT_MEMORY.md`, `agent_memory/`) is left out of
+  the published tree, and instruction-bearing files carry the base
+  branch's reviewed versions, the same cleanup the kernel applies when it
+  checks out a line;
+- the author stays within a bound: at most 20 published branches, and no
+  single file over 10 MB. These are defaults the contract can change.
+
+Memory is owned, not secret. Every session already fetches every agent
+line, so an author's memory is readable by its siblings today. Leaving it
+out of the published tree keeps it out of merges and measured trees; it
+does not remove it from history. If memory ever needs to be confidential,
+it has to leave the shared repository, which is a separate design.
 
 The author may also reset or delete its own branches. Work another author
 already merged survives in that author's line; only the shared name goes.
