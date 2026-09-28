@@ -393,6 +393,7 @@ def test_resume_cli_uses_pinned_model_without_deployment_model(
 
     monkeypatch.setattr(attempt, "codex_author_config_error", capture_author)
     monkeypatch.setattr(attempt, "role_key", lambda *a: "panel-key")
+    monkeypatch.setattr("outerloop.role_runner.role_key", lambda *a: "panel-key")
     real_panel = attempt._panel_lenses_from_args
 
     def capture_panel(args, **kwargs):

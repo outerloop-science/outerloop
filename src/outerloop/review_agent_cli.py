@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from outerloop.endpoints import resolve_endpoint
 from outerloop.github import EnvTokenProvider, GitHubClient
 from outerloop.harness import ClaudeModelUnset, Harness
 from outerloop.review_agent import (
@@ -53,6 +54,24 @@ def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
     never disagree about a value."""
     backend = os.environ.get("REVIEW_BACKEND", "claude").lower()
     review_model = os.environ.get("REVIEW_MODEL", "").strip()
+    try:
+        _, endpoint = resolve_endpoint(
+            review_model, backend, os.environ.get("REVIEW_ENDPOINT", "").strip()
+        )
+        if endpoint:
+            repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
+            harness = build_harness(
+                "",
+                spec,
+                backend=backend,
+                model=review_model or None,
+                endpoint=endpoint.name,
+                binary=os.environ.get("REVIEW_BINARY") or None,
+                hermes_repo=Path(repo).expanduser() if repo else None,
+            )
+            return harness, "", backend
+    except ValueError as exc:
+        return None, str(exc), backend
     hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",

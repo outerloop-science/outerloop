@@ -988,7 +988,7 @@ def test_codex_author_config_error() -> None:
     assert "codex/openai model" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
     assert "codex/openai model" in codex_author_config_error("codex", "", "img.sif")
     # an unknown backend (typo'd env default) is rejected, not silently accepted
-    assert "unknown author backend" in codex_author_config_error("hermes", "m", "img.sif")
+    assert "unknown author backend" in codex_author_config_error("typo", "m", "img.sif")
 
 
 def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:

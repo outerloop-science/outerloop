@@ -45,6 +45,7 @@ from outerloop.dispatch import (
     should_dispatch,
     snapshot_tree,
 )
+from outerloop.endpoints import author_model_setting, model_key, resolve_endpoint, split_endpoint
 from outerloop.evalcache import seed_dir
 from outerloop.github import (
     GitError,
@@ -175,6 +176,22 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     passes the PARKED RUN's persisted pair — so backend and model are checked as
     a unit and never a fleet backend against a run's model. codex writes+executes,
     so it must be contained (--image) and needs a non-claude model."""
+    try:
+        _, profile = resolve_endpoint(model, backend)
+    except ValueError as exc:
+        return str(exc)
+    if profile:
+        if backend != "claude" and not image:
+            return f"author-backend {backend} requires --image (it runs contained)"
+        if backend == "hermes":
+            from outerloop.hermes_install import hermes_ready
+
+            repo = os.environ.get("REVIEW_HERMES_REPO", "")
+            if not repo or not hermes_ready(Path(repo).expanduser()):
+                return "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
+        return ""
+    if backend == "hermes":
+        return "hermes author requires OUTERLOOP_AUTHOR_ENDPOINT"
     if backend not in ("claude", "codex"):
         # a typo'd OUTERLOOP_AUTHOR_BACKEND passes the env DEFAULT silently
         # (argparse validates the flag, not its default) and the climb rejects it
@@ -203,7 +220,7 @@ def fleet_author_model(backend: str) -> str:
     the deployment's Claude model for a claude author (ClaudeModelUnset when that
     is missing too). Another backend without OUTERLOOP_AUTHOR_MODEL gets "", and
     codex_author_config_error names the fix."""
-    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")
+    model = author_model_setting(backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", ""))
     if not model and backend == "claude":
         return default_claude_model()
     return model
@@ -224,14 +241,18 @@ def resume_author(
     else the fleet model when the fleet runs the same backend (so the
     configured author model applies to legacy claude records too); a claude
     record under a codex fleet falls back to the claude default, and a codex
-    record to the fleet model only as a last resort (codex records always
-    carry their model).
+    record to the native fleet model only as a last resort. Endpoint fleet
+    selectors are never inherited by a record missing its route; a missing
+    native Codex model fails preflight rather than changing providers.
     The key file is the exact resolved path the run used (so an explicit
     --key-file survives), falling back to the per-backend resolution for legacy
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     model = getattr(record, "author_model", "")
     if not model:
+        # A missing route cannot opt into an endpoint via fleet defaults.
+        if fleet_model and split_endpoint(fleet_model)[1]:
+            fleet_model = ""
         if explicit_model:
             model = explicit_model
         elif backend == "claude":
@@ -3151,7 +3172,11 @@ def _panel_lenses_from_args(
     parsed = resolve_lenses(args.panel, author_backend, author_model)
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
-    panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
+    panel_key = (
+        role_key(args.panel_key_file)
+        if any(b == "claude" and not split_endpoint(m)[1] for _, b, m in parsed)
+        else ""
+    )
     lenses = []
     secrets: list[str] = [panel_key] if panel_key else []
     for kind, backend, model in parsed:
@@ -3160,7 +3185,28 @@ def _panel_lenses_from_args(
         # anthropic panel key, and role separation forbids defaulting to the
         # AUTHOR's codex key: the judge key is its own, named explicitly
         claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
-        if backend == "codex":
+        _, endpoint = resolve_endpoint(model, backend)
+        if endpoint:
+            if not args.image:
+                raise ValueError(f"a {backend} endpoint panel lens requires --image")
+            from outerloop.endpoints import validate_judge_key_file
+
+            _, author_profile = resolve_endpoint(author_model, author_backend)
+            validate_judge_key_file(
+                endpoint,
+                author_profile.key_file
+                if author_profile
+                else (getattr(args, "key_file", "") or resolve_author_key_file(author_backend)),
+                claude_panel_path,
+            )
+            lens_key = endpoint.key()
+            author_key_file = getattr(args, "key_file", "") or resolve_author_key_file(
+                author_backend
+            )
+            if lens_key == model_key(author_key_file, author_backend, author_model):
+                raise ValueError("a panel judge key is the author key (role separation)")
+            secrets.append(lens_key)
+        elif backend == "codex":
             lens_key = _judge_lens_key(
                 backend="codex",
                 key_file_env="OUTERLOOP_PANEL_CODEX_KEY_FILE",
@@ -3210,6 +3256,9 @@ def _panel_lenses_from_args(
         except (ValueError, ClaudeModelUnset) as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
+    _, author_endpoint = resolve_endpoint(author_model, author_backend)
+    if author_endpoint and author_endpoint.key() in secrets:
+        raise ValueError("a panel judge key is the author key (role separation)")
     return tuple(lenses), tuple(dict.fromkeys(secrets))
 
 
@@ -4816,7 +4865,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--author-backend",
-        choices=("claude", "codex"),
+        choices=("claude", "codex", "hermes"),
         default=os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
         help="agent backend for the author/editor role (config-driven: default "
         "from OUTERLOOP_AUTHOR_BACKEND). codex runs contained (apptainer + "
@@ -4884,7 +4933,7 @@ def main() -> int:
         # OUTERLOOP_CLAUDE_MODEL fails here with the fix named, not with a traceback
         try:
             args.model = fleet_author_model(args.author_backend)
-        except ClaudeModelUnset as exc:
+        except (ClaudeModelUnset, ValueError) as exc:
             parser.error(str(exc))
     if args.resume:
         _attach_run_log(run_dir_of(args.run_root, args.resume))
@@ -4935,7 +4984,8 @@ def main() -> int:
         try:
             explicit_model = args.model  # what the operator typed, before any env fill-in
             if not getattr(_wake_record, "author_model", "") and not args.model:
-                args.model = fleet_author_model(args.author_backend)
+                native_model = os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")
+                args.model = "" if split_endpoint(native_model)[1] else native_model
             wake_backend, wake_model, wake_key_file = resume_author(
                 _wake_record, args.model, args.author_backend, explicit_model
             )
@@ -4984,7 +5034,7 @@ def main() -> int:
             or _wake_stage.get("submitted")
             or getattr(_wake_record, "pr_url", "")
         ):
-            wake_api_key = role_key(wake_key_file, wake_backend)
+            wake_api_key = model_key(wake_key_file, wake_backend, wake_model)
             if wake_api_key and wake_api_key in wake_panel_secrets:
                 args.panel_skip = "a panel judge key is this run's author key (role separation)"
                 wake_lenses = ()
@@ -5004,6 +5054,9 @@ def main() -> int:
                 model=wake_model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
+                hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
+                if wake_backend == "hermes"
+                else None,
             )
         wake_secrets = tuple(k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k)
         try:
@@ -5052,15 +5105,24 @@ def main() -> int:
 
     # a fresh climb authors on the FLEET's configured backend; validate it (codex
     # writes+executes, so --image + a non-claude model) before any spend.
+    try:
+        args.model = author_model_setting(args.author_backend, args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
     _err = codex_author_config_error(args.author_backend, args.model, args.image)
     if _err:
         parser.error(_err)
     # config-driven: the author key defaults per backend (claude vs codex) so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
-    args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
+    _, author_endpoint = resolve_endpoint(args.model, args.author_backend)
+    args.key_file = (
+        str(author_endpoint.key_file)
+        if author_endpoint
+        else resolve_author_key_file(args.author_backend, args.key_file)
+    )
     # same 0600 discipline as the PAT: this key spends real money. A missing
     # file is tolerated only when Vertex (ADC) covers the claude backend.
-    api_key = role_key(args.key_file, args.author_backend)
+    api_key = model_key(args.key_file, args.author_backend, args.model)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     # the agent id keeps concurrent same-benchmark slots (the width dial's
     # portfolio case) from minting one run directory in the same second
@@ -5130,6 +5192,9 @@ def main() -> int:
                     model=args.model,
                     container_image=args.image,
                     codex_extra_args=codex_extra,
+                    hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
+                    if args.author_backend == "hermes"
+                    else None,
                 ),
                 spec=spec,
                 panel_lenses=panel_lenses,

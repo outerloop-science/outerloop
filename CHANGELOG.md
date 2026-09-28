@@ -6,6 +6,27 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Endpoint profiles declare compatible APIs and use `model[endpoint=profile]`
+  selectors, preserving native vendor model IDs. Judge credentials enforce file
+  separation; verdicts redact the session key before posting or aggregation.
+- Upgrading: legacy records missing model/route fields retain native routing;
+  missing native model configuration fails closed instead of adopting fleet endpoints.
+
+
+- Named, file-authenticated endpoint profiles work for authors, panel lenses,
+  and standalone reviewers on Claude Code, Codex, and Hermes. Sessions use each
+  backend's native API configuration; keys reach contained sessions through env,
+  never argv. See [endpoint settings and validation](docs/endpoints.md).
+- Hermes is pinned to v2026.9.24 (`f97608f178d1ffeca59860195ab7da295f7c8e5f`).
+  Remove Fire quoting for its new argparse entrypoint, enable
+  `model.reasoning_echo` for endpoint profiles, and sanitize its instruction-file
+  aliases in judge checkouts.
+- Upgrading: existing runs need no backfill; the first tick validates endpoint
+  selections without changing legacy routes. New endpoint authors save
+  `model[endpoint=profile]` selectors; keep those profiles until runs finish, and finish
+  endpoint runs before rolling back. Hermes source/runtime must be upgraded
+  with the harness. See [compatibility and rollback](docs/endpoints.md#upgrade-and-rollback).
+
 ### Fixed
 
 - Manual harness upgrades honor `--root`, environment, and `.env` state roots. Retry records are replaced atomically; unreadable or invalid records are logged and ignored. Deploy loads the configured cache root before selecting the uv cache.

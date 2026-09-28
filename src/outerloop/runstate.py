@@ -133,8 +133,8 @@ class RunRecord:
     # The author this run was STARTED with ("" backend = legacy/claude). A wake or
     # follow-up reproduces the run's OWN author from these, not the current fleet
     # default, so a fleet backend flip never resumes a run on the wrong backend,
-    # model, or key. backend and model are a PAIR — a claude backend needs a
-    # claude model and vice versa — so both are persisted together.
+    # model, or key. Endpoint-backed models retain their [endpoint=profile] selector;
+    # the harness strips it only when constructing the backend session.
     author_backend: str = ""
     author_model: str = ""
     # The resolved author key FILE PATH (not the key) this run used, so a wake or

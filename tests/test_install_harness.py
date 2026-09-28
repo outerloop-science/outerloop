@@ -379,7 +379,7 @@ if [ "$1" = clone ]; then
         exit 1
     fi
     [ ! -e "$REPO/partial" ]
-    expected="clone --depth 1 --branch v2026.8.13"
+    expected="clone --depth 1 --branch v2026.9.24"
     [ "$*" = "$expected https://github.com/NousResearch/hermes-agent $REPO" ]
     mkdir -p "$REPO/.git"
 elif [ "$3" = rev-parse ]; then

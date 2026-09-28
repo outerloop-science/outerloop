@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from outerloop.endpoints import EndpointProfile
 from outerloop.hermes_install import hermes_ready, hermes_runtime
 from outerloop.image import apptainer_from_env
 
@@ -573,6 +574,7 @@ class ClaudeCodeHarness:
     # Claude-on-Vertex (ADC) instead of the Anthropic API key; the api_key is
     # ignored when set. Contained sessions get the ADC file bind-mounted.
     vertex: VertexConfig | None = None
+    endpoint: EndpointProfile | None = None
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
     CONTAINER_ADC = "/opt/agent/adc.json"
@@ -664,7 +666,33 @@ class ClaudeCodeHarness:
             # children included) in one process group we can kill as a unit —
             # a timed-out session must not leave orphans holding the API key
             # and writing into the clone.
-            if self.vertex is not None:
+            if self.endpoint:
+                env = session_env(self.api_key, "ANTHROPIC_AUTH_TOKEN", session_home)
+                env.update(
+                    {
+                        # Claude Code appends /v1/messages itself; profiles use the
+                        # OpenAI-style base, so drop a trailing /v1
+                        "ANTHROPIC_BASE_URL": self.endpoint.url.rstrip("/").removesuffix("/v1"),
+                        "CLAUDE_CODE_USE_VERTEX": "0",
+                        "CLAUDE_CODE_USE_BEDROCK": "0",
+                        "CLAUDE_CODE_USE_FOUNDRY": "0",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                        "ANTHROPIC_SMALL_FAST_MODEL": self.model,
+                        **{
+                            f"ANTHROPIC_DEFAULT_{size}_MODEL": self.model
+                            for size in ("OPUS", "SONNET", "HAIKU")
+                        },
+                    }
+                )
+                if self.container_image:
+                    env.update(
+                        {
+                            f"APPTAINERENV_{k}": v
+                            for k, v in list(env.items())
+                            if k not in SESSION_ENV_ALLOWLIST and k != "HOME"
+                        }
+                    )
+            elif self.vertex is not None:
                 # vertex auth: ADC only — ANTHROPIC_API_KEY is deliberately
                 # absent so the CLI cannot fall back to direct billing
                 env = session_env("", "ANTHROPIC_API_KEY", session_home)
@@ -952,6 +980,7 @@ class CodexHarness:
 
     api_key: str
     binary: str = "codex"
+    endpoint: EndpointProfile | None = None
     # empty -> codex's configured default (a wrong id 404s); pin only a verified one
     model: str = ""
     # the deployment's container or ephemeral runner is the boundary; codex's own
@@ -1094,11 +1123,36 @@ class CodexHarness:
                     finally:
                         os.close(codex_fd)
                 os.close(home_fd)
-        # Codex authenticates from ~/.codex/auth.json, not OPENAI_API_KEY alone
-        # (the responses endpoint 401s on env-only). Write auth.json
-        # into the scrubbed per-run HOME with `codex login --with-api-key`
-        # (key on stdin, never argv) before exec.
-        login_error = self._login(session_home)
+        # Native OpenAI sessions log in via stdin; endpoint sessions use env_key.
+        if self.endpoint:
+            codex_dir = session_home / ".codex"
+            try:
+                codex_dir.mkdir(mode=0o700, exist_ok=True)
+            except OSError:
+                return _error_result("workspace-error", detail="could not create codex config dir")
+            config = (
+                'model_provider = "outerloop_endpoint"\n'
+                "[model_providers.outerloop_endpoint]\n"
+                'name = "Outerloop endpoint"\n'
+                f"base_url = {json.dumps(self.endpoint.url)}\n"
+                'env_key = "OUTERLOOP_SESSION_KEY"\n'
+                'wire_api = "responses"\n'
+                "requires_openai_auth = false\n"
+            )
+            if not _write_private_fixed(codex_dir / "config.toml", config):
+                return _error_result("workspace-error", detail="could not seed codex config")
+            self._purge_auth(session_home)
+        else:
+            config_path = session_home / ".codex/config.toml"
+            previous = _read_no_follow(config_path) or ""
+            if previous.startswith('model_provider = "outerloop_endpoint"\n'):
+                try:
+                    config_path.unlink()
+                except OSError:
+                    return _error_result(
+                        "workspace-error", detail="could not clear endpoint config"
+                    )
+        login_error = None if self.endpoint else self._login(session_home)
         if login_error is not None:
             return login_error
         # --output-last-message target lives inside the per-run home (0700),
@@ -1125,9 +1179,10 @@ class CodexHarness:
             else codex_argv
         )
         try:
-            env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+            key_env = "OUTERLOOP_SESSION_KEY" if self.endpoint else "OPENAI_API_KEY"
+            env = session_env(self.api_key, key_env, session_home)
             if self.container_image:
-                env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
+                env[f"APPTAINERENV_{key_env}"] = self.api_key
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -1189,8 +1244,8 @@ def _hermes_command(
     disabled_toolsets: tuple[str, ...],
     extra_args: tuple[str, ...],
 ) -> list[str]:
-    """Argv for one headless hermes run (`run_agent.py`, fire-style flags,
-    hermes-agent v0.20.1).
+    """Argv for one headless hermes run (`run_agent.py`, argparse flags,
+    hermes-agent v2026.9.24).
 
     The BRIEF is never in argv — it is written to a file and `query` is only a
     short pointer instruction. The API key is never in argv either: hermes
@@ -1210,13 +1265,11 @@ def _hermes_command(
         argv.append(f"--model={model}")
     if base_url:
         argv.append(f"--base_url={base_url}")
-    # Embedded quotes are load-bearing: fire literal-evals flag values, so a
-    # bare `a,b` becomes a Python TUPLE and hermes's .split(",") crashes.
-    # `"a,b"` evals to the string hermes expects.
+    # argparse receives these directly; shell/Fire quoting would become literal.
     if enabled_toolsets:
-        argv.append(f'--enabled_toolsets="{",".join(enabled_toolsets)}"')
+        argv.append(f"--enabled_toolsets={','.join(enabled_toolsets)}")
     if disabled_toolsets:
-        argv.append(f'--disabled_toolsets="{",".join(disabled_toolsets)}"')
+        argv.append(f"--disabled_toolsets={','.join(disabled_toolsets)}")
     return [*argv, *extra_args]
 
 
@@ -1237,7 +1290,7 @@ def _parse_hermes_result(
         messages = sample
     elif isinstance(sample, dict):
         # run_agent.py --save_sample wraps the ShareGPT turns under
-        # "conversations" (hermes v0.20.1); accept "messages"/"trajectory"
+        # "conversations" (hermes v2026.9.24); accept "messages"/"trajectory"
         # too for other paths. Missing this key makes num_turns==0 and
         # drops a real verdict as a bogus error.
         wrapped = (
@@ -1308,6 +1361,7 @@ class HermesHarness:
     # none, and it refuses to run "unconfigured"); when set, the harness
     # pre-seeds a minimal config in the per-run home
     provider: str = ""
+    endpoint: EndpointProfile | None = None
     # approvals.deny: fnmatch globs hermes refuses before any yolo/mode-off
     # bypass (headless: a clean deny, never a hang). NOTE it matches SHELL
     # COMMANDS (the terminal tool), NOT the write_file/patch tool calls.
@@ -1380,9 +1434,18 @@ class HermesHarness:
             hermes_dir = session_home / ".hermes"
             try:
                 hermes_dir.mkdir(mode=0o700, exist_ok=True)
-                config_lines = ["model:\n", f'  provider: "{self.provider}"\n']
+                config_lines = ["model:\n", f"  provider: {json.dumps(self.provider)}\n"]
                 if self.model:
-                    config_lines.insert(1, f'  default: "{self.model}"\n')
+                    config_lines.insert(1, f"  default: {json.dumps(self.model)}\n")
+                if self.endpoint:
+                    config_lines.append("  reasoning_echo: true\n")
+                    config_lines.append(
+                        "custom_providers:\n"
+                        f"  - name: {json.dumps(self.provider)}\n"
+                        f"    base_url: {json.dumps(self.endpoint.url)}\n"
+                        f"    key_env: {json.dumps(self.key_env)}\n"
+                        "    api_mode: chat_completions\n"
+                    )
                 if self.approvals_deny:
                     config_lines.append("approvals:\n  deny:\n")
                     config_lines += [f'    - "{glob}"\n' for glob in self.approvals_deny]
@@ -1405,7 +1468,7 @@ class HermesHarness:
             repo,
             query,
             self.model,
-            self.base_url,
+            "" if self.endpoint else self.base_url,
             self.max_turns,
             self.enabled_toolsets,
             self.disabled_toolsets,
@@ -1439,10 +1502,12 @@ class HermesHarness:
             ]
         try:
             env = session_env(self.api_key, self.key_env, session_home)
+            env["TERMINAL_CWD"] = str(workspace.resolve())
             if self.container_image:
                 # --cleanenv drops the host env except APPTAINERENV_*: the key
                 # travels via the environment, never argv
                 env[f"APPTAINERENV_{self.key_env}"] = env[self.key_env]
+                env["APPTAINERENV_TERMINAL_CWD"] = env["TERMINAL_CWD"]
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).
