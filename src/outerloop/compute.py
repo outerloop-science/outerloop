@@ -834,7 +834,19 @@ class LocalCompute:
         job_env = {
             k: v
             for k, v in os.environ.items()
-            if k in ("PATH", "HOME", "LANG", "TMPDIR", "SLURM_TMPDIR", "USER", "LOGNAME")
+            if k
+            in (
+                "PATH",
+                "HOME",
+                "LANG",
+                "TMPDIR",
+                "SLURM_TMPDIR",
+                "USER",
+                "LOGNAME",
+                "REVIEW_ENDPOINT",
+                "REVIEW_MODEL",
+                "REVIEW_BACKEND",
+            )
             or (k.startswith(("OUTERLOOP_", "REVIEW_HERMES_")) and not _secret_name(k))
         }
         job_env.update(cache_environment(os.environ))

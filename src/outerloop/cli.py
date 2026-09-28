@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outerloop import paths
+from outerloop.endpoints import author_model_setting, endpoint_config_key
 from outerloop.harness import HARNESS_INSTALL, default_binary
 
 if TYPE_CHECKING:
@@ -59,6 +60,9 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_HERMES_SHA",
     "OUTERLOOP_CACHE_ROOT",
     "REVIEW_BACKEND",
+    "OUTERLOOP_AUTHOR_ENDPOINT",
+    "REVIEW_ENDPOINT",
+    "REVIEW_MODEL",
     "OUTERLOOP_AUTHOR_BACKEND",
     "OUTERLOOP_AUTHOR_MODEL",
     "OUTERLOOP_CLAUDE_MODEL",
@@ -120,7 +124,11 @@ def env_file_values(
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if keys is not None and key not in keys:
+        if (
+            keys is not None
+            and key not in keys
+            and not ("OUTERLOOP_AUTHOR_ENDPOINT" in keys and endpoint_config_key(key))
+        ):
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
@@ -397,6 +405,15 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
     """Check only the configured author's host CLI, using the harness's lookup."""
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
     key = f"OUTERLOOP_{backend.upper()}_BIN"
+    if backend == "hermes":
+        from outerloop.hermes_install import hermes_ready
+
+        repo = _setting_of("REVIEW_HERMES_REPO", values, environ)
+        return (
+            ""
+            if repo and hermes_ready(Path(repo).expanduser())
+            else "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
+        )
     if key not in HARNESS_BIN_KEYS:
         hint = (
             f" Hermes is a review backend; install its source with `{HARNESS_INSTALL['hermes']}`."
@@ -444,7 +461,11 @@ def missing_panel_model(values: dict[str, str], environ: Mapping[str, str]) -> s
     from outerloop.panel import resolve_lenses
 
     try:
-        resolve_lenses(panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ))
+        env = {**values, **environ}
+        model = author_model_setting(
+            backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ), env
+        )
+        resolve_lenses(panel, backend, model, environ=env)
     except ValueError as exc:
         return str(exc)
     return ""
@@ -461,7 +482,11 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
         return ""
     roles: list[str] = []
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
-    if backend == "claude" and not _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ):
+    if (
+        backend == "claude"
+        and not _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+        and not _setting_of("OUTERLOOP_AUTHOR_ENDPOINT", values, environ)
+    ):
         roles.append("the claude author (no OUTERLOOP_AUTHOR_MODEL)")
     panel = _configured("OUTERLOOP_PANEL", values, environ)
     panel = DEFAULT_PANEL if panel is None else panel.strip()
@@ -470,7 +495,10 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
 
         try:
             lenses = resolve_lenses(
-                panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+                panel,
+                backend,
+                _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ),
+                environ={**values, **environ},
             )
         except ValueError:
             lenses = ()  # missing_panel_model reports invalid panel configuration
@@ -558,6 +586,14 @@ def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
+        try:
+            author_model_setting(
+                _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, os.environ) or "claude",
+                _setting_of("OUTERLOOP_AUTHOR_MODEL", values, os.environ),
+                {**values, **os.environ},
+            )
+        except ValueError as exc:
+            raise StartError(str(exc)) from exc
         # the model check holds for --dry-run too: it is configuration, not a host lookup
         problem = problem or missing_claude_model(values, os.environ)
         problem = problem or missing_panel_model(values, os.environ)
@@ -631,7 +667,7 @@ def start(args: argparse.Namespace) -> int:
         # export from .env each tick are exported here once; the shell wins
         env = {**os.environ, **path_env}
         for key, value in values.items():
-            if key in TICK_ENV_KEYS:
+            if key in TICK_ENV_KEYS or endpoint_config_key(key):
                 env.setdefault(key, value)
         env["OUTERLOOP_COMPUTE"] = "local" if plan.mode == "local" else "slurm"
         env.pop("OUTERLOOP_TICK_HOST", None)  # the plan decided; nothing inherited

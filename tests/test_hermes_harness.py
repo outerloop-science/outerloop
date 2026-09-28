@@ -1,7 +1,7 @@
 """HermesHarness command construction and output parsing.
 
 Hermes is not run here; these pin the argv shape (verified against
-hermes-agent v0.20.1 source) and the defensive trajectory parsing."""
+hermes-agent v2026.9.24 source) and the defensive trajectory parsing."""
 
 from __future__ import annotations
 
@@ -75,9 +75,9 @@ def test_command_shape_and_toolsets() -> None:
     ]
     assert "uv" not in cmd
     assert "--save_sample" in cmd
-    # embedded quotes so fire literal-evals a STRING, not a tuple
-    assert '--enabled_toolsets="file"' in cmd
-    assert '--disabled_toolsets="terminal,web"' in cmd
+    # argparse receives comma-separated strings without embedded quotes
+    assert "--enabled_toolsets=file" in cmd
+    assert "--disabled_toolsets=terminal,web" in cmd
     assert "--max_turns=40" in cmd
     assert not any("--base_url" in part for part in cmd)  # empty -> hermes default
 
@@ -298,8 +298,8 @@ def test_parse_sharegpt_trajectory() -> None:
 
 def test_parse_conversations_wrapper() -> None:
     # run_agent.py --save_sample wraps the turns under "conversations"
-    # (run_agent.py:8404, v0.20.1). Missing this key was read as zero turns and
-    # dropped a real verdict as a bogus error — the whole "produced no verdict" bug.
+    # (run_agent.py::_save_sample_trajectory, v2026.9.24). A missing wrapper
+    # used to discard a real verdict as a zero-turn error.
     sample = {
         "conversations": [
             {"from": "human", "value": "the brief"},

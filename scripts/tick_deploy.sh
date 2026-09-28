@@ -134,10 +134,17 @@ fi
 # Only this ALLOWLIST is read, so .env is structurally per-tick author config
 # and can never hijack the chain's identity or scheduling.
 if [ -n "$ENV_TRUSTED" ]; then
+    # Named profiles forward only coordinates and key-file paths, never keys.
+    while IFS= read -r _k; do
+        env_line
+        env_value
+        export "$_k=$_v"
+    done < <(sed -nE 's/^(OUTERLOOP_ENDPOINT_[A-Z][A-Z0-9_]*_(URL|KEY_FILE|MODEL|API))=.*/\1/p' "$ENV_FILE" | sort -u)
     for _k in OUTERLOOP_CLAUDE_VERSION OUTERLOOP_CODEX_VERSION \
                   OUTERLOOP_CLAUDE_SHA256 OUTERLOOP_CODEX_SHA256 \
                   OUTERLOOP_HERMES_REF OUTERLOOP_HERMES_SHA \
                   OUTERLOOP_CACHE_ROOT REVIEW_BACKEND \
+                  OUTERLOOP_AUTHOR_ENDPOINT REVIEW_ENDPOINT REVIEW_MODEL \
                   OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL OUTERLOOP_CLAUDE_MODEL \
                   OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN OUTERLOOP_CODEX_KEY_FILE \
                   OUTERLOOP_CLAUDE_KEY_FILE OUTERLOOP_STEWARD_KEY_FILE \

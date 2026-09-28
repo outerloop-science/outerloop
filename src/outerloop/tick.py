@@ -2412,7 +2412,7 @@ def _author_config_error(spec: ServiceSpec) -> str:
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
     try:
         model = fleet_author_model(backend)
-    except ClaudeModelUnset as exc:
+    except (ClaudeModelUnset, ValueError) as exc:
         return str(exc)
     return codex_author_config_error(backend, model, spec.image)
 
@@ -2432,6 +2432,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         return ""
     try:
         from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from outerloop.endpoints import author_model_setting
         from outerloop.github import FileTokenProvider
         from outerloop.panel import resolve_lenses
 
@@ -2439,10 +2440,53 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             lenses = resolve_lenses(
                 spec.panel,
                 os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude",
-                os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
+                author_model_setting(
+                    os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
+                    os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
+                ),
             )
         except ValueError as exc:
             return str(exc)
+        from outerloop.attempt import fleet_author_model
+        from outerloop.endpoints import resolve_endpoint
+
+        author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+        _, author_endpoint = resolve_endpoint(
+            author_model_setting(author_backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")),
+            author_backend,
+        )
+        traditional = []
+        for kind, backend, model in lenses:
+            _, profile = resolve_endpoint(model, backend)
+            if profile is None:
+                traditional.append((kind, backend, model))
+                continue
+            if not spec.image or not Path(spec.image).is_file():
+                return f"a {backend} endpoint panel lens requires a real container image"
+            author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+            from outerloop.endpoints import model_key, validate_judge_key_file
+
+            validate_judge_key_file(
+                profile,
+                author_endpoint.key_file
+                if author_endpoint
+                else resolve_author_key_file(author_backend),
+                spec.panel_key_file or PANEL_KEY_DEFAULT,
+            )
+            author_key = model_key(
+                resolve_author_key_file(author_backend),
+                author_backend,
+                fleet_author_model(author_backend),
+            )
+            if profile.key() == author_key:
+                return "a panel judge key is the author key (role separation)"
+            if backend == "hermes":
+                from outerloop.hermes_install import hermes_ready
+
+                repo = os.environ.get("REVIEW_HERMES_REPO", "")
+                if not repo or not hermes_ready(Path(repo).expanduser()):
+                    return "hermes panel needs REVIEW_HERMES_REPO with pinned source and runtime"
+        lenses = tuple(traditional)
         # non-claude (shelled) lenses: mirror the climb's rules exactly, per
         # backend — image required, the judge's OWN key (set + absolute +
         # neither the author's nor the claude panel key + readable), and for
@@ -2483,7 +2527,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     "key file (an anthropic key must never reach another "
                     "provider's login)"
                 )
-            FileTokenProvider(key_path).token()
+            key = FileTokenProvider(key_path).token()
+            if author_endpoint and key == author_endpoint.key():
+                return "a panel judge key is the author key (role separation)"
             if lens_backend == "hermes":
                 repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
                 from outerloop.hermes_install import hermes_ready
@@ -2536,7 +2582,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         # time, so the preflight and the climb agree.
         from outerloop.role_runner import role_key
 
-        role_key(path)
+        key = role_key(path)
+        if author_endpoint and key == author_endpoint.key():
+            return "a panel judge key is the author key (role separation)"
         return ""
     except Exception as exc:
         # never raises: an unexpected failure (partial deploy, ELOOP, unset
