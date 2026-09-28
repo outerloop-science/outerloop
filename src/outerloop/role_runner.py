@@ -62,7 +62,7 @@ _HERMES_TOOLSETS = (
 # hermes resolves credentials per provider (a registry); "openai" maps to its
 # canonical `openai-api` provider id (api-key auth against api.openai.com —
 # plain "openai" is a provider GROUP there, not an id).
-_HERMES_PROVIDERS = {
+HERMES_PROVIDERS = {
     "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
     "openai": ("openai-api", "OPENAI_API_KEY"),
 }
@@ -137,12 +137,12 @@ def build_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes backend needs hermes_repo (the pinned clone)")
-        if not profile and (hermes_provider or "openrouter") not in _HERMES_PROVIDERS:
+        if not profile and (hermes_provider or "openrouter") not in HERMES_PROVIDERS:
             raise ValueError(f"unknown hermes provider: {hermes_provider!r}")
         seed, key_env = (
             ("outerloop_endpoint", "OUTERLOOP_SESSION_KEY")
             if profile
-            else _HERMES_PROVIDERS[hermes_provider or "openrouter"]
+            else HERMES_PROVIDERS[hermes_provider or "openrouter"]
         )
         # `terminal` (the shell) is keyed on the SAME signal claude uses — the
         # spec granting the Bash tool — not on can_execute, so every backend
@@ -242,6 +242,10 @@ def run_role(
         from outerloop.syscall import install_tool
 
         install_tool(workspace)
+    if not is_judge:
+        from outerloop.syscall import tool_command
+
+        brief_text = brief_text.replace("python .outerloop/syscall", tool_command(workspace))
     session = harness.run(brief_text, workspace, resume_session_id)
     if session.is_error:
         return RoleResult(

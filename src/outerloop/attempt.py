@@ -20,7 +20,7 @@ import re
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
@@ -59,6 +59,7 @@ from outerloop.github import (
 from outerloop.harness import (
     ClaudeModelUnset,
     Harness,
+    ResumeContextBlocked,
     SessionResult,
     default_binary,
     default_claude_model,
@@ -163,41 +164,57 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     always ~-expanded, so every caller gets a real path (an env value like
     "~/.config/..." must not reach the token provider verbatim)."""
     if not explicit:
-        if backend == "codex":
-            explicit = os.environ.get("OUTERLOOP_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
-        else:
-            explicit = os.environ.get("OUTERLOOP_CLAUDE_KEY_FILE") or CLAUDE_KEY_DEFAULT
+        defaults = {"claude": CLAUDE_KEY_DEFAULT, "codex": CODEX_KEY_DEFAULT}
+        explicit = os.environ.get(f"OUTERLOOP_{backend.upper()}_KEY_FILE") or defaults.get(
+            backend, str(CONFIG_DIR / f"{backend}_key")
+        )
     return os.path.expanduser(explicit)
 
 
-def codex_author_config_error(backend: str, model: str, image: str) -> str:
-    """Why a codex author would die at startup ("" when it won't). Validates the
-    EFFECTIVE (backend, model) — the fresh climb passes args; a wake
-    passes the PARKED RUN's persisted pair — so backend and model are checked as
-    a unit and never a fleet backend against a run's model. codex writes+executes,
-    so it must be contained (--image) and needs a non-claude model."""
+def author_config_error(
+    backend: str,
+    model: str,
+    image: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Validate the effective author configuration before claiming or waking a run."""
+    env = os.environ if environ is None else environ
+    if backend not in ("claude", "codex", "hermes"):
+        return f"unknown author backend {backend!r} (expected 'claude', 'codex' or 'hermes')"
+    if backend == "hermes":
+        from outerloop.harness import hermes_resume_max_chars
+        from outerloop.hermes_install import hermes_ready
+
+        repo = env.get("REVIEW_HERMES_REPO", "")
+        if not repo or not hermes_ready(Path(repo).expanduser()):
+            return "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
+        if not image:
+            return "author-backend hermes requires --image (it runs contained)"
+        try:
+            hermes_resume_max_chars(env)
+        except ValueError as exc:
+            return str(exc)
     try:
-        _, profile = resolve_endpoint(model, backend)
+        _, profile = resolve_endpoint(model, backend, environ=env)
     except ValueError as exc:
         return str(exc)
     if profile:
         if backend != "claude" and not image:
             return f"author-backend {backend} requires --image (it runs contained)"
-        if backend == "hermes":
-            from outerloop.hermes_install import hermes_ready
-
-            repo = os.environ.get("REVIEW_HERMES_REPO", "")
-            if not repo or not hermes_ready(Path(repo).expanduser()):
-                return "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
         return ""
     if backend == "hermes":
-        return "hermes author requires OUTERLOOP_AUTHOR_ENDPOINT"
-    if backend not in ("claude", "codex"):
-        # a typo'd OUTERLOOP_AUTHOR_BACKEND passes the env DEFAULT silently
-        # (argparse validates the flag, not its default) and the climb rejects it
-        # at build_harness — catch it on the tick host so a claimed intake
-        # issue never strands on it
-        return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
+        from outerloop.role_runner import HERMES_PROVIDERS
+
+        if not model:
+            return "hermes author needs OUTERLOOP_AUTHOR_MODEL"
+        provider = env.get("REVIEW_HERMES_PROVIDER", "")
+        if provider not in HERMES_PROVIDERS:
+            return (
+                "hermes author needs REVIEW_HERMES_PROVIDER (openai or openrouter) "
+                "or an endpoint profile"
+            )
+        return ""
     if backend == "claude":
         # symmetric to the codex check: a claude harness 404s on a non-claude
         # model (e.g. OUTERLOOP_AUTHOR_MODEL left on a codex id while the
@@ -215,11 +232,15 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     return ""
 
 
+# Compatibility for callers of the former backend-specific validator.
+codex_author_config_error = author_config_error
+
+
 def fleet_author_model(backend: str) -> str:
     """The fleet author's model from the environment: OUTERLOOP_AUTHOR_MODEL, else
     the deployment's Claude model for a claude author (ClaudeModelUnset when that
     is missing too). Another backend without OUTERLOOP_AUTHOR_MODEL gets "", and
-    codex_author_config_error names the fix."""
+    author_config_error names the fix."""
     model = author_model_setting(backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", ""))
     if not model and backend == "claude":
         return default_claude_model()
@@ -1686,6 +1707,20 @@ def _wake_author_sleep(
         if sleep_ref:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
+    except ResumeContextBlocked as exc:
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            dc_replace(
+                latest,
+                state=PARKED,
+                stage={**latest.stage, "hermes_resume_required_chars": exc.required_chars},
+                wake_attempts=max(0, latest.wake_attempts - 1),
+            ),
+            now,
+        )
+        log.warning("run %s: %s", run_id, exc)
+        return AttemptOutcome(run_id=run_id, outcome="parked", pr_url=latest.pr_url)
     except ScopeHistoryError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     finally:
@@ -3132,18 +3167,19 @@ def _judge_lens_key(
             "(role separation: the judge's own key, never the author's)"
         )
     path = Path(raw).expanduser()
-    author_path = Path(resolve_author_key_file(author_backend)).expanduser()
-    if path.resolve() == author_path.resolve():
-        raise ValueError(
-            f"{backend} panel key file {path} is the {author_backend} author key "
-            "(role separation: the judge needs its own key)"
-        )
+    for author in dict.fromkeys((author_backend, "claude", "codex", "hermes")):
+        author_path = Path(resolve_author_key_file(author)).expanduser()
+        if path.resolve() == author_path.resolve():
+            raise ValueError(
+                f"{backend} panel key file {path} is the {author} author key "
+                "(role separation: the judge needs its own key)"
+            )
     if path.resolve() == claude_panel_path.resolve():
         raise ValueError(
             f"{backend} panel key file {path} is the claude panel key file "
             "(an anthropic key must never reach another provider's login)"
         )
-    return role_key(raw, author_backend)
+    return role_key(raw, backend)
 
 
 def _panel_lenses_from_args(
@@ -3170,6 +3206,13 @@ def _panel_lenses_from_args(
     if author_model is None:
         author_model = getattr(args, "model", "") or ""
     parsed = resolve_lenses(args.panel, author_backend, author_model)
+    _, author_profile = resolve_endpoint(author_model, author_backend)
+    author_path = (
+        author_profile.key_file
+        if author_profile
+        else Path(resolve_author_key_file(author_backend, getattr(args, "key_file", "")))
+    )
+    prepared = []
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
     panel_key = (
@@ -3179,8 +3222,8 @@ def _panel_lenses_from_args(
     )
     lenses = []
     secrets: list[str] = [panel_key] if panel_key else []
+    hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
     for kind, backend, model in parsed:
-        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         # per-backend judge keys coexist — a codex lens is never handed the
         # anthropic panel key, and role separation forbids defaulting to the
         # AUTHOR's codex key: the judge key is its own, named explicitly
@@ -3191,26 +3234,14 @@ def _panel_lenses_from_args(
                 raise ValueError(f"a {backend} endpoint panel lens requires --image")
             from outerloop.endpoints import validate_judge_key_file
 
-            _, author_profile = resolve_endpoint(author_model, author_backend)
-            validate_judge_key_file(
-                endpoint,
-                author_profile.key_file
-                if author_profile
-                else (getattr(args, "key_file", "") or resolve_author_key_file(author_backend)),
-                claude_panel_path,
-            )
+            validate_judge_key_file(endpoint, author_path, claude_panel_path)
             lens_key = endpoint.key()
-            author_key_file = getattr(args, "key_file", "") or resolve_author_key_file(
-                author_backend
-            )
-            if lens_key == model_key(author_key_file, author_backend, author_model):
-                raise ValueError("a panel judge key is the author key (role separation)")
             secrets.append(lens_key)
         elif backend == "codex":
             lens_key = _judge_lens_key(
                 backend="codex",
                 key_file_env="OUTERLOOP_PANEL_CODEX_KEY_FILE",
-                author_backend="codex",
+                author_backend=author_backend,
                 claude_panel_path=claude_panel_path,
                 image=args.image,
             )
@@ -3219,12 +3250,11 @@ def _panel_lenses_from_args(
         elif backend == "hermes":
             # hermes reads its key from its provider's env var, but the FILE
             # is resolved and separated exactly like codex's (the key still
-            # lands next to the session). The author's OpenAI key coexists, so
-            # separate against the codex author key.
+            # lands next to the session). Separate against the active author.
             lens_key = _judge_lens_key(
                 backend="hermes",
                 key_file_env="OUTERLOOP_PANEL_HERMES_KEY_FILE",
-                author_backend="codex",
+                author_backend=author_backend,
                 claude_panel_path=claude_panel_path,
                 image=args.image,
             )
@@ -3232,6 +3262,22 @@ def _panel_lenses_from_args(
                 secrets.append(lens_key)
         else:
             lens_key = panel_key
+        lens_path = (
+            endpoint.key_file
+            if endpoint
+            else Path(os.environ[f"OUTERLOOP_PANEL_{backend.upper()}_KEY_FILE"]).expanduser()
+            if backend in ("codex", "hermes")
+            else claude_panel_path
+        )
+        if lens_path.resolve() == author_path.expanduser().resolve() or (
+            lens_key and lens_key == model_key(author_path, author_backend, author_model)
+        ):
+            raise ValueError(
+                "a panel judge key is the effective author key "
+                "(role separation: the judge needs its own key)"
+            )
+        prepared.append((kind, backend, model, lens_key))
+    for kind, backend, model, lens_key in prepared:
         try:
             if not args.image:
                 log.warning(
@@ -3256,9 +3302,6 @@ def _panel_lenses_from_args(
         except (ValueError, ClaudeModelUnset) as exc:
             raise ValueError(f"panel entry {kind}:{backend}: {exc}") from exc
         lenses.append(PanelLens(kind=kind, harness=judge))
-    _, author_endpoint = resolve_endpoint(author_model, author_backend)
-    if author_endpoint and author_endpoint.key() in secrets:
-        raise ValueError("a panel judge key is the author key (role separation)")
     return tuple(lenses), tuple(dict.fromkeys(secrets))
 
 
@@ -4868,7 +4911,7 @@ def main() -> int:
         choices=("claude", "codex", "hermes"),
         default=os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
         help="agent backend for the author/editor role (config-driven: default "
-        "from OUTERLOOP_AUTHOR_BACKEND). codex runs contained (apptainer + "
+        "from OUTERLOOP_AUTHOR_BACKEND). codex and hermes run contained (apptainer + "
         "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
         "--model (e.g. gpt-5.6-terra).",
     )
@@ -4914,7 +4957,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "OUTERLOOP_CLAUDE_KEY_FILE for claude, OUTERLOOP_CODEX_KEY_FILE for codex",
+        "OUTERLOOP_<BACKEND>_KEY_FILE for native backends",
     )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(
@@ -4997,13 +5040,14 @@ def main() -> int:
         # an explicit --key-file still overrides (a manual re-run pinning a key)
         if args.key_file:
             wake_key_file = os.path.expanduser(args.key_file)
-        _err = codex_author_config_error(wake_backend, wake_model, args.image)
+        _err = author_config_error(wake_backend, wake_model, args.image)
         if _err:
             # this wake job HOLDS the run's lease (transferred on dispatch); release
             # it before exiting so a misconfig doesn't strand the run until the TTL
             # reap (the resume_run finally below only runs once we reach it)
             _release_own_lease(args.run_root, args.resume)
             parser.error(f"parked run {args.resume}: {_err}")
+        args.key_file = wake_key_file
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
@@ -5054,6 +5098,7 @@ def main() -> int:
                 model=wake_model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
+                hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", ""),
                 hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
                 if wake_backend == "hermes"
                 else None,
@@ -5109,10 +5154,10 @@ def main() -> int:
         args.model = author_model_setting(args.author_backend, args.model)
     except ValueError as exc:
         parser.error(str(exc))
-    _err = codex_author_config_error(args.author_backend, args.model, args.image)
+    _err = author_config_error(args.author_backend, args.model, args.image)
     if _err:
         parser.error(_err)
-    # config-driven: the author key defaults per backend (claude vs codex) so the
+    # The author key defaults per backend so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
     _, author_endpoint = resolve_endpoint(args.model, args.author_backend)
     args.key_file = (
@@ -5192,6 +5237,7 @@ def main() -> int:
                     model=args.model,
                     container_image=args.image,
                     codex_extra_args=codex_extra,
+                    hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", ""),
                     hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
                     if args.author_backend == "hermes"
                     else None,

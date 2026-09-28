@@ -22,6 +22,15 @@ UNSET = "OUTERLOOP_CLAUDE_MODEL is not set"
 _PARSE_ARGS = argparse.ArgumentParser.parse_args
 
 
+@pytest.fixture(autouse=True)
+def author_credential(tmp_path, monkeypatch):
+    for backend in ("claude", "codex"):
+        key = tmp_path / f"{backend}-author"
+        key.write_text("distinct-author-credential")
+        key.chmod(0o600)
+        monkeypatch.setenv(f"OUTERLOOP_{backend.upper()}_KEY_FILE", str(key))
+
+
 @pytest.mark.parametrize("value", [None, "", " \t"])
 def test_default_claude_model_requires_the_setting(monkeypatch, value):
     if value is None:
@@ -391,9 +400,9 @@ def test_resume_cli_uses_pinned_model_without_deployment_model(
         seen.append((backend, model))
         return ""
 
-    monkeypatch.setattr(attempt, "codex_author_config_error", capture_author)
+    monkeypatch.setattr(attempt, "author_config_error", capture_author)
     monkeypatch.setattr(attempt, "role_key", lambda *a: "panel-key")
-    monkeypatch.setattr("outerloop.role_runner.role_key", lambda *a: "panel-key")
+    monkeypatch.setattr("outerloop.role_runner.role_key", lambda *a: "author-key")
     real_panel = attempt._panel_lenses_from_args
 
     def capture_panel(args, **kwargs):
@@ -493,6 +502,7 @@ def test_model_less_panel_lens_inherits_the_author_model_on_the_same_backend(mon
     # `review:claude` names no model and is not on the author's backend: refused
     with pytest.raises(ValueError, match="review:claude:<model>"):
         attempt._panel_lenses_from_args(args)
+    monkeypatch.setenv("OUTERLOOP_PANEL_CODEX_KEY_FILE", str(tmp_path / "codex-judge-key"))
     args.panel = "verify,review:codex:gpt-pinned,review:claude:claude-x"
     with contextlib.suppress(Exception):  # harness construction is not under test
         attempt._panel_lenses_from_args(args)

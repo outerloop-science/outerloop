@@ -303,7 +303,7 @@ outerloop checkout, run `bash scripts/install_claude.sh [target_path]` or
 The default target is `$OUTERLOOP_<BACKEND>_BIN`, else `~/.local/bin/<backend>`.
 Claude 2.1.272 is pinned for Linux x64 (glibc/musl) and ARM64; other platforms
 are refused. Installation needs `curl`, `sha256sum`, and a writable target
-directory. Hermes remains a review backend, provisioned with
+directory. Hermes runs authors and reviewers, provisioned with
 `bash scripts/install_hermes.sh [target_dir]`.
 
 **Host prerequisites for model backends.** From the outerloop checkout:
@@ -312,7 +312,7 @@ directory. Hermes remains a review backend, provisioned with
   `bash scripts/install_claude.sh`.
 - Codex, as author or reviewer: the pinned Codex CLI; install with
   `bash scripts/install_codex.sh`.
-- Hermes, as reviewer only (not an author backend): the pinned hermes-agent
+- Hermes, as author or reviewer: the pinned hermes-agent
   source checkout and runtime; install with `bash scripts/install_hermes.sh`.
 
 `init` records the absolute Claude
@@ -323,9 +323,62 @@ launch before any job runs. After installing or moving it, run
 `outerloop init --force` to record its path again. `--dry-run` prints the launch
 command without checking the CLI. For Hermes, set `REVIEW_HERMES_REPO` to the installed checkout (the installer
 defaults to `~/hermes-agent`). Full `init` installs a missing Hermes runtime when
-`OUTERLOOP_PANEL` includes a Hermes lens or `REVIEW_BACKEND=hermes`, reading the
+`OUTERLOOP_AUTHOR_BACKEND=hermes`, `OUTERLOOP_PANEL` includes a Hermes lens, or `REVIEW_BACKEND=hermes`, reading the
 shell or existing `.env`, and records `REVIEW_HERMES_REPO`. `--no-install-harness`
 skips this installation too.
+
+To use Hermes as the author, set `OUTERLOOP_AUTHOR_BACKEND=hermes`,
+`OUTERLOOP_AUTHOR_MODEL` to your provider's model ID, `REVIEW_HERMES_REPO`
+to the installed pinned checkout, and `OUTERLOOP_IMAGE` to the agent container.
+Set `REVIEW_HERMES_PROVIDER=openai` or `openrouter`, or select an
+[endpoint profile](endpoints.md) with `OUTERLOOP_AUTHOR_ENDPOINT`.
+Native provider credentials come from `OUTERLOOP_HERMES_KEY_FILE` (default
+`~/.config/outerloop/hermes_key`); endpoint credentials come from the profile.
+Author and judge keys must be separate. The author gets file and terminal
+tools; the kernel owns branches, commits, sleep/wake, and submission as for
+other backends.
+
+Hermes resumes from the saved transcript in the per-run home. Keep that home
+until the run ends. `OUTERLOOP_HERMES_RESUME_MAX_CHARS` (default `120000`, a
+positive character count) bounds the entire replay brief, including new results.
+The kernel preserves the original brief and the latest results verbatim, keeps
+a contiguous tail of recent messages that fits, and reports the number of
+omitted turns (individual user/assistant messages). If the original brief and
+latest results alone exceed the budget, resume fails explicitly; increase the
+setting before retrying. The saved transcript remains complete and unchanged
+in format; omission affects only the prompt sent on that wake.
+
+The pinned Hermes version has native compression (`compression.enabled=true`,
+threshold `0.50`, floored at `0.75` below 512K context;
+`cli-config.yaml.example:631` and `:663`, implemented
+in `agent/context_compressor.py`; defaults parsed in `agent/agent_init.py:1478`).
+It remains enabled for each invocation.
+However, `run_agent.py:1558` starts a fresh `run_conversation(user_query)`;
+`--save_sample` exports a trajectory, not a resumable compressed session.
+Our replay is text read from a brief file, so native compression cannot bound
+what the kernel replays across wakes. The kernel limit above handles that.
+Hermes sample output provides assistant turn counts but no dollar usage;
+`SessionResult.cost_usd` remains zero, so use provider-side spend limits for
+Hermes billing. Kernel execution, turn and walltime limits still apply.
+
+Upgrade compatibility: no record or transcript migration is needed. Existing
+Claude/Codex records and Hermes judge transcripts remain readable, including
+records with absent legacy author fields. The first wake applies the replay
+limit without rewriting old turns. New runs may record `author_backend=hermes`.
+Kernels predating Hermes author support reject those author wakes; the
+endpoint-profile predecessor supports endpoint Hermes wakes but rejects native
+provider Hermes authors. Finish Hermes author runs before rollback. Ended
+records remain readable; no backfill is required.
+
+Hermes resume configuration blocks reuse the existing `parked` run state.
+The optional `stage.hermes_resume_required_chars` field records the minimum replay
+budget after an oversized wake; the session ID, snapshot reference, and pending
+inbox stay intact. Tick logs and live run status show `configuration-blocked` until
+`OUTERLOOP_HERMES_RESUME_MAX_CHARS` reaches that value, then the next tick or manual
+wake retries. Legacy records (including ended records) lacking the field require
+no backfill. Existing full transcripts remain readable. Resolve blocked runs
+before rolling back: older kernels ignore the field and can abort or exhaust
+wake retries on oversized resumes.
 
 The Hermes installer needs `git` and `uv`. After verifying the pinned source it
 installs a uv-managed Python under `<repo>.runtime/<commit-sha>/python` and runs

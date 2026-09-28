@@ -1671,6 +1671,14 @@ def _sweep_one(
     ):
         return
 
+    from outerloop.harness import resume_config_block
+
+    blocked = resume_config_block(record.stage)
+    if blocked:
+        log.warning("run %s: %s", record.run_id, blocked)
+        deferred.append(record.run_id)
+        return
+
     # Layer 5: too many failed attempts is a terminal, reported state.
     if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
         if not dry_run:
@@ -1686,6 +1694,10 @@ def _sweep_one(
                 bot_login=bot_login,
             )
         stuck.append(record.run_id)
+        return
+
+    if record.stage.get("hermes_resume_required_chars"):
+        wake(record, "resume configuration unblocked", "configuration")
         return
 
     job_ids = _poll_targets(record)
@@ -2407,14 +2419,14 @@ def _author_config_error(spec: ServiceSpec) -> str:
     (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
-    from outerloop.attempt import codex_author_config_error, fleet_author_model
+    from outerloop.attempt import author_config_error, fleet_author_model
 
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
     try:
         model = fleet_author_model(backend)
     except (ClaudeModelUnset, ValueError) as exc:
         return str(exc)
-    return codex_author_config_error(backend, model, spec.image)
+    return author_config_error(backend, model, spec.image)
 
 
 def _panel_preflight_error(spec: ServiceSpec) -> str:
@@ -2449,7 +2461,10 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             return str(exc)
         from outerloop.attempt import fleet_author_model
         from outerloop.endpoints import resolve_endpoint
+        from outerloop.harness import hermes_resume_max_chars
 
+        if any(backend == "hermes" for _, backend, _ in lenses):
+            hermes_resume_max_chars()
         author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
         _, author_endpoint = resolve_endpoint(
             author_model_setting(author_backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")),
@@ -2514,12 +2529,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                 return (
                     f"{lens_backend} panel key path {key_path} is relative; only absolute paths fly"
                 )
-            author = Path(resolve_author_key_file("codex")).expanduser()
-            if key_path.resolve() == author.resolve():
-                return (
-                    f"{lens_backend} panel key file {key_path} is the codex author "
-                    "key (role separation: the judge needs its own key)"
-                )
+            for author_backend_name in dict.fromkeys((author_backend, "claude", "codex", "hermes")):
+                author = Path(resolve_author_key_file(author_backend_name)).expanduser()
+                if key_path.resolve() == author.resolve():
+                    return (
+                        f"{lens_backend} panel key file {key_path} is the "
+                        f"{author_backend_name} author "
+                        "key (role separation: the judge needs its own key)"
+                    )
             claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
             if key_path.resolve() == claude_panel.resolve():
                 return (
@@ -2528,7 +2545,13 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     "provider's login)"
                 )
             key = FileTokenProvider(key_path).token()
-            if author_endpoint and key == author_endpoint.key():
+            from outerloop.endpoints import model_key
+
+            if key and key == model_key(
+                resolve_author_key_file(author_backend),
+                author_backend,
+                fleet_author_model(author_backend),
+            ):
                 return "a panel judge key is the author key (role separation)"
             if lens_backend == "hermes":
                 repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
@@ -2540,13 +2563,13 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                         "run bash scripts/install_hermes.sh "
                         f"{repo or '$REVIEW_HERMES_REPO'}"
                     )
-                from outerloop.role_runner import _HERMES_PROVIDERS
+                from outerloop.role_runner import HERMES_PROVIDERS
 
                 provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
-                if provider not in _HERMES_PROVIDERS:
+                if provider not in HERMES_PROVIDERS:
                     return (
                         f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
-                        f"(have: {sorted(_HERMES_PROVIDERS)})"
+                        f"(have: {sorted(HERMES_PROVIDERS)})"
                     )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply
@@ -2583,7 +2606,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         from outerloop.role_runner import role_key
 
         key = role_key(path)
-        if author_endpoint and key == author_endpoint.key():
+        from outerloop.endpoints import model_key
+
+        if key and key == model_key(author, fleet_backend, fleet_author_model(fleet_backend)):
             return "a panel judge key is the author key (role separation)"
         return ""
     except Exception as exc:
@@ -3394,7 +3419,7 @@ def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
             log.warning(
                 "local mode: no container image at %s; sessions run under the harness "
                 "sandbox and evaluations run bare on this machine; the panel is %s; a "
-                "codex author needs the image (docs/install.md, local mode)",
+                "codex or hermes author needs the image (docs/install.md, local mode)",
                 image,
                 "on by OUTERLOOP_PANEL_UNCONTAINED=1"
                 if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") == "1"

@@ -374,7 +374,9 @@ def test_github_app_warns_when_it_lands_under_a_different_account(
 
 def test_main_yes_rejects_an_unknown_author_backend(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
-    rc = init.main(["--yes", "--compute", "local", "--target", "o/r", "--author-backend", "hermes"])
+    rc = init.main(
+        ["--yes", "--compute", "local", "--target", "o/r", "--author-backend", "unknown"]
+    )
     assert rc == 2
     assert "author backend must be one of claude, codex" in capsys.readouterr().err
 
@@ -1094,3 +1096,65 @@ def test_render_env_keeps_comments_and_order_of_a_hand_edited_file() -> None:
     )  # App auth replaces the PAT
     assert "OUTERLOOP_GITHUB_APP_FILE=/app.json" in lines  # appended
     assert text.endswith("\n") and "\n\n\n" not in text
+
+
+def test_init_hermes_author(tmp_path, monkeypatch):
+    monkeypatch.setattr("outerloop.hermes_install.hermes_ready", lambda repo: True)
+    monkeypatch.setenv("REVIEW_HERMES_PROVIDER", "openrouter")
+    image = tmp_path / "image.sif"
+    image.touch()
+    monkeypatch.setattr(init, "ensure_image", lambda **kw: str(image))
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "hermes_ready", lambda repo: True)
+    monkeypatch.setattr(init, "locate_harness", lambda backend: "/opt/hermes")
+    assert (
+        init.main(
+            [
+                "--yes",
+                "--compute",
+                "local",
+                "--target",
+                "o/r",
+                "--author-backend",
+                "hermes",
+                "--author-model",
+                "org/model",
+                "--no-install-harness",
+            ]
+        )
+        == 0
+    )
+    env = (tmp_path / ".env").read_text()
+    assert "OUTERLOOP_AUTHOR_BACKEND=hermes" in env
+    assert "REVIEW_HERMES_REPO=/opt/hermes" in env
+    assert "OUTERLOOP_HERMES_BIN" not in env
+
+
+@pytest.mark.parametrize("missing", ["model", "provider", "image", "runtime", "budget"])
+def test_init_refuses_incomplete_hermes(tmp_path, monkeypatch, capsys, missing):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(init, "locate_harness", lambda backend: "/opt/hermes")
+    monkeypatch.setattr("outerloop.hermes_install.hermes_ready", lambda repo: missing != "runtime")
+    monkeypatch.setenv("REVIEW_HERMES_PROVIDER", "openai" if missing != "provider" else "")
+    monkeypatch.setenv(
+        "OUTERLOOP_HERMES_RESUME_MAX_CHARS", "bad" if missing == "budget" else "120000"
+    )
+    monkeypatch.delenv("OUTERLOOP_AUTHOR_ENDPOINT", raising=False)
+    image = tmp_path / "image.sif"
+    image.touch()
+    monkeypatch.setattr(init, "ensure_image", lambda **kw: "" if missing == "image" else str(image))
+    args = [
+        "--yes",
+        "--compute",
+        "local",
+        "--target",
+        "o/r",
+        "--author-backend",
+        "hermes",
+        "--no-install-harness",
+    ]
+    if missing != "model":
+        args += ["--author-model", "gpt-native"]
+    assert init.main(args) == 2
+    assert not (tmp_path / ".env").exists()
+    assert "outerloop init:" in capsys.readouterr().err

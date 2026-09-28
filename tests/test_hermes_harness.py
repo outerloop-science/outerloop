@@ -387,3 +387,104 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     h2 = HermesHarness(api_key="sk-h", repo_dir=repo, provider="openai-api")
     h2.run("brief", ws)
     assert captured["command"][0] == str(runtime / "venv/bin/python")
+
+
+def test_author_fresh_and_resume_commands(monkeypatch, tmp_path):
+    from outerloop.role_runner import build_harness, run_role
+    from outerloop.roles import author_spec
+    from outerloop.syscall import install_tool, tool_command
+
+    workspace = tmp_path / "author"
+    workspace.mkdir()
+    install_tool(workspace)
+    home = tmp_path / "author-home"
+    spec = author_spec(max_turns=12, walltime_s=90)
+    harness = build_harness(
+        "author-secret",
+        spec,
+        backend="hermes",
+        hermes_repo=tmp_path / "hermes",
+        hermes_provider="openai",
+        model="gpt-native",
+        container_image="image.sif",
+    )
+    captured = []
+
+    def popen(command, **kwargs):
+        seen = {"command": command, **kwargs}
+        captured.append(seen)
+        return _make_hermes_popen(home, "reply", seen)(command)
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", popen)
+    first = run_role(spec, harness, "ORIGINAL python .outerloop/syscall sleep", workspace)
+    assert first.ok and first.session.num_turns == 1
+    second = run_role(
+        spec,
+        harness,
+        "LATEST_RESULTS python .outerloop/syscall submit",
+        workspace,
+        first.session.session_id,
+    )
+    assert second.ok and second.session.session_id == first.session.session_id
+    for seen in captured:
+        command = seen["command"]
+        assert any(arg.startswith("--enabled_toolsets=file,terminal") for arg in command)
+        assert "--max_turns=12" in command
+        assert f"{workspace}:{workspace}" in command
+        assert f"{home}:{home}" in command
+        assert f"{tmp_path / 'hermes'}:{tmp_path / 'hermes'}:ro" in command
+        assert seen["cwd"] == home
+        assert seen["env"]["APPTAINERENV_OPENAI_API_KEY"] == "author-secret"
+        assert seen["env"]["APPTAINERENV_TERMINAL_CWD"] == str(workspace)
+        assert tool_command(workspace) in seen["brief_text"]
+        assert "python .outerloop/syscall" not in seen["brief_text"]
+    assert "ORIGINAL" in captured[1]["brief_text"]
+    assert "LATEST_RESULTS" in captured[1]["brief_text"]
+
+
+def test_bounded_replay_keeps_brief_tail_and_latest():
+    from outerloop.harness import _bounded_resume_brief
+
+    turns = [{"role": "user", "text": "ORIGINAL_BRIEF"}]
+    turns += [{"role": "assistant", "text": f"OLD_{i}_" + "x" * 200} for i in range(100)]
+    turns += [
+        {"role": "user", "text": "RECENT_INSTRUCTIONS"},
+        {"role": "assistant", "text": "RECENT_REPLY"},
+    ]
+    replay = _bounded_resume_brief(turns, "LATEST_RESULTS", 400)
+    assert len(replay) <= 400
+    for text in ("ORIGINAL_BRIEF", "RECENT_INSTRUCTIONS", "RECENT_REPLY", "LATEST_RESULTS"):
+        assert text in replay
+    assert "100 earlier turns omitted" in replay
+    assert "OLD_" not in replay
+    short = [{"role": "user", "text": "brief"}, {"role": "assistant", "text": "ok"}]
+    complete = _bounded_resume_brief(short, "results", 1000)
+    assert _bounded_resume_brief(short, "results", len(complete)) == complete
+    assert "omitted" not in complete
+    with pytest.raises(ValueError, match="original brief and latest results"):
+        _bounded_resume_brief(turns, "LATEST_RESULTS" * 100, 600)
+
+
+def test_legacy_resume_replay_retry_does_not_rewrite_history(monkeypatch, tmp_path):
+    from outerloop.harness import _resume_transcript_path
+
+    workspace = tmp_path / "legacy"
+    workspace.mkdir()
+    home = tmp_path / "legacy-home"
+    home.mkdir()
+    legacy = json.loads((Path(__file__).parent / "fixtures/hermes_resume_legacy.json").read_text())
+    path = _resume_transcript_path(home, "legacy-id")
+    path.write_text(json.dumps(legacy))
+    original = path.read_bytes()
+    harness = HermesHarness(api_key="key", repo_dir=tmp_path / "hermes", resume_max_chars=10)
+    for _ in range(2):
+        with pytest.raises(harness_mod.ResumeContextBlocked, match="configuration-blocked"):
+            harness.run("latest results", workspace, "legacy-id")
+        assert path.read_bytes() == original
+    harness.resume_max_chars = 1000
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", _make_hermes_popen(home, "reply", seen))
+    assert not harness.run("latest results", workspace, "legacy-id").is_error
+    saved = json.loads(path.read_text())
+    assert saved["turns"][:2] == legacy["turns"]
+    assert "original" in seen["brief_text"] and "latest results" in seen["brief_text"]

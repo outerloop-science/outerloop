@@ -69,6 +69,8 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_CLAUDE_BIN",
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
+    "OUTERLOOP_HERMES_KEY_FILE",
+    "OUTERLOOP_HERMES_RESUME_MAX_CHARS",
     "OUTERLOOP_CLAUDE_KEY_FILE",
     "OUTERLOOP_STEWARD_KEY_FILE",
     "OUTERLOOP_VERTEX_PROJECT",
@@ -415,12 +417,7 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
             else "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
         )
     if key not in HARNESS_BIN_KEYS:
-        hint = (
-            f" Hermes is a review backend; install its source with `{HARNESS_INSTALL['hermes']}`."
-            if backend == "hermes"
-            else ""
-        )
-        return f"unsupported author backend {backend!r}; choose claude or codex.{hint}"
+        return f"unsupported author backend {backend!r}; choose claude, codex or hermes."
     env = {**values, **environ}
     recorded = env.get(key, "")
     binary = default_binary(backend, env)

@@ -3845,6 +3845,10 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
 
 
 def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> None:
+    author = tmp_path / "author"
+    author.write_text("sk-author")
+    author.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(author))
     # a codex-only panel must not demand the (unused) anthropic panel key
     import argparse
 
@@ -3940,6 +3944,10 @@ def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> N
 
 
 def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> None:
+    author = tmp_path / "author"
+    author.write_text("sk-author")
+    author.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(author))
     # hermes joins the shelled-judge rules via the SAME helper as codex:
     # image required, own key named, never the author's or the claude panel's
     import argparse
@@ -7178,3 +7186,107 @@ def test_contains_tip_falls_back_for_missing_objects(tmp_path, answer):
     ws = Workspace(root=tmp_path)
     assert _contains_tip(ws, "tip", "measured", cast(Any, GitHub()), "o/r") is bool(answer)
     assert not _contains_tip(ws, "tip", "measured")
+
+
+@pytest.mark.parametrize("pr", [False, True])
+def test_hermes_resume_configuration_block_preserves_park(tmp_path, monkeypatch, caplog, pr):
+    from dataclasses import replace
+
+    from outerloop.climbboard import collect_status
+    from outerloop.harness import HermesHarness, _save_resume_transcript
+    from outerloop.roles import author_spec
+    from outerloop.tick import _sweep_one
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(tmp_path, monkeypatch)
+    record = load_record(state, run_id)
+    record = replace(
+        record,
+        author_backend="hermes",
+        author_model="gpt-native",
+        wake_attempts=1,
+        pr_url="https://github.com/org/pilot/pull/1" if pr else "",
+        deadline=1_000_001,
+    )
+    save_record(state, record, 1_000_000)
+    home = wsroot.parent / f"{wsroot.name}-home"
+    home.mkdir()
+    _save_resume_transcript(
+        home,
+        "s1",
+        [
+            {"role": "user", "text": "original brief"},
+            {"role": "assistant", "text": "previous reply"},
+        ],
+    )
+    monkeypatch.setattr("outerloop.harness.hermes_ready", lambda repo: True)
+    monkeypatch.setenv("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "10")
+    kwargs = dict(
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        spec=author_spec(),
+    )
+    for _ in range(2):
+        outcome = resume_run(
+            state,
+            run_id,
+            harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"),
+            **kwargs,
+        )
+        assert outcome.outcome == "parked"
+        saved = load_record(state, run_id)
+        assert saved.state == "parked" and saved.wake_attempts == 0
+        assert saved.resume_session_id == "s1" and saved.pr_url == record.pr_url
+        assert saved.stage["candidate_ref"] == record.stage["candidate_ref"]
+        assert _git(wsroot, "rev-parse", str(record.stage["candidate_ref"])).strip()
+        assert int(str(saved.stage["hermes_resume_required_chars"])) > 10
+    status = collect_status(state, record.target, 1_000_100, records=[saved])["runs"][0]
+    assert status["phase"] == "configuration-blocked"
+    assert "OUTERLOOP_HERMES_RESUME_MAX_CHARS" in status["direction"]
+    assert "configuration-blocked" in caplog.text
+    deferred: list[str] = []
+    woke: list[tuple] = []
+
+    def sweep():
+        _sweep_one(
+            state,
+            _fake_dispatch().compute,
+            None,  # type: ignore[arg-type]
+            1_000_200,
+            0,
+            60,
+            False,
+            load_record(state, run_id),
+            "test",
+            lambda *a: woke.append(a),
+            deferred,
+            [],
+            [],
+        )
+
+    sweep()
+    assert deferred == [run_id] and not woke
+    monkeypatch.setenv("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "1000000")
+    sweep()
+    assert woke
+    # The operator's retry reaches the author again using the same saved session.
+    resumed = []
+
+    def successful_resume(self, brief, workspace, resume_session_id=None):
+        resumed.append(resume_session_id)
+        return SessionResult(
+            session_id="s1",
+            final_text="done",
+            cost_usd=0,
+            num_turns=1,
+            stop_reason="end_turn",
+            is_error=False,
+            transcript_path="",
+        )
+
+    monkeypatch.setattr(HermesHarness, "run", successful_resume)
+    resume_run(
+        state, run_id, harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"), **kwargs
+    )
+    assert resumed == ["s1"]
