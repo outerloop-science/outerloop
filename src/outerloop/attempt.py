@@ -171,6 +171,32 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     return os.path.expanduser(explicit)
 
 
+@dataclass(frozen=True)
+class AuthorCredential:
+    key_file: Path
+    backend: str
+    model: str
+
+    def key(self) -> str:
+        """Read after structural panel checks, preserving their diagnostics."""
+        return model_key(self.key_file, self.backend, self.model)
+
+
+def effective_author_credential(backend: str, model: str, explicit: str = "") -> AuthorCredential:
+    """Resolve the actual author credential, including endpoint profiles."""
+    _, profile = resolve_endpoint(model, backend)
+    path = profile.key_file if profile else Path(resolve_author_key_file(backend, explicit))
+    return AuthorCredential(path, backend, model)
+
+
+def _clear_resume_block(run_root: Path, run_id: str, now: float) -> None:
+    record = load_record(run_root, run_id)
+    if "hermes_resume_required_chars" in record.stage:
+        stage = dict(record.stage)
+        stage.pop("hermes_resume_required_chars")
+        save_record(run_root, dc_replace(record, stage=stage), now)
+
+
 def author_config_error(
     backend: str,
     model: str,
@@ -1682,7 +1708,9 @@ def _wake_author_sleep(
             else None,
             judged=judged or _stage_judged(record),
         )
+        _clear_resume_block(run_root, run_id, now)
     except RunParked as p:
+        _clear_resume_block(run_root, run_id, now)
         # slept again, or the gate dispatched its measures (a candidate park the
         # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
         # sleep ref is superseded once the new park persists.
@@ -3206,12 +3234,10 @@ def _panel_lenses_from_args(
     if author_model is None:
         author_model = getattr(args, "model", "") or ""
     parsed = resolve_lenses(args.panel, author_backend, author_model)
-    _, author_profile = resolve_endpoint(author_model, author_backend)
-    author_path = (
-        author_profile.key_file
-        if author_profile
-        else Path(resolve_author_key_file(author_backend, getattr(args, "key_file", "")))
+    author_credential = effective_author_credential(
+        author_backend, author_model, getattr(args, "key_file", "")
     )
+    author_path = author_credential.key_file
     prepared = []
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
@@ -3270,7 +3296,7 @@ def _panel_lenses_from_args(
             else claude_panel_path
         )
         if lens_path.resolve() == author_path.expanduser().resolve() or (
-            lens_key and lens_key == model_key(author_path, author_backend, author_model)
+            lens_key and lens_key == author_credential.key()
         ):
             raise ValueError(
                 "a panel judge key is the effective author key "
@@ -5078,7 +5104,9 @@ def main() -> int:
             or _wake_stage.get("submitted")
             or getattr(_wake_record, "pr_url", "")
         ):
-            wake_api_key = model_key(wake_key_file, wake_backend, wake_model)
+            wake_api_key = effective_author_credential(
+                wake_backend, wake_model, wake_key_file
+            ).key()
             if wake_api_key and wake_api_key in wake_panel_secrets:
                 args.panel_skip = "a panel judge key is this run's author key (role separation)"
                 wake_lenses = ()
@@ -5159,15 +5187,11 @@ def main() -> int:
         parser.error(_err)
     # The author key defaults per backend so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
-    _, author_endpoint = resolve_endpoint(args.model, args.author_backend)
-    args.key_file = (
-        str(author_endpoint.key_file)
-        if author_endpoint
-        else resolve_author_key_file(args.author_backend, args.key_file)
-    )
+    author_credential = effective_author_credential(args.author_backend, args.model, args.key_file)
+    args.key_file = str(author_credential.key_file)
     # same 0600 discipline as the PAT: this key spends real money. A missing
     # file is tolerated only when Vertex (ADC) covers the claude backend.
-    api_key = model_key(args.key_file, args.author_backend, args.model)
+    api_key = author_credential.key()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     # the agent id keeps concurrent same-benchmark slots (the width dial's
     # portfolio case) from minting one run directory in the same second

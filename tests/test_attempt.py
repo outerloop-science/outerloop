@@ -7189,7 +7189,10 @@ def test_contains_tip_falls_back_for_missing_objects(tmp_path, answer):
 
 
 @pytest.mark.parametrize("pr", [False, True])
-def test_hermes_resume_configuration_block_preserves_park(tmp_path, monkeypatch, caplog, pr):
+@pytest.mark.parametrize("sleep_again", [False, True])
+def test_hermes_resume_configuration_block_preserves_park(
+    tmp_path, monkeypatch, caplog, pr, sleep_again
+):
     from dataclasses import replace
 
     from outerloop.climbboard import collect_status
@@ -7275,6 +7278,10 @@ def test_hermes_resume_configuration_block_preserves_park(tmp_path, monkeypatch,
 
     def successful_resume(self, brief, workspace, resume_session_id=None):
         resumed.append(resume_session_id)
+        if sleep_again:
+            from outerloop.syscall_cli import main
+
+            assert main(["sleep"], root=workspace) == 0
         return SessionResult(
             session_id="s1",
             final_text="done",
@@ -7290,3 +7297,12 @@ def test_hermes_resume_configuration_block_preserves_park(tmp_path, monkeypatch,
         state, run_id, harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"), **kwargs
     )
     assert resumed == ["s1"]
+    saved = load_record(state, run_id)
+    assert "hermes_resume_required_chars" not in saved.stage
+    if sleep_again:
+        assert saved.state == "parked"
+        assert saved.stage["phase"] == "author-sleep"
+        woke.clear()
+        for _ in range(2):
+            sweep()
+        assert not woke

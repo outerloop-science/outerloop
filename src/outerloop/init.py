@@ -850,19 +850,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[2:] if argv is None else argv)
     interactive = not args.yes
 
-    from outerloop.harness import hermes_resume_max_chars
-
-    try:
-        hermes_resume_max_chars()
-    except ValueError as exc:
-        print(f"outerloop init: {exc}", file=sys.stderr)
-        return 2
-
     try:
         answers, pat_file = _collect(args, interactive)
     except StartError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
+    if answers.author_backend == "hermes":
+        from outerloop.harness import hermes_resume_max_chars
+
+        try:
+            hermes_resume_max_chars()
+        except ValueError as exc:
+            print(f"outerloop init: {exc}", file=sys.stderr)
+            return 2
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2

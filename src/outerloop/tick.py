@@ -1696,7 +1696,9 @@ def _sweep_one(
         stuck.append(record.run_id)
         return
 
-    if record.stage.get("hermes_resume_required_chars"):
+    # Only a positive pending requirement represents a configuration wake.
+    # A successful resume removes it before any subsequent normal sleep.
+    if int(str(record.stage.get("hermes_resume_required_chars", 0))) > 0:
         wake(record, "resume configuration unblocked", "configuration")
         return
 
@@ -2443,7 +2445,11 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from outerloop.attempt import (
+            PANEL_KEY_DEFAULT,
+            effective_author_credential,
+            resolve_author_key_file,
+        )
         from outerloop.endpoints import author_model_setting
         from outerloop.github import FileTokenProvider
         from outerloop.panel import resolve_lenses
@@ -2466,10 +2472,10 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         if any(backend == "hermes" for _, backend, _ in lenses):
             hermes_resume_max_chars()
         author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-        _, author_endpoint = resolve_endpoint(
-            author_model_setting(author_backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")),
-            author_backend,
+        author_credential = effective_author_credential(
+            author_backend, fleet_author_model(author_backend)
         )
+        author_path = author_credential.key_file
         traditional = []
         for kind, backend, model in lenses:
             _, profile = resolve_endpoint(model, backend)
@@ -2479,21 +2485,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             if not spec.image or not Path(spec.image).is_file():
                 return f"a {backend} endpoint panel lens requires a real container image"
             author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-            from outerloop.endpoints import model_key, validate_judge_key_file
+            from outerloop.endpoints import validate_judge_key_file
 
             validate_judge_key_file(
                 profile,
-                author_endpoint.key_file
-                if author_endpoint
-                else resolve_author_key_file(author_backend),
+                author_path,
                 spec.panel_key_file or PANEL_KEY_DEFAULT,
             )
-            author_key = model_key(
-                resolve_author_key_file(author_backend),
-                author_backend,
-                fleet_author_model(author_backend),
-            )
-            if profile.key() == author_key:
+            if profile.key() == author_credential.key():
                 return "a panel judge key is the author key (role separation)"
             if backend == "hermes":
                 from outerloop.hermes_install import hermes_ready
@@ -2545,12 +2544,8 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     "provider's login)"
                 )
             key = FileTokenProvider(key_path).token()
-            from outerloop.endpoints import model_key
-
-            if key and key == model_key(
-                resolve_author_key_file(author_backend),
-                author_backend,
-                fleet_author_model(author_backend),
+            if key_path.resolve() == author_path.resolve() or (
+                key and key == author_credential.key()
             ):
                 return "a panel judge key is the author key (role separation)"
             if lens_backend == "hermes":
@@ -2588,8 +2583,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         # (claude vs codex keys coexist), config-driven like the climb itself — so
         # the role-separation check compares the panel key against the RIGHT author
         # key, and a codex run is never judged by a stray Claude key.
-        fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-        author = Path(resolve_author_key_file(fleet_backend))
+        author = author_path
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
             # flight directory, so a relative author path both misconfigures
@@ -2606,9 +2600,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         from outerloop.role_runner import role_key
 
         key = role_key(path)
-        from outerloop.endpoints import model_key
-
-        if key and key == model_key(author, fleet_backend, fleet_author_model(fleet_backend)):
+        if key and key == author_credential.key():
             return "a panel judge key is the author key (role separation)"
         return ""
     except Exception as exc:

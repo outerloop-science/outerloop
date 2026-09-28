@@ -10,12 +10,15 @@ Versions follow [SemVer](https://semver.org).
   configuration-blocked status, retaining their session and snapshot without
   consuming wake retries. Author/judge separation checks effective key paths
   and credential values before constructing sessions; init rejects incomplete
-  Hermes configuration.
+  Hermes configuration only for Hermes authors. Endpoint author credentials are
+  shared by attempt and tick preflight, including native panel key comparisons.
 - Upgrading: no action or backfill needed; legacy records without
   `stage.hermes_resume_required_chars` are unblocked. The first oversized wake
   records the required budget; raising `OUTERLOOP_HERMES_RESUME_MAX_CHARS` lets
-  the next tick or wake resume. Before rollback, resolve blocked runs: older
-  kernels ignore this optional field and may consume retries or abort them.
+  the next tick or wake resume. Successful resumes and endings clear the marker,
+  so later normal sleeps are not configuration wakes. Before rollback, resolve
+  blocked runs: older kernels ignore this optional field and may consume retries
+  or abort them.
 
 - Hermes is an author peer: init, native provider/endpoint validation, contained
   fresh and resumed sessions, absolute syscall commands, and separate author keys.

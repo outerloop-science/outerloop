@@ -1158,3 +1158,28 @@ def test_init_refuses_incomplete_hermes(tmp_path, monkeypatch, capsys, missing):
     assert init.main(args) == 2
     assert not (tmp_path / ".env").exists()
     assert "outerloop init:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+def test_init_ignores_hermes_budget_for_other_authors(tmp_path, monkeypatch, backend):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "invalid")
+    assert (
+        init.main(
+            [
+                "--yes",
+                "--compute",
+                "local",
+                "--target",
+                "o/r",
+                "--author-backend",
+                backend,
+                "--author-model",
+                "native-model",
+                "--claude-model",
+                "claude-model",
+                "--no-install-harness",
+            ]
+        )
+        == 0
+    )
