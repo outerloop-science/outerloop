@@ -12,11 +12,11 @@ OUTERLOOP_ENDPOINT_AUTHOR_API=chat
 OUTERLOOP_ENDPOINT_JUDGE_URL=https://llm.example.internal/v1
 OUTERLOOP_ENDPOINT_JUDGE_KEY_FILE=/keys/model-judge
 OUTERLOOP_ENDPOINT_JUDGE_MODEL=open-model
-OUTERLOOP_ENDPOINT_JUDGE_API=chat,responses
+OUTERLOOP_ENDPOINT_JUDGE_API=chat,anthropic
 
 OUTERLOOP_AUTHOR_BACKEND=hermes
 OUTERLOOP_AUTHOR_ENDPOINT=author
-OUTERLOOP_PANEL=verify:hermes:[endpoint=judge],review:codex:open-model[endpoint=judge]
+OUTERLOOP_PANEL=verify:hermes:[endpoint=judge],review:claude:open-model[endpoint=judge]
 REVIEW_HERMES_REPO=/opt/hermes-agent
 OUTERLOOP_IMAGE=/opt/agent.sif
 ```
@@ -54,7 +54,8 @@ For example, an Anthropic-compatible client may need
 `https://llm.example.internal` while OpenAI-compatible clients need
 `https://llm.example.internal/v1`.
 
-- **Claude Code:** `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`; the profile
+- **Claude Code:** `ANTHROPIC_BASE_URL` (the profile URL without a trailing `/v1`,
+  since Claude Code appends `/v1/messages`) and `ANTHROPIC_AUTH_TOKEN`; the profile
   model also sets the default Opus, Sonnet, Haiku, and small-fast model variables.
   Nonessential traffic is disabled. Vertex, Bedrock, and Foundry are disabled;
   API keys, ADC, and ambient authentication are excluded from the session env.
@@ -62,8 +63,10 @@ For example, an Anthropic-compatible client may need
   `base_url`, `env_key`, `wire_api = "responses"`, and
   `requires_openai_auth = false`. Custom-provider sessions skip OpenAI login.
   This follows the [official configuration reference](https://developers.openai.com/codex/config-reference).
-  Configuration is tested here; live self-hosted Responses interoperability is
-  not verified by this change.
+  In a live test against a self-hosted vLLM server, requests reached the local
+  Responses endpoint and succeeded, but the session filed no verdict: the served
+  model's tool calls did not come back through that server's Responses API. Use
+  Claude Code or Hermes for self-hosted endpoints until this is resolved.
 - **Hermes:** the per-run `.hermes/config.yaml` selects a named
   `custom_providers` list entry with `base_url`, `key_env`, and
   `api_mode: chat_completions`. **`reasoning_echo: true` belongs under `model`,
