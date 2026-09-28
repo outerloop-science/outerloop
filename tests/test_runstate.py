@@ -483,3 +483,16 @@ def test_fresh_tick_lease_yields_when_another_node_wrote_during_the_settle(tmp_p
     monkeypatch.setattr(runstate.time, "sleep", lambda seconds: None)
     lease = runstate.acquire_tick_lease(tmp_path, "alpha2:2", 101, 300, settle_s=0.25)
     runstate.release_tick_lease(lease, "alpha2:2")
+
+
+def test_ended_record_drops_resume_block(tmp_path):
+    save_record(
+        tmp_path,
+        make_record(
+            state=ENDED,
+            ending=STUCK,
+            stage={"hermes_resume_required_chars": 200000, "sleeps_used": 2},
+        ),
+        now=1.0,
+    )
+    assert load_record(tmp_path, "r1").stage == {"sleeps_used": 2}

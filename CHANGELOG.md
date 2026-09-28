@@ -6,6 +6,30 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Hermes author resumes that exceed the replay budget stay parked with a
+  configuration-blocked status, retaining their session and snapshot without
+  consuming wake retries. Author/judge separation checks effective key paths
+  and credential values before constructing sessions; init rejects incomplete
+  Hermes configuration only for Hermes authors. Endpoint author credentials are
+  shared by attempt and tick preflight, including native panel key comparisons.
+- Upgrading: no action or backfill needed; legacy records without
+  `stage.hermes_resume_required_chars` are unblocked. The first oversized wake
+  records the required budget; raising `OUTERLOOP_HERMES_RESUME_MAX_CHARS` lets
+  the next tick or wake resume. Successful resumes and endings clear the marker,
+  so later normal sleeps are not configuration wakes. Before rollback, resolve
+  blocked runs: older kernels ignore this optional field and may consume retries
+  or abort them.
+
+- Hermes is an author peer: init, native provider/endpoint validation, contained
+  fresh and resumed sessions, absolute syscall commands, and separate author keys.
+  Resume replay preserves the original brief and latest results within
+  `OUTERLOOP_HERMES_RESUME_MAX_CHARS` (default 120000), with explicit omission counts.
+- Upgrading: no backfill; existing records and full saved transcripts remain
+  readable. The first Hermes wake applies the replay bound. Finish Hermes author
+  runs before rollback: older kernels reject unsupported Hermes author wakes
+  (the endpoint-profile predecessor accepts endpoint routes only). Ended records
+  remain readable. See [Hermes setup and compatibility](docs/install.md).
+
 - Endpoint profiles declare compatible APIs and use `model[endpoint=profile]`
   selectors, preserving native vendor model IDs. Judge credentials enforce file
   separation; verdicts redact the session key before posting or aggregation.

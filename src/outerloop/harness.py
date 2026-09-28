@@ -495,6 +495,65 @@ def _save_resume_transcript(
     )
 
 
+def hermes_resume_max_chars(environ: Mapping[str, str] | None = None) -> int:
+    """Maximum rehydrated brief size, including the new results message."""
+    env = os.environ if environ is None else environ
+    raw = env.get("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "120000")
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ValueError("OUTERLOOP_HERMES_RESUME_MAX_CHARS must be a positive integer")
+    return value
+
+
+class ResumeContextBlocked(ValueError):
+    """Required context cannot fit; preserve the parked session for an operator."""
+
+    def __init__(self, required_chars: int):
+        self.required_chars = required_chars
+        super().__init__(
+            "configuration-blocked: original brief and latest results exceed "
+            "OUTERLOOP_HERMES_RESUME_MAX_CHARS; set it to at least "
+            f"{required_chars} and tick or wake again"
+        )
+
+
+def resume_config_block(stage: dict[str, object]) -> str:
+    required = int(str(stage.get("hermes_resume_required_chars", 0)))
+    if not required:
+        return ""
+    try:
+        budget = hermes_resume_max_chars()
+    except ValueError as exc:
+        return f"configuration-blocked: {exc}"
+    return str(ResumeContextBlocked(required)) if budget < required else ""
+
+
+def _bounded_resume_brief(turns: list[dict[str, str]], latest: str, budget: int) -> str:
+    """Keep the original brief and a contiguous recent tail; never truncate results."""
+    tail = len(turns)
+
+    def render(start: int) -> str:
+        omitted = start - 1
+        note = (
+            f"[Resume context: {omitted} earlier turns omitted to fit the replay budget.]\n\n"
+            if omitted
+            else ""
+        )
+        return f"{note}{_render_resume_transcript([turns[0], *turns[start:]])}\n\n{latest}"
+
+    complete = render(1)
+    if len(complete) <= budget:
+        return complete
+    if len(render(tail)) > budget:
+        raise ResumeContextBlocked(min(len(complete), len(render(tail))))
+    while tail > 1 and len(render(tail - 1)) <= budget:
+        tail -= 1
+    return render(tail)
+
+
 def _render_resume_transcript(turns: list[dict[str, str]]) -> str:
     """Render prior turns as a readable prefix for the resume brief."""
     blocks = ["=== Earlier in this session (your prior context) ==="]
@@ -1392,6 +1451,8 @@ class HermesHarness:
     container_image: str = ""
     apptainer_binary: str = field(default_factory=apptainer_from_env)
 
+    resume_max_chars: int | None = None
+
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
@@ -1428,7 +1489,13 @@ class HermesHarness:
                     detail="no saved transcript to restore this session's context",
                 )
             prior_turns = loaded
-            brief_to_send = f"{_render_resume_transcript(prior_turns)}\n\n{brief_text}"
+            brief_to_send = _bounded_resume_brief(
+                prior_turns,
+                brief_text,
+                self.resume_max_chars
+                if self.resume_max_chars is not None
+                else hermes_resume_max_chars(),
+            )
         if self.provider:
             # minimal headless config: provider + default model, nothing else
             hermes_dir = session_home / ".hermes"

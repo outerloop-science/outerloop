@@ -38,6 +38,16 @@ GRACE = 900.0
 TTL = 4500.0
 
 
+@pytest.fixture(autouse=True)
+def author_credential(tmp_path, monkeypatch):
+    """Panel preflight compares credentials with the effective author key."""
+    key = tmp_path / "author-key"
+    key.write_text("distinct-author-credential")
+    key.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(key))
+    return key
+
+
 @dataclass
 class FakeSlurm:
     """status() by job id; '!' prefix means the query itself fails."""
@@ -1865,7 +1875,9 @@ def test_author_config_preflight_blocks_before_side_effects(
     assert _author_config_error(make()) == ""
 
 
-def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch: Any) -> None:
+def test_panel_key_preflight_blocks_claim_and_launch(
+    tmp_path: Path, monkeypatch: Any, author_credential: Path
+) -> None:
     """Panel on + a key the climb would reject (missing, group-readable,
     empty): the intake lane claims nothing and the self-initiated lane
     submits nothing — the strand is caught before any side effect. The
@@ -1946,7 +1958,7 @@ def test_panel_key_preflight_blocks_claim_and_launch(tmp_path: Path, monkeypatch
     monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", "keys/author")
     rel_err = _panel_preflight_error(make(panel_key_file=str(good)))
     assert "author key path" in rel_err and "relative" in rel_err
-    monkeypatch.delenv("OUTERLOOP_CLAUDE_KEY_FILE")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(author_credential))
 
     # both lanes consult it BEFORE side effects: nothing claimed or submitted
     bad = make(panel_key_file=str(tmp_path / "nope"))

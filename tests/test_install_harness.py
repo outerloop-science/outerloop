@@ -42,23 +42,50 @@ def test_init_install(tmp_path, monkeypatch, capsys, backend, mode):
         if mode == "failure":
             raise subprocess.CalledProcessError(1, argv)
         if mode != "no_output":
-            target.parent.mkdir()
-            target.write_text("#!/bin/sh\n")
-            target.chmod(0o755)
+            if backend == "hermes":
+                from outerloop.hermes_install import HERMES_SHA, hermes_runtime
+
+                target.mkdir(parents=True)
+                (target / "run_agent.py").touch()
+                runtime = hermes_runtime(target)
+                (runtime / "venv/bin").mkdir(parents=True)
+                python = runtime / "venv/bin/python"
+                python.write_text("#!/bin/sh\n")
+                python.chmod(0o755)
+                (runtime / ".complete").write_text(HERMES_SHA)
+            else:
+                target.parent.mkdir()
+                target.write_text("#!/bin/sh\n")
+                target.chmod(0o755)
 
     monkeypatch.setattr(init.subprocess, "run", run)
     args = ["--yes", "--compute", "local", "--target", "o/r", "--author-backend", backend]
     if mode == "skip":
         args.append("--no-install-harness")
+    if backend == "hermes":
+        image = tmp_path / "image.sif"
+        image.touch()
+        monkeypatch.setattr(init, "ensure_image", lambda **kw: str(image))
+        monkeypatch.setenv("REVIEW_HERMES_PROVIDER", "openai")
+        args += ["--author-model", "gpt-native"]
+        if mode == "present":
+            # Provision the same pinned runtime an earlier installer left.
+            run(["bash", str(ROOT / "scripts/install_hermes.sh"), str(target)], check=True)
+            calls.clear()
     rc = init.main(args)
     if mode in ("failure", "no_output", "permission"):
         assert rc == 1
         assert "Run manually: bash " in capsys.readouterr().err
         assert not (tmp_path / "config" / ".env").exists()
+    elif backend == "hermes" and mode == "skip":
+        assert rc == 2  # skipping a missing runtime cannot report successful setup
+        assert not (tmp_path / "config" / ".env").exists()
     else:
         assert rc == 0
         env = (tmp_path / "config" / ".env").read_text()
-        assert (f"{init.author_bin_env(backend)}={target}" in env) == (mode != "skip")
+        assert (f"{init.author_bin_env(backend)}={target}" in env) == (
+            mode != "skip" or backend == "hermes"
+        )
     assert len(calls) == (mode not in ("present", "skip"))
     if mode == "missing":
         monkeypatch.setattr(init, "locate_harness", lambda _: str(target))

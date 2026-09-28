@@ -528,3 +528,41 @@ def test_new_kernel_wakes_missing_route_record(tmp_path, monkeypatch):
     with pytest.raises(Resumed):
         attempt.main()
     assert seen["backend"] == "claude" and seen["model"] == "claude-native"
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
+@pytest.mark.parametrize("same_path", [False, True])
+def test_endpoint_author_native_panel_separation(
+    profile, tmp_path, monkeypatch, backend, same_path
+):
+    from outerloop.attempt import _panel_lenses_from_args
+    from outerloop.tick import ServiceSpec, _panel_preflight_error
+
+    image = tmp_path / "image.sif"
+    image.touch()
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", "open-model[endpoint=local]")
+    judge = Path(profile["OUTERLOOP_ENDPOINT_LOCAL_KEY_FILE"]) if same_path else tmp_path / "judge"
+    judge.write_text("endpoint-secret")
+    judge.chmod(0o600)
+    monkeypatch.setenv(f"OUTERLOOP_PANEL_{backend.upper()}_KEY_FILE", str(judge))
+    panel = f"verify:{backend}:judge-model"
+    spec = ServiceSpec(
+        account="",
+        partition="",
+        run_root=tmp_path,
+        home=tmp_path,
+        panel=panel,
+        image=str(image),
+        panel_key_file=str(judge) if backend == "claude" else "",
+    )
+    assert "role separation" in _panel_preflight_error(spec)
+    args = SimpleNamespace(
+        panel=panel,
+        author_backend="codex",
+        model="open-model[endpoint=local]",
+        image=str(image),
+        panel_key_file=spec.panel_key_file,
+    )
+    with pytest.raises(ValueError, match="role separation"):
+        _panel_lenses_from_args(args)

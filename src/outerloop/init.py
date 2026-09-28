@@ -43,7 +43,7 @@ CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
 API = "https://api.github.com"
 # The climbing author's harnesses (attempt.py's --author-backend choices).
-AUTHOR_BACKENDS = ("claude", "codex")
+AUTHOR_BACKENDS = ("claude", "codex", "hermes")
 
 
 @dataclass
@@ -59,7 +59,7 @@ class InitAnswers:
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
-    author_bin: str = ""  # the author harness binary (claude/codex), absolute, when found
+    author_bin: str = ""  # absolute binary or Hermes source path, when ready
 
     # Existing deployment values untouched by a focused GitHub App update.
     preserved_env: dict[str, str] = field(default_factory=dict)
@@ -143,9 +143,12 @@ def _existing_env() -> str:
 
 
 def author_bin_env(backend: str) -> str:
-    """The `.env` key naming `backend`'s harness binary (`OUTERLOOP_CLAUDE_BIN`,
-    `OUTERLOOP_CODEX_BIN`), the same names `attempt` reads."""
-    return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
+    """The `.env` key naming the backend's binary or pinned source directory."""
+    return (
+        "REVIEW_HERMES_REPO"
+        if backend == "hermes"
+        else f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
+    )
 
 
 def locate_harness(backend: str) -> str:
@@ -154,6 +157,13 @@ def locate_harness(backend: str) -> str:
     with no login PATH, would not find it); "" when absent. Recorded in .env so
     every job spawns the same binary the operator installed."""
     name = backend or AUTHOR_BACKENDS[0]
+    if name == "hermes":
+        repo = (
+            Path(os.environ.get("REVIEW_HERMES_REPO") or Path.home() / "hermes-agent")
+            .expanduser()
+            .resolve()
+        )
+        return str(repo) if hermes_ready(repo) else ""
     recorded = os.environ.get(author_bin_env(name), "")
     if recorded:
         # an operator's explicit path is kept when it works and reported when it does not
@@ -525,7 +535,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     # (that one is about auth). When asked, offer the fixed set, not a blank.
     ask_author = interactive and not args.github_app
     backend = args.author_backend or (
-        _ask("Author backend (claude or codex)", "claude") if ask_author else ""
+        _ask("Author backend (claude, codex or hermes)", "claude") if ask_author else ""
     )
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
@@ -845,6 +855,14 @@ def main(argv: list[str] | None = None) -> int:
     except StartError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
+    if answers.author_backend == "hermes":
+        from outerloop.harness import hermes_resume_max_chars
+
+        try:
+            hermes_resume_max_chars()
+        except ValueError as exc:
+            print(f"outerloop init: {exc}", file=sys.stderr)
+            return 2
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2
@@ -958,6 +976,35 @@ def main(argv: list[str] | None = None) -> int:
         # the container probe is for local mode: on Slurm the image runs on
         # compute nodes, which the login node cannot speak for
         answers.image = ensure_image(interactive=interactive, probe=(answers.compute == "local"))
+
+    if answers.author_backend == "hermes":
+        from outerloop.attempt import author_config_error
+        from outerloop.endpoints import author_model_setting
+
+        effective = dict(os.environ)
+        effective.update(
+            (key, value)
+            for key, value in (line.split("=", 1) for line in render_env(answers, "").splitlines())
+        )
+        image = effective.get("OUTERLOOP_IMAGE", "")
+        if image and not Path(image).expanduser().is_file():
+            print(f"outerloop init: Hermes container image {image} is not a file", file=sys.stderr)
+            return 2
+        try:
+            model = author_model_setting(
+                "hermes", effective.get("OUTERLOOP_AUTHOR_MODEL", ""), effective
+            )
+            error = author_config_error(
+                "hermes",
+                model,
+                effective.get("OUTERLOOP_IMAGE", ""),
+                environ=effective,
+            )
+        except ValueError as exc:
+            error = str(exc)
+        if error:
+            print(f"outerloop init: {error}; configure Hermes and rerun init", file=sys.stderr)
+            return 2
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.

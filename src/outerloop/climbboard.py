@@ -1088,7 +1088,10 @@ def collect_status(
         if record.target != target or record.state not in _LIVE_STATES:
             continue
         stage = record.stage or {}
-        note = str(stage.get("report") or "")
+        from outerloop.harness import resume_config_block
+
+        blocked = resume_config_block(stage)
+        note = blocked or str(stage.get("report") or "")
         hyp = report_hypothesis(note) or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
@@ -1104,9 +1107,9 @@ def collect_status(
                 "agent": record.agent_id,
                 "benchmark": record.benchmark,
                 "state": record.state,
-                "phase": stage.get("phase", ""),
+                "phase": "configuration-blocked" if blocked else stage.get("phase", ""),
                 # the agent's own headline: what it says it is working on
-                "direction": _phrase(hyp or note.replace("\n", " ")),
+                "direction": blocked or _phrase(hyp or note.replace("\n", " ")),
                 "hypothesis": hyp,
                 "since": record.updated or record.created,
                 # a run that never launched HAS used zero — absent keys must

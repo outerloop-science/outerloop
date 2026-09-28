@@ -1671,6 +1671,14 @@ def _sweep_one(
     ):
         return
 
+    from outerloop.harness import resume_config_block
+
+    blocked = resume_config_block(record.stage)
+    if blocked:
+        log.warning("run %s: %s", record.run_id, blocked)
+        deferred.append(record.run_id)
+        return
+
     # Layer 5: too many failed attempts is a terminal, reported state.
     if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
         if not dry_run:
@@ -1686,6 +1694,12 @@ def _sweep_one(
                 bot_login=bot_login,
             )
         stuck.append(record.run_id)
+        return
+
+    # Only a positive pending requirement represents a configuration wake.
+    # A successful resume removes it before any subsequent normal sleep.
+    if int(str(record.stage.get("hermes_resume_required_chars", 0))) > 0:
+        wake(record, "resume configuration unblocked", "configuration")
         return
 
     job_ids = _poll_targets(record)
@@ -2407,14 +2421,14 @@ def _author_config_error(spec: ServiceSpec) -> str:
     (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
     strands a claimed intake issue. Reads the fleet author config from env — the
     same source the climb defaults from — and the image the tick already knows."""
-    from outerloop.attempt import codex_author_config_error, fleet_author_model
+    from outerloop.attempt import author_config_error, fleet_author_model
 
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
     try:
         model = fleet_author_model(backend)
     except (ClaudeModelUnset, ValueError) as exc:
         return str(exc)
-    return codex_author_config_error(backend, model, spec.image)
+    return author_config_error(backend, model, spec.image)
 
 
 def _panel_preflight_error(spec: ServiceSpec) -> str:
@@ -2431,7 +2445,11 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from outerloop.attempt import (
+            PANEL_KEY_DEFAULT,
+            effective_author_credential,
+            resolve_author_key_file,
+        )
         from outerloop.endpoints import author_model_setting
         from outerloop.github import FileTokenProvider
         from outerloop.panel import resolve_lenses
@@ -2449,12 +2467,15 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             return str(exc)
         from outerloop.attempt import fleet_author_model
         from outerloop.endpoints import resolve_endpoint
+        from outerloop.harness import hermes_resume_max_chars
 
+        if any(backend == "hermes" for _, backend, _ in lenses):
+            hermes_resume_max_chars()
         author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-        _, author_endpoint = resolve_endpoint(
-            author_model_setting(author_backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")),
-            author_backend,
+        author_credential = effective_author_credential(
+            author_backend, fleet_author_model(author_backend)
         )
+        author_path = author_credential.key_file
         traditional = []
         for kind, backend, model in lenses:
             _, profile = resolve_endpoint(model, backend)
@@ -2464,21 +2485,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             if not spec.image or not Path(spec.image).is_file():
                 return f"a {backend} endpoint panel lens requires a real container image"
             author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-            from outerloop.endpoints import model_key, validate_judge_key_file
+            from outerloop.endpoints import validate_judge_key_file
 
             validate_judge_key_file(
                 profile,
-                author_endpoint.key_file
-                if author_endpoint
-                else resolve_author_key_file(author_backend),
+                author_path,
                 spec.panel_key_file or PANEL_KEY_DEFAULT,
             )
-            author_key = model_key(
-                resolve_author_key_file(author_backend),
-                author_backend,
-                fleet_author_model(author_backend),
-            )
-            if profile.key() == author_key:
+            if profile.key() == author_credential.key():
                 return "a panel judge key is the author key (role separation)"
             if backend == "hermes":
                 from outerloop.hermes_install import hermes_ready
@@ -2514,12 +2528,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                 return (
                     f"{lens_backend} panel key path {key_path} is relative; only absolute paths fly"
                 )
-            author = Path(resolve_author_key_file("codex")).expanduser()
-            if key_path.resolve() == author.resolve():
-                return (
-                    f"{lens_backend} panel key file {key_path} is the codex author "
-                    "key (role separation: the judge needs its own key)"
-                )
+            for author_backend_name in dict.fromkeys((author_backend, "claude", "codex", "hermes")):
+                author = Path(resolve_author_key_file(author_backend_name)).expanduser()
+                if key_path.resolve() == author.resolve():
+                    return (
+                        f"{lens_backend} panel key file {key_path} is the "
+                        f"{author_backend_name} author "
+                        "key (role separation: the judge needs its own key)"
+                    )
             claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
             if key_path.resolve() == claude_panel.resolve():
                 return (
@@ -2528,7 +2544,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     "provider's login)"
                 )
             key = FileTokenProvider(key_path).token()
-            if author_endpoint and key == author_endpoint.key():
+            if key_path.resolve() == author_path.resolve() or (
+                key and key == author_credential.key()
+            ):
                 return "a panel judge key is the author key (role separation)"
             if lens_backend == "hermes":
                 repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
@@ -2540,13 +2558,13 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                         "run bash scripts/install_hermes.sh "
                         f"{repo or '$REVIEW_HERMES_REPO'}"
                     )
-                from outerloop.role_runner import _HERMES_PROVIDERS
+                from outerloop.role_runner import HERMES_PROVIDERS
 
                 provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
-                if provider not in _HERMES_PROVIDERS:
+                if provider not in HERMES_PROVIDERS:
                     return (
                         f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
-                        f"(have: {sorted(_HERMES_PROVIDERS)})"
+                        f"(have: {sorted(HERMES_PROVIDERS)})"
                     )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply
@@ -2565,8 +2583,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         # (claude vs codex keys coexist), config-driven like the climb itself — so
         # the role-separation check compares the panel key against the RIGHT author
         # key, and a codex run is never judged by a stray Claude key.
-        fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-        author = Path(resolve_author_key_file(fleet_backend))
+        author = author_path
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
             # flight directory, so a relative author path both misconfigures
@@ -2583,7 +2600,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         from outerloop.role_runner import role_key
 
         key = role_key(path)
-        if author_endpoint and key == author_endpoint.key():
+        if key and key == author_credential.key():
             return "a panel judge key is the author key (role separation)"
         return ""
     except Exception as exc:
@@ -3394,7 +3411,7 @@ def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
             log.warning(
                 "local mode: no container image at %s; sessions run under the harness "
                 "sandbox and evaluations run bare on this machine; the panel is %s; a "
-                "codex author needs the image (docs/install.md, local mode)",
+                "codex or hermes author needs the image (docs/install.md, local mode)",
                 image,
                 "on by OUTERLOOP_PANEL_UNCONTAINED=1"
                 if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") == "1"

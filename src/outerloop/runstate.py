@@ -255,6 +255,10 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
         raise ValueError("waiting run with an experiment needs a deadline")
     directory = run_dir(root, record.run_id)
     directory.mkdir(parents=True, exist_ok=True)
+    if record.state == ENDED:
+        stage = dict(record.stage)
+        stage.pop("hermes_resume_required_chars", None)
+        record = replace(record, stage=stage)
     stamped = replace(record, updated=now, created=record.created or now)
     # unique tmp name: two concurrent writers must not interleave into the
     # same tmp file before the atomic replace
