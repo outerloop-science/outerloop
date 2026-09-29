@@ -137,6 +137,7 @@ class RunRecord:
     # the harness strips it only when constructing the backend session.
     author_backend: str = ""
     author_model: str = ""
+    author_overridden: bool = False  # judges inherit the fleet author for this run
     # The resolved author key FILE PATH (not the key) this run used, so a wake or
     # follow-up reproduces the exact key — an explicit --key-file survives, and an
     # in-flight run is immune to a later env change. "" = resolve per backend
@@ -264,6 +265,8 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
     # same tmp file before the atomic replace
     tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     payload = asdict(stamped)
+    if not stamped.author_overridden:
+        payload.pop("author_overridden")  # No-setting records retain their exact wire shape.
     path = directory / RECORD_NAME
     if path.exists():
         old = json.loads(path.read_text())

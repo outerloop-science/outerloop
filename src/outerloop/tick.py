@@ -1679,6 +1679,19 @@ def _sweep_one(
         deferred.append(record.run_id)
         return
 
+    from outerloop.endpoints import EndpointUnavailable, resolve_endpoint
+
+    try:
+        _, profile = resolve_endpoint(record.author_model, record.author_backend or "claude")
+        if profile:
+            _ = profile.url
+    except EndpointUnavailable as exc:
+        log.warning("run %s: %s", record.run_id, exc)
+        deferred.append(record.run_id)
+        return
+    except ValueError:
+        pass  # Existing configuration validation reports permanent errors.
+
     # Layer 5: too many failed attempts is a terminal, reported state.
     if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
         if not dry_run:
@@ -2415,23 +2428,54 @@ def _climb_panel_argv(spec: ServiceSpec) -> list[str]:
     return argv
 
 
-def _author_config_error(spec: ServiceSpec) -> str:
-    """Why the config-driven author would die at the climb's startup ("" when it
-    won't), checked on the tick host BEFORE a claim/submit so a codex misconfig
-    (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
-    strands a claimed intake issue. Reads the fleet author config from env — the
-    same source the climb defaults from — and the image the tick already knows."""
-    from outerloop.attempt import author_config_error, fleet_author_model
+def _selected_author(spec: ServiceSpec, agent_id: str = "agent-01") -> tuple[str, str]:
+    from outerloop.attempt import fleet_author_model
+    from outerloop.author_overrides import select_override
 
+    selected = select_override(spec.target, agent_id)
+    if selected:
+        return selected.backend, selected.resolved_model()
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+    return backend, fleet_author_model(backend)
+
+
+def _climb_author_argv(spec: ServiceSpec, agent_id: str = "agent-01") -> list[str]:
+    from outerloop.attempt import effective_author_credential
+    from outerloop.author_overrides import overrides, select_override
+
+    if not overrides():
+        return []
+    backend, model = _selected_author(spec, agent_id)
+    credential = effective_author_credential(backend, model)
+    return [
+        "--author-bound",
+        "--author-backend",
+        backend,
+        "--model",
+        model,
+        "--key-file",
+        str(credential.key_file),
+        *(["--author-overridden"] if select_override(spec.target, agent_id) else []),
+    ]
+
+
+def _author_config_error(spec: ServiceSpec, agent_id: str = "agent-01") -> str:
+    from outerloop.attempt import author_config_error
+    from outerloop.endpoints import EndpointUnavailable, resolve_endpoint
+
     try:
-        model = fleet_author_model(backend)
-    except (ClaudeModelUnset, ValueError) as exc:
+        backend, model = _selected_author(spec, agent_id)
+        _, profile = resolve_endpoint(model, backend)
+        if profile:
+            _ = profile.url  # Readiness before claim: a missing address never spends an attempt.
+        return author_config_error(backend, model, spec.image)
+    except (ClaudeModelUnset, ValueError, EndpointUnavailable) as exc:
         return str(exc)
-    return author_config_error(backend, model, spec.image)
 
 
-def _panel_preflight_error(spec: ServiceSpec) -> str:
+def _panel_preflight_error(
+    spec: ServiceSpec, agent_id: str = "agent-01", *, record: RunRecord | None = None
+) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
     OWN rules (resolve_lenses for grammar and author/model inheritance;
@@ -2465,15 +2509,23 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             )
         except ValueError as exc:
             return str(exc)
-        from outerloop.attempt import fleet_author_model
         from outerloop.endpoints import resolve_endpoint
         from outerloop.harness import hermes_resume_max_chars
 
         if any(backend == "hermes" for _, backend, _ in lenses):
             hermes_resume_max_chars()
-        author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+        author_key_file = ""
+        if record is None:
+            author_backend, author_model = _selected_author(spec, agent_id)
+        else:
+            from outerloop.attempt import fleet_author_model, resume_author
+
+            fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+            author_backend, author_model, author_key_file = resume_author(
+                record, fleet_author_model(fleet_backend), fleet_backend
+            )
         author_credential = effective_author_credential(
-            author_backend, fleet_author_model(author_backend)
+            author_backend, author_model, author_key_file
         )
         author_path = author_credential.key_file
         traditional = []
@@ -2484,7 +2536,6 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                 continue
             if not spec.image or not Path(spec.image).is_file():
                 return f"a {backend} endpoint panel lens requires a real container image"
-            author_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
             from outerloop.endpoints import validate_judge_key_file
 
             validate_judge_key_file(
@@ -2778,7 +2829,7 @@ def service_self_initiated(
         if lane_error := _gpu_lane_error(contract, benchmark, spec):
             log.error("attempt on %s not launched: %s", benchmark, lane_error)
             return None
-        author_error = _author_config_error(spec)
+        author_error = _author_config_error(spec, slot_agent)
         if author_error:
             log.error(
                 "climb on %s not launched: author misconfigured — %s "
@@ -2787,7 +2838,7 @@ def service_self_initiated(
                 author_error,
             )
             return None
-        panel_error = _panel_preflight_error(spec)
+        panel_error = _panel_preflight_error(spec, slot_agent)
         if panel_error:
             log.error(
                 "climb on %s not launched: panel misconfigured — %s "
@@ -2814,12 +2865,12 @@ def service_self_initiated(
             slot_agent,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *_climb_author_argv(spec, slot_agent),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        # config-driven author: climb resolves the author backend/model/key from
-        # OUTERLOOP_AUTHOR_* env (inherited by the job), so the tick threads
-        # neither the backend nor its key — a new backend needs zero tick change.
+        # With overrides configured the launch args bind the effective author;
+        # otherwise preserve the existing fleet-driven job command.
         job_id = submit(
             root,
             spec.target,
@@ -3077,6 +3128,7 @@ def service_intake(
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
         job_minutes = _attempt_job_minutes(spec, limits)
+        author_argv = _climb_author_argv(spec)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from outerloop.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
@@ -3107,11 +3159,11 @@ def service_intake(
             hypothesis_b64,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *author_argv,
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        # config-driven author: climb resolves the author key from the
-        # OUTERLOOP_AUTHOR_* env by backend; the tick does not thread it.
+        # The selected author was bound before claiming the issue.
         try:
             job_id = submit(
                 root,
@@ -3201,7 +3253,9 @@ class JobWakeDispatcher:
             "--max-turns",
             str(self.spec.max_turns),
         ]
-        panel_skip = _panel_preflight_error(self.spec) if self.spec.panel.strip() else ""
+        panel_skip = (
+            _panel_preflight_error(self.spec, record=record) if self.spec.panel.strip() else ""
+        )
         if panel_skip:
             argv += ["--panel-skip", panel_skip]
         # An AUTHOR-SLEEP wake resumes a FULL author session (not the short
@@ -3518,6 +3572,12 @@ def main() -> int:
         "OUTERLOOP_CADENCE_MIN via the chain's own parser (default 30)",
     )
     args = parser.parse_args()
+    from outerloop.author_overrides import validate_overrides
+
+    try:
+        validate_overrides(os.environ, os.environ.get("OUTERLOOP_IMAGE", ""))
+    except ValueError as exc:
+        parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     args.root.mkdir(parents=True, exist_ok=True)

@@ -855,6 +855,19 @@ def main(argv: list[str] | None = None) -> int:
     except StartError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
+    from outerloop.author_overrides import overrides, validate_overrides
+
+    try:
+        effective_overrides = {
+            **env_file_values(CONFIG_DIR / ENV_FILE.name, keys=None),
+            **answers.preserved_env,
+            **os.environ,
+        }
+        selected_authors = overrides(effective_overrides)
+    except (ValueError, StartError) as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
+
     if answers.author_backend == "hermes":
         from outerloop.harness import hermes_resume_max_chars
 
@@ -940,12 +953,26 @@ def main(argv: list[str] | None = None) -> int:
         settings = env_file_values(env_path, keys=None)
         judge_keys = (
             "OUTERLOOP_PANEL",
+            "OUTERLOOP_AUTHOR_OVERRIDES",
             "REVIEW_BACKEND",
             "REVIEW_MODEL",
             "REVIEW_HERMES_PROVIDER",
             "REVIEW_HERMES_REPO",
         )
-        for key in judge_keys:
+        from outerloop.endpoints import endpoint_config_key
+
+        deployment_env = effective_overrides
+        override_keys = {
+            key
+            for selected in selected_authors.values()
+            for key in (
+                f"OUTERLOOP_{selected.backend.upper()}_KEY_FILE",
+                f"OUTERLOOP_{selected.backend.upper()}_BIN",
+            )
+        }
+        if selected_authors:
+            override_keys.update(key for key in deployment_env if endpoint_config_key(key))
+        for key in (*judge_keys, *sorted(override_keys)):
             if key in os.environ:
                 settings[key] = os.environ[key]
             if key in settings:
@@ -955,11 +982,25 @@ def main(argv: list[str] | None = None) -> int:
         try:
             panel = settings.get("OUTERLOOP_PANEL", "")
             lenses = parse_lenses(panel, answers.author_backend) if panel.strip() else ()
-            needs_hermes = settings.get("REVIEW_BACKEND", "").lower() == "hermes" or any(
-                backend == "hermes" for _, backend, _ in lenses
-            )
+            for backend in sorted({a.backend for a in selected_authors.values()}):
+                if backend in (answers.author_backend or AUTHOR_BACKENDS[0], "hermes"):
+                    continue
+                binary = locate_harness(backend)
+                if cli_install_wanted(binary, args):
+                    binary = install_harness(backend)
+                if binary:
+                    answers.preserved_env[author_bin_env(backend)] = binary
+            needs_hermes = (
+                answers.author_backend == "hermes"
+                or any(a.backend == "hermes" for a in selected_authors.values())
+                or settings.get("REVIEW_BACKEND", "").lower() == "hermes"
+            ) or any(backend == "hermes" for _, backend, _ in lenses)
             if needs_hermes:
-                repo = Path(settings.get("REVIEW_HERMES_REPO") or Path.home() / "hermes-agent")
+                repo = Path(
+                    (answers.author_bin if answers.author_backend == "hermes" else "")
+                    or settings.get("REVIEW_HERMES_REPO")
+                    or Path.home() / "hermes-agent"
+                )
                 repo = repo.expanduser().resolve()
                 if cli_install_wanted(str(repo) if hermes_ready(repo) else "", args):
                     install_harness("hermes", target=repo)
@@ -968,14 +1009,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"outerloop init: {exc}", file=sys.stderr)
             return 1
 
-    # The image, only now: every check that could still end the run has passed
-    # and the overwrite question is answered, so a download is never wasted.
+    # Provision the image before checking backend prerequisites; the override
+    # syntax and overwrite checks have already passed.
     # An existing image is used, else the published one is fetched on a machine
     # that can run it (asked first when interactive); --no-image opts out.
     if not answers.image and not args.no_image:
         # the container probe is for local mode: on Slurm the image runs on
         # compute nodes, which the login node cannot speak for
         answers.image = ensure_image(interactive=interactive, probe=(answers.compute == "local"))
+
+    try:
+        validate_overrides(
+            {**effective_overrides, **answers.preserved_env},
+            answers.image or effective_overrides.get("OUTERLOOP_IMAGE", ""),
+        )
+    except ValueError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
 
     if answers.author_backend == "hermes":
         from outerloop.attempt import author_config_error

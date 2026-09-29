@@ -741,6 +741,12 @@ def render_html(
         "      a.textContent = 'PR'; top.append(a);\n"
         "    }\n"
         "    card.append(top);\n"
+        "    if (r.author_model) {\n"
+        "      const a = document.createElement('span');\n"
+        "      a.textContent = r.author_backend + ' / ' + r.author_model\n"
+        "        + (r.author_overridden ? ' (override)' : '');\n"
+        "      a.style.display = 'block'; card.append(a);\n"
+        "    }\n"
         "    if (r.direction) {\n"
         "      const d = document.createElement('span'); d.className = 'dir';\n"
         "      d.textContent = r.direction; d.style.display = 'block';\n"
@@ -1105,6 +1111,9 @@ def collect_status(
             {
                 "run_id": record.run_id,
                 "agent": record.agent_id,
+                "author_backend": record.author_backend or "claude",
+                "author_model": record.author_model,
+                "author_overridden": record.author_overridden,
                 "benchmark": record.benchmark,
                 "state": record.state,
                 "phase": "configuration-blocked" if blocked else stage.get("phase", ""),
@@ -1181,6 +1190,9 @@ def service_status(
             # edits the contract — all real transitions the strip must show
             keys = (
                 "run_id",
+                "author_backend",
+                "author_model",
+                "author_overridden",
                 "state",
                 "phase",
                 "waiting",

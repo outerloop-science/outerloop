@@ -65,6 +65,7 @@ TICK_ENV_KEYS = (
     "REVIEW_MODEL",
     "OUTERLOOP_AUTHOR_BACKEND",
     "OUTERLOOP_AUTHOR_MODEL",
+    "OUTERLOOP_AUTHOR_OVERRIDES",
     "OUTERLOOP_CLAUDE_MODEL",
     "OUTERLOOP_CLAUDE_BIN",
     "OUTERLOOP_CODEX_BIN",
@@ -404,13 +405,25 @@ def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str])
 
 
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
-    """Check only the configured author's host CLI, using the harness's lookup."""
+    """Check all configured authors' host CLIs using the harness's lookup."""
+    from outerloop.author_overrides import overrides
+
+    env = {**values, **environ}
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    backends = dict.fromkeys([backend, *(value.backend for value in overrides(env).values())])
+    for selected in backends:
+        problem = _missing_author_binary(selected, env)
+        if problem:
+            return problem
+    return ""
+
+
+def _missing_author_binary(backend: str, env: Mapping[str, str]) -> str:
     key = f"OUTERLOOP_{backend.upper()}_BIN"
     if backend == "hermes":
         from outerloop.hermes_install import hermes_ready
 
-        repo = _setting_of("REVIEW_HERMES_REPO", values, environ)
+        repo = env.get("REVIEW_HERMES_REPO", "")
         return (
             ""
             if repo and hermes_ready(Path(repo).expanduser())
@@ -418,7 +431,6 @@ def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]
         )
     if key not in HARNESS_BIN_KEYS:
         return f"unsupported author backend {backend!r}; choose claude, codex or hermes."
-    env = {**values, **environ}
     recorded = env.get(key, "")
     binary = default_binary(backend, env)
     if (not recorded and not os.path.isabs(binary)) or not (
@@ -582,6 +594,14 @@ def permissions(args: argparse.Namespace) -> int:
 def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
+        from outerloop.author_overrides import validate_overrides
+
+        try:
+            validate_overrides(
+                {**values, **os.environ}, _setting_of("OUTERLOOP_IMAGE", values, os.environ)
+            )
+        except ValueError as exc:
+            raise StartError(str(exc)) from exc
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
         try:
             author_model_setting(

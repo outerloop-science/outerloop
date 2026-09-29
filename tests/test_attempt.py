@@ -874,6 +874,7 @@ def run_live(
     author_key_file="",
     eval_image="",
     submit=False,
+    task_hypothesis="",
 ) -> tuple:
     github = FakeGitHub()
     queue = list(values)
@@ -892,6 +893,7 @@ def run_live(
             author_backend=author_backend,
             author_model=author_model,
             author_key_file=author_key_file,
+            task_hypothesis=task_hypothesis,
             eval_image=eval_image,
         )
     return outcome, github
@@ -7357,3 +7359,103 @@ def test_hermes_resume_configuration_block_preserves_park(
         for _ in range(2):
             sweep()
         assert not woke
+
+
+@pytest.mark.parametrize("wake", [False, True])
+@pytest.mark.parametrize("failure", ["missing", "dead", "term", "interrupt"])
+def test_endpoint_unavailable_parks_and_recovers(
+    tmp_path, target_repo_syscalls, monkeypatch, wake, failure
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from outerloop.endpoints import EndpointProfile
+    from outerloop.roles import author_spec
+
+    root = tmp_path / "state"
+    dispatch = _fake_dispatch()
+    if wake:
+        outcome, _ = run_live(
+            tmp_path,
+            target_repo_syscalls,
+            edits={".outerloop/syscall.json": json.dumps({"type": "sleep", "launches": []})},
+            values=[],
+            dispatch=dispatch,
+        )
+        assert outcome.outcome == "parked"
+        before = load_record(root, "tsp-1")
+        save_record(root, replace(before, wake_attempts=3), 1_000_001)
+
+    address = tmp_path / "address"
+    key = tmp_path / "key"
+    key.write_text("secret")
+    key.chmod(0o600)
+    endpoint = EndpointProfile("local", "", key, "model", ("anthropic",), address)
+    if failure != "missing":
+        address.write_text("http://localhost:8000/v1")
+    connection = Mock()
+    connection.request.side_effect = {
+        "dead": ConnectionRefusedError(),
+        "term": climb_mod.Terminated(),
+        "interrupt": KeyboardInterrupt(),
+        "missing": None,
+    }[failure]
+    monkeypatch.setattr("outerloop.endpoints.HTTPConnection", Mock(return_value=connection))
+    original = ScriptedHarness.run
+    seen_briefs = []
+
+    def unavailable(self, *args, **kwargs):
+        endpoint.session_url()
+        pytest.fail("author started")
+
+    monkeypatch.setattr(ScriptedHarness, "run", unavailable)
+
+    def resume():
+        return resume_run(
+            root,
+            "tsp-1",
+            dispatch=dispatch,
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100,
+            harness=ScriptedHarness(edits={".outerloop/syscall.json": json.dumps({"type": "end"})}),
+            spec=author_spec(),
+        )
+
+    if wake:
+        outcome = resume()
+    else:
+        outcome, _ = run_live(
+            tmp_path,
+            target_repo_syscalls,
+            edits={},
+            values=[],
+            dispatch=dispatch,
+            task_hypothesis="try a new move",
+        )
+    assert outcome.outcome == "parked"
+    waiting = load_record(root, "tsp-1")
+    assert waiting.state == "parked" and not waiting.ending
+    assert waiting.wake_attempts == (2 if wake else 0)
+    if wake:
+        assert waiting.stage == before.stage
+        assert waiting.resume_session_id == before.resume_session_id
+    else:
+        assert waiting.stage["capacity_wait"] and not waiting.resume_session_id
+    assert _git(root / "runs/tsp-1/ws", "rev-parse", str(waiting.stage["candidate_ref"])).strip()
+
+    # A repeated unavailable wake refunds exactly its own delivery, including
+    # the fresh run which has never had a native session id.
+    save_record(root, replace(waiting, wake_attempts=waiting.wake_attempts + 1), 1_000_101)
+    assert resume().outcome == "parked"
+    assert load_record(root, "tsp-1").wake_attempts == waiting.wake_attempts
+
+    def recovered(self, brief, *args, **kwargs):
+        seen_briefs.append(brief)
+        return original(self, brief, *args, **kwargs)
+
+    monkeypatch.setattr(ScriptedHarness, "run", recovered)
+    assert resume().outcome != "parked"
+    if not wake:
+        assert "try a new move" in seen_briefs[0]
+    assert load_record(root, "tsp-1").ending != "aborted"

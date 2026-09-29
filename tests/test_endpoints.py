@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -26,6 +27,10 @@ from outerloop.roles import author_spec, reviewer_spec
 
 @pytest.fixture
 def profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    connection = Mock()
+    connection.getresponse.return_value.status = 200
+    monkeypatch.setattr("outerloop.endpoints.HTTPConnection", Mock(return_value=connection))
+    monkeypatch.setattr("outerloop.endpoints.HTTPSConnection", Mock(return_value=connection))
     key = tmp_path / "endpoint-key"
     key.write_text("endpoint-secret")
     key.chmod(0o600)
@@ -132,6 +137,7 @@ def test_author_and_start_preflight(
 @pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
 @pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("url_file", [False, True])
 def test_exact_client_configuration_at_process_boundary(
     profile: dict[str, str],
     tmp_path: Path,
@@ -139,6 +145,7 @@ def test_exact_client_configuration_at_process_boundary(
     backend: str,
     contained: bool,
     failed: bool,
+    url_file: bool,
 ) -> None:
     seen: dict[str, Any] = {}
     workspace = tmp_path / "workspace"
@@ -171,6 +178,11 @@ def test_exact_client_configuration_at_process_boundary(
     monkeypatch.setattr(
         CodexHarness, "_login", lambda *_: pytest.fail("custom provider must not log in to OpenAI")
     )
+    address = tmp_path / "server-address"
+    if url_file:
+        monkeypatch.delenv("OUTERLOOP_ENDPOINT_LOCAL_URL")
+        monkeypatch.setenv("OUTERLOOP_ENDPOINT_LOCAL_URL_FILE", str(address))
+        address.write_text(profile["OUTERLOOP_ENDPOINT_LOCAL_URL"])
     harness = build_harness(
         "ignored-key",
         author_spec(),
@@ -181,6 +193,10 @@ def test_exact_client_configuration_at_process_boundary(
         container_image="/opt/image.sif" if contained else "",
     )
     result = harness.run("brief", workspace)
+    if url_file and not failed:
+        profile["OUTERLOOP_ENDPOINT_LOCAL_URL"] = "https://llm.example.internal:8443/v1"
+        address.write_text(json.dumps({"url": profile["OUTERLOOP_ENDPOINT_LOCAL_URL"]}))
+        result = harness.run("wake", workspace, resume_session_id=result.session_id or "existing")
     if failed:
         assert result.is_error
     assert "endpoint-secret" not in repr(seen["argv"])
@@ -203,7 +219,9 @@ def test_exact_client_configuration_at_process_boundary(
         assert env[f"APPTAINERENV_{key_env}"] == "endpoint-secret"
     if backend == "claude":
         # Claude Code appends /v1/messages itself
-        assert env["ANTHROPIC_BASE_URL"] == "https://llm.example.internal"
+        assert env["ANTHROPIC_BASE_URL"] == profile["OUTERLOOP_ENDPOINT_LOCAL_URL"].removesuffix(
+            "/v1"
+        )
         assert "ANTHROPIC_API_KEY" not in env
         assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
         assert env["CLAUDE_CODE_USE_VERTEX"] == "0"
@@ -250,7 +268,13 @@ def test_reviewer_endpoint(
 
 def test_dynamic_deploy_allowlists(profile: dict[str, str], tmp_path: Path) -> None:
     path = tmp_path / ".env"
-    settings = {**profile, "REVIEW_ENDPOINT": "local", "OUTERLOOP_AUTHOR_ENDPOINT": "local"}
+    settings = {
+        **profile,
+        "REVIEW_ENDPOINT": "local",
+        "OUTERLOOP_AUTHOR_ENDPOINT": "local",
+        "OUTERLOOP_ENDPOINT_LOCAL_URL_FILE": "/tmp/server-address",
+        "OUTERLOOP_AUTHOR_OVERRIDES": '{"owner/repo":{"backend":"claude","model":"served-model"}}',
+    }
     path.write_text(
         "\n".join(f"{k}={v}" for k, v in settings.items())
         + "\nOUTERLOOP_ENDPOINT_LOCAL_KEY=must-not-forward\n"
@@ -566,3 +590,150 @@ def test_endpoint_author_native_panel_separation(
     )
     with pytest.raises(ValueError, match="role separation"):
         _panel_lenses_from_args(args)
+
+
+@pytest.mark.parametrize("json_value", [False, True])
+def test_url_file_reloaded_for_sessions(profile, tmp_path, json_value):
+    path = tmp_path / "address"
+    profile.pop("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    profile["OUTERLOOP_ENDPOINT_LOCAL_URL_FILE"] = str(path)
+    endpoint = endpoint_profile("local", "claude", environ=profile)
+    for port in (8000, 8001):
+        url = f"http://localhost:{port}/v1"
+        path.write_text(json.dumps({"url": url}) if json_value else url + "\n")
+        # Same harness-held profile, another session/wake.
+        assert endpoint.session_url() == url
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"url": 3}',
+        "{}",
+        "{",
+        "file:///tmp/server",
+        "http://user:pass@localhost",
+        "http://localhost?key=secret",
+    ],
+)
+def test_url_file_validates_values(profile, tmp_path, value):
+    path = tmp_path / "address"
+    path.write_text(value)
+    profile.pop("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    profile["OUTERLOOP_ENDPOINT_LOCAL_URL_FILE"] = str(path)
+    with pytest.raises(ValueError, match="endpoint"):
+        _ = endpoint_profile("local", "codex", environ=profile).url
+
+
+def test_url_file_exclusive_absolute_and_missing(profile, tmp_path, monkeypatch, caplog):
+    from outerloop.endpoints import EndpointUnavailable, endpoint_config_key
+
+    assert endpoint_config_key("OUTERLOOP_ENDPOINT_LOCAL_URL_FILE")
+    profile["OUTERLOOP_ENDPOINT_LOCAL_URL_FILE"] = "relative"
+    with pytest.raises(ValueError, match="exactly one"):
+        endpoint_profile("local", "claude", environ=profile)
+    profile.pop("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    with pytest.raises(ValueError, match="absolute"):
+        endpoint_profile("local", "claude", environ=profile)
+    path = tmp_path / "address"
+    profile["OUTERLOOP_ENDPOINT_LOCAL_URL_FILE"] = str(path)
+    endpoint = endpoint_profile("local", "claude", environ=profile)
+    with pytest.raises(EndpointUnavailable, match="waiting for server"):
+        _ = endpoint.url
+    with pytest.raises(EndpointUnavailable):
+        endpoint.session_url()
+
+
+def test_url_file_wake_keeps_park_and_refunds_retry(profile, tmp_path, monkeypatch):
+    from outerloop.attempt import defer_endpoint_wake
+    from outerloop.runstate import RunRecord, load_record, save_record
+
+    monkeypatch.delenv("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    path = tmp_path / "address"
+    monkeypatch.setenv("OUTERLOOP_ENDPOINT_LOCAL_URL_FILE", str(path))
+    record = RunRecord(
+        run_id="waiting",
+        target="owner/repo",
+        task_title="trial",
+        state="parked",
+        author_backend="codex",
+        author_model="open-model[endpoint=local]",
+        wake_attempts=1,
+        resume_session_id="existing",
+        stage={"phase": "author-sleep", "candidate_ref": "keep"},
+    )
+    save_record(tmp_path, record, 1)
+    assert defer_endpoint_wake(tmp_path, record)
+    waiting = load_record(tmp_path, record.run_id)
+    assert waiting.state == "parked" and waiting.wake_attempts == 0
+    assert waiting.resume_session_id == "existing" and waiting.stage == record.stage
+    path.write_text("http://localhost:8000/v1")
+    assert not defer_endpoint_wake(tmp_path, waiting)
+
+
+def test_unreadable_url_file_is_retryable(profile, tmp_path, monkeypatch):
+    from outerloop.endpoints import EndpointUnavailable
+
+    path = tmp_path / "address"
+    profile.pop("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    profile["OUTERLOOP_ENDPOINT_LOCAL_URL_FILE"] = str(path)
+    endpoint = endpoint_profile("local", "claude", environ=profile)
+    original = Path.read_text
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("unreadable")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(EndpointUnavailable, match=r"URL_FILE.*unavailable"):
+        _ = endpoint.url
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
+@pytest.mark.parametrize("failure", ["missing", "dead", "http", "term", "interrupt"])
+def test_session_probe_propagates_without_starting_model(
+    profile, tmp_path, monkeypatch, backend, failure
+):
+    from outerloop.attempt import Terminated
+    from outerloop.endpoints import EndpointUnavailable
+
+    address = tmp_path / "address"
+    monkeypatch.delenv("OUTERLOOP_ENDPOINT_LOCAL_URL")
+    monkeypatch.setenv("OUTERLOOP_ENDPOINT_LOCAL_URL_FILE", str(address))
+    if failure != "missing":
+        address.write_text("http://localhost:8000/v1")
+    connection = Mock()
+    connection.getresponse.return_value.status = 503 if failure == "http" else 200
+    errors = {
+        "dead": ConnectionRefusedError(),
+        "term": Terminated(),
+        "interrupt": KeyboardInterrupt(),
+    }
+    if failure in errors:
+        connection.request.side_effect = errors[failure]
+    factory = Mock(return_value=connection)
+    monkeypatch.setattr("outerloop.endpoints.HTTPConnection", factory)
+    monkeypatch.setattr(harness_mod, "hermes_ready", lambda _: True)
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", lambda *a, **k: pytest.fail("spawned"))
+    harness = build_harness(
+        "ignored",
+        author_spec(),
+        backend=backend,
+        endpoint="local",
+        binary="/opt/cli",
+        hermes_repo=tmp_path / "hermes",
+        container_image="/opt/image.sif",
+    )
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with pytest.raises(EndpointUnavailable):
+        harness.run("brief", workspace)
+    if failure == "missing":
+        factory.assert_not_called()
+    else:
+        factory.assert_called_once_with("localhost", 8000, timeout=3)
+        connection.request.assert_called_once_with(
+            "GET", "/v1/models", headers={"Authorization": "Bearer endpoint-secret"}
+        )
+        connection.close.assert_called_once()

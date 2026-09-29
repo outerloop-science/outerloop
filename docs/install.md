@@ -541,6 +541,31 @@ default, and a lens that names no model runs the author's model when it
 shares the author's backend, and must name an explicit model on any other
 backend); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
+
+`OUTERLOOP_AUTHOR_OVERRIDES` optionally selects an author for individual targets
+and agent slots, without changing judges or other targets:
+
+```sh
+OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":{"backend":"claude","model":"served-model[endpoint=onprem]","slots":["agent-05"]}}'
+```
+
+Each entry requires `backend` (`claude`, `codex`, or `hermes`) and `model`.
+Omit `slots` to cover every author slot on that target; otherwise use the existing
+`agent-01`, `agent-02`, … identities allocated by the contract's authors-abreast
+width. This is deployment configuration, not a contract setting. The setting is
+parsed and validated at startup. Endpoint overrides select their own profile in
+`model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
+the selected backend's author credential. Normal author/judge credential
+separation still applies to the effective override credential.
+
+Queued climbs bind the selection when submitted (before an intake claim is
+launched); direct climbs bind at startup. Backend, model and key path are saved
+in the run record. Changing overrides cannot switch an existing run, even at a
+resume or wake. Panel inheritance and CI reviewers still use the fleet author,
+exactly as for a run without an override. Per-run board details show the author
+backend/model and mark overrides. Remove the setting (or use `{}`) to stop
+selecting overrides for new work.
+
 `OUTERLOOP_CLAUDE_MODEL` names the model for every Claude role (author,
 panel judges, steward) when no explicit or inherited model covers that role:
 there is no built-in default, and `start` refuses when a role needs it, naming
