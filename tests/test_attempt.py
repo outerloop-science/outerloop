@@ -90,6 +90,7 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     ledger_dir = tmp_path / "runs" / "tsp-7"
     entries = history(ledger_dir)
     assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
+    assert [e["commit"] for e in entries] == ["c" * 40, "c" * 40]
     assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
     assert why_by_job(ledger_dir)["203"] == {
         "name": "sw",
@@ -115,6 +116,53 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
         ("a", 1000.0),
         ("sw", 1000.0),
     ]
+
+
+@pytest.mark.parametrize(
+    ("phase", "afterany", "launch_afterany", "capacity_wait", "expected_ids"),
+    [
+        pytest.param("author-sleep", "", "", False, [], id="stale-checkpoint"),
+        pytest.param("author-sleep", "afterany:501", "", False, ["501"], id="sleep"),
+        pytest.param(
+            "candidate", "afterany:101:501", "afterany:501", False, ["501"], id="submit-gate"
+        ),
+        pytest.param("candidate", "", "", True, [], id="capacity-no-launch"),
+        pytest.param(
+            "candidate", "afterany:501", "afterany:501", True, ["501"], id="capacity-with-launch"
+        ),
+        pytest.param("candidate", "afterany:101", "", False, [], id="gate-only"),
+    ],
+)
+def test_park_run_records_only_dispatched_launches(
+    tmp_path, phase, afterany, launch_afterany, capacity_wait, expected_ids
+):
+    from outerloop.launchlog import read_ledger
+    from outerloop.syscall import Launch, SyscallRequest
+
+    record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
+    # Retain a descriptor at the stale checkpoint to exercise the ledger
+    # boundary independently of the kernel's discarded-request normalization.
+    parked = RunParked(
+        phase=phase,
+        afterany=afterany,
+        launch_afterany=launch_afterany,
+        capacity_wait=capacity_wait,
+        base_sha="base",
+        candidate_sha="sealed",
+        seed=1,
+        suite_seed=0,
+        syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "ref", None, 1000)
+    rows = read_ledger(tmp_path / "runs" / "test")
+    if expected_ids:
+        assert len(rows) == 1
+        assert rows[0]["event"] == "submitted"
+        assert rows[0]["job_ids"] == expected_ids
+        assert rows[0]["commit"] == "sealed"
+    else:
+        assert rows == []
 
 
 def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
@@ -908,6 +956,9 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
+    base_commit = _git(target_repo, "rev-parse", "main").strip()
+    candidate_commit = _git(target_repo, "rev-parse", str(pr["head"])).strip()
+    assert f"Base `{base_commit[:7]}` and candidate `{candidate_commit[:7]}`" in pr["body"]
     # run record went parked with the PR url
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "parked"

@@ -39,7 +39,13 @@ def _append(run_dir: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def append_submitted(
-    run_dir: Path, *, sleep: int, launches: tuple[Launch, ...], job_ids: list[str], at: float
+    run_dir: Path,
+    *,
+    sleep: int,
+    launches: tuple[Launch, ...],
+    job_ids: list[str],
+    at: float,
+    commit: str = "",
 ) -> None:
     """One record per launch of a sleep, with the job ids it fanned out to. The
     ids are positional over `launch_jobs` order, exactly as the park recorded
@@ -66,6 +72,7 @@ def append_submitted(
         rows.append(
             {
                 "event": "submitted",
+                "commit": commit,
                 "sleep": sleep,
                 "name": launch.name,
                 "why": launch.why,
@@ -168,6 +175,7 @@ def history(run_dir: Path) -> list[dict[str, Any]]:
             "concurrency": row.get("concurrency", 0),
             "job_ids": list(row.get("job_ids") or []),
             "submitted_at": row.get("at"),
+            "commit": str(row.get("commit") or ""),
             "jobs": [],
         }
     for row in rows:
@@ -207,6 +215,7 @@ def experiments_rows(run_dir: Path) -> list[dict[str, Any]]:
                 {
                     "sleep": entry.get("sleep"),
                     "launch": name,
+                    "commit": entry["commit"],
                     "why": str(entry.get("why") or ""),
                     "array": array,
                     "concurrency": int(entry.get("concurrency") or 0),

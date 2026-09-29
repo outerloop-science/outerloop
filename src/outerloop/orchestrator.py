@@ -2194,8 +2194,8 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
         f"{len(rows)} job(s) launched by the author this run, from the kernel's ledger; "
         "the result column is the last line each job printed.",
         "",
-        "| sleep | launch | why | job | ended | result |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| sleep | launch | commit | why | job | ended | result |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows[:MAX_EXPERIMENT_ROWS]:
         pace = ""
@@ -2204,6 +2204,7 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
             pace = f" (x{row['array']}, {k} at a time)"
         lines.append(
             f"| {row.get('sleep', '')} | {_cell(row.get('launch', ''), 48)}{pace} | "
+            f"{_cell(row.get('commit') or 'unknown', 7)} | "
             f"{_cell(row.get('why', ''), 120)} | {_cell(row.get('job', ''), 48)} | "
             f"{_ended(row)} | {_cell(row.get('result', ''), 160)} |"
         )
@@ -2211,7 +2212,7 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
     if rest:
         ok = sum(1 for r in rest if r.get("back") and r.get("exit_code") == 0)
         lines.append(
-            f"| | … {len(rest)} more job(s): {ok} exit 0, {len(rest) - ok} otherwise | | | | |"
+            f"| | … {len(rest)} more job(s): {ok} exit 0, {len(rest) - ok} otherwise | | | | | |"
         )
     return lines
 
@@ -2222,6 +2223,8 @@ def pr_body(
     redact_secrets: tuple[str, ...],
     display_digits: int | None = None,
     experiments: list[dict[str, Any]] | None = None,
+    *,
+    base_sha: str = "",
 ) -> str:
     """The PR body for an improved run: the author's report, the experiments
     the run actually ran (from the launch ledger), the measured table, and
@@ -2312,8 +2315,9 @@ def pr_body(
             f"| candidate | {fmt_metric(result.candidate, display_digits)} |",
             *suite_lines,
             "",
-            "Both numbers were measured by the orchestrator re-running the "
-            "contract's eval command — not taken from the session. CI "
+            f"Base `{base_sha[:7] or 'unknown'}` and candidate "
+            f"`{result.candidate_sha[:7] or 'unknown'}` were both measured by the orchestrator "
+            "using the same eval command read from the base tree — not taken from the session. CI "
             "re-verifies independently.",
             *panel_section,
         ]
