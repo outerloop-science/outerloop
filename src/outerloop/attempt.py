@@ -723,21 +723,25 @@ def _park_run(
                 launch_ids = list(job_ids)
             else:
                 launch_ids = []
-            ledger_launches = tuple(
-                dc_replace(launch, why=redact(launch.why, secrets))
-                for launch in parked.syscall.launches
-            )
-            _best_effort(
-                "launch ledger",
-                lambda: append_submitted(
-                    run_dir_of(run_root, record.run_id),
-                    sleep=parked.sleeps_used,
-                    launches=ledger_launches,
-                    job_ids=launch_ids,
-                    at=now,
-                    commit=parked.candidate_sha,
-                ),
-            )
+            # Capacity waits defer gate evals, not author launches: the launcher
+            # returns job ids or refuses the batch. Checkpoints may carry
+            # discarded descriptors; gate ids cannot stand in for launch ids.
+            if launch_ids:
+                ledger_launches = tuple(
+                    dc_replace(launch, why=redact(launch.why, secrets))
+                    for launch in parked.syscall.launches
+                )
+                _best_effort(
+                    "launch ledger",
+                    lambda: append_submitted(
+                        run_dir_of(run_root, record.run_id),
+                        sleep=parked.sleeps_used,
+                        launches=ledger_launches,
+                        job_ids=launch_ids,
+                        at=now,
+                        commit=parked.candidate_sha,
+                    ),
+                )
         # (the session id the wake resumes is the record's own
         # resume_session_id, set below for every park — no stage duplicate)
         stage["launches_used"] = parked.launches_used

@@ -310,7 +310,10 @@ def test_checkpoint_sleep_parks_with_no_dependency(tmp_path: Path) -> None:
     assert exc.value.launches_used == 0  # a checkpoint burns only the sleep
 
 
-def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Path) -> None:
+@pytest.mark.parametrize("capacity_wait", [False, True])
+def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(
+    tmp_path: Path, capacity_wait: bool
+) -> None:
     # `submit` is a launch whose job is the GATE (buildout Phase B): the tree
     # is sealed, the dispatched gate parks the run as a candidate carrying the
     # submitted marker + budget counts, and a sibling launch rides the same
@@ -328,6 +331,13 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     launched: list = []
     harness = FakeHarness(result=ok_session())
     m = ParkingMeasurer(park_on_call=1)
+    if capacity_wait:
+        from outerloop.measure import MeasurementPending
+
+        def wait(*args, **kwargs):
+            raise MeasurementPending((), capacity_wait=True)
+
+        m.results = wait  # type: ignore[method-assign]
     with pytest.raises(RunParked) as exc:
         attempt_once(
             CONFIG,
@@ -350,6 +360,19 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(tmp_path: Pa
     assert p.afterany.endswith(":900")  # gate evals + the sibling launch, one afterany
     sha, request = launched[0]
     assert sha == "cand1" and request.launches[0].name == "probe"
+
+    from outerloop.attempt import _park_run
+    from outerloop.launchlog import read_ledger
+    from outerloop.runstate import RunRecord
+
+    assert p.capacity_wait == capacity_wait
+    record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
+    _park_run(tmp_path, record, p, "ref", None, 1000)
+    rows = read_ledger(tmp_path / "runs" / "test")
+    assert len(rows) == 1
+    assert rows[0]["event"] == "submitted"
+    assert rows[0]["job_ids"] == ["900"]
+    assert rows[0]["commit"] == "cand1"
 
 
 def test_a_submits_sibling_sweep_is_clamped_too(tmp_path: Path) -> None:
@@ -2158,6 +2181,7 @@ def test_stale_submit_checkpoint_has_no_compute_charge(tmp_path):
 def test_stale_submit_discards_sibling_launches(tmp_path):
     from outerloop.attempt import _park_run
     from outerloop.inbox import pending
+    from outerloop.launchlog import read_ledger
     from outerloop.runstate import RunRecord, load_record
 
     p = _stale_checkpoint(tmp_path)
@@ -2165,6 +2189,7 @@ def test_stale_submit_discards_sibling_launches(tmp_path):
     record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
     _park_run(tmp_path, record, p, "ref", None, 1000)
     assert load_record(tmp_path, "test").stage["syscall_launches"] == []
+    assert read_ledger(tmp_path / "runs" / "test") == []
     messages = pending(tmp_path.parent / (tmp_path.name + "-run"), 0)
     receipt = next(m for m in messages if m.key.startswith("refused:"))
     assert "No sibling launches ran" in receipt.payload["text"]

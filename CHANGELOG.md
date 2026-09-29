@@ -6,6 +6,11 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Launch ledger submissions require dispatched launch job IDs, preventing stale
+  checkpoints from attributing discarded launches to a commit. Gate capacity
+  waits still record any dispatched sibling launches. Existing ledger rows and
+  run records remain readable and unchanged; no schema change or backfill.
+
 - PR measurement tables identify the base and candidate commits and the shared
   eval command from the base tree; experiment tables identify launch commits.
   Verify and review briefs caution against comparing numbers across commits

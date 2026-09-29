@@ -118,6 +118,53 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("phase", "afterany", "launch_afterany", "capacity_wait", "expected_ids"),
+    [
+        pytest.param("author-sleep", "", "", False, [], id="stale-checkpoint"),
+        pytest.param("author-sleep", "afterany:501", "", False, ["501"], id="sleep"),
+        pytest.param(
+            "candidate", "afterany:101:501", "afterany:501", False, ["501"], id="submit-gate"
+        ),
+        pytest.param("candidate", "", "", True, [], id="capacity-no-launch"),
+        pytest.param(
+            "candidate", "afterany:501", "afterany:501", True, ["501"], id="capacity-with-launch"
+        ),
+        pytest.param("candidate", "afterany:101", "", False, [], id="gate-only"),
+    ],
+)
+def test_park_run_records_only_dispatched_launches(
+    tmp_path, phase, afterany, launch_afterany, capacity_wait, expected_ids
+):
+    from outerloop.launchlog import read_ledger
+    from outerloop.syscall import Launch, SyscallRequest
+
+    record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
+    # Retain a descriptor at the stale checkpoint to exercise the ledger
+    # boundary independently of the kernel's discarded-request normalization.
+    parked = RunParked(
+        phase=phase,
+        afterany=afterany,
+        launch_afterany=launch_afterany,
+        capacity_wait=capacity_wait,
+        base_sha="base",
+        candidate_sha="sealed",
+        seed=1,
+        suite_seed=0,
+        syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "ref", None, 1000)
+    rows = read_ledger(tmp_path / "runs" / "test")
+    if expected_ids:
+        assert len(rows) == 1
+        assert rows[0]["event"] == "submitted"
+        assert rows[0]["job_ids"] == expected_ids
+        assert rows[0]["commit"] == "sealed"
+    else:
+        assert rows == []
+
+
 def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
     """A submitted park's stage report is the author's report at submit, not the
     session's last words: the wake's panel and the PR read it."""
