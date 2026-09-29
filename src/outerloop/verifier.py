@@ -30,6 +30,7 @@ from outerloop.review import (
     MAX_DIFF_CHARS,
     MAX_FINDINGS,
     MAX_SUMMARY_CHARS,
+    MEASUREMENT_PROVENANCE_CAUTION,
     OPT_OUT_LABEL,
     PLAIN_STYLE,
     Finding,
@@ -289,6 +290,7 @@ def build_verify_prompt(
         for author, body in thread[-MAX_THREAD_COMMENTS:]:
             safe_author = " ".join(str(author).split()).replace("`", "")[:100]
             parts.append(f"### {safe_author}\n{_fenced(body[:MAX_THREAD_COMMENT_CHARS])}")
+    parts.append(MEASUREMENT_PROVENANCE_CAUTION)
     parts.append("## The change (diff)\n" + _fenced(pr.diff[:MAX_DIFF_CHARS]))
     return "\n\n".join(parts)
 

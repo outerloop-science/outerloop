@@ -361,6 +361,12 @@ def build_agent_brief(
     )
 
 
+MEASUREMENT_PROVENANCE_CAUTION = (
+    "Numbers measured on different commits are not directly comparable; check the commits "
+    "in the checkout history before attributing a gap between them."
+)
+
+
 def build_prompt(pr: PullRequest, today: str | None = None) -> str:
     diff = pr.diff
     truncated = ""
@@ -374,7 +380,7 @@ def build_prompt(pr: PullRequest, today: str | None = None) -> str:
     header += f"Repository: {pr.repo} — PR #{pr.number} by {pr.author}\n\n"
     diff_fence = _fence(diff)
     return (
-        header + f"Pull request: {pr.title}\n\n"
+        header + MEASUREMENT_PROVENANCE_CAUTION + "\n\n" + f"Pull request: {pr.title}\n\n"
         f"Description:\n{pr.body or '(none)'}\n\n"
         f"Diff:\n{diff_fence}diff\n{diff}\n{diff_fence}{truncated}"
     )

@@ -90,6 +90,7 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     ledger_dir = tmp_path / "runs" / "tsp-7"
     entries = history(ledger_dir)
     assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
+    assert [e["commit"] for e in entries] == ["c" * 40, "c" * 40]
     assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
     assert why_by_job(ledger_dir)["203"] == {
         "name": "sw",
@@ -908,6 +909,9 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
+    base_commit = _git(target_repo, "rev-parse", "main").strip()
+    candidate_commit = _git(target_repo, "rev-parse", str(pr["head"])).strip()
+    assert f"Base `{base_commit[:7]}` and candidate `{candidate_commit[:7]}`" in pr["body"]
     # run record went parked with the PR url
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "parked"

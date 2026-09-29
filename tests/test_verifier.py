@@ -91,6 +91,8 @@ def test_prompt_carries_contract_claim_and_change() -> None:
     assert "## The contract" in prompt and "name: tsp" in prompt
     assert "## The claim" in prompt and "Research report" in prompt
     assert "## The change" in prompt and "+x=1" in prompt
+    assert "Numbers measured on different commits are not directly comparable" in prompt
+    assert "check the commits in the checkout history before attributing a gap" in prompt
 
 
 def test_verify_tags_findings_with_category_and_sanitizes() -> None:

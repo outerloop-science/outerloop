@@ -735,6 +735,7 @@ def _park_run(
                     launches=ledger_launches,
                     job_ids=launch_ids,
                     at=now,
+                    commit=parked.candidate_sha,
                 ),
             )
         # (the session id the wake resumes is the record's own
@@ -4051,6 +4052,7 @@ def publish(
                 redact_secrets=secrets,
                 display_digits=bench.display_digits,
                 experiments=experiments_rows(run_dir),
+                base_sha=base_sha,
             )
             body += f"\n\n{progress_link(config.target)}\n"
             if issue_number:

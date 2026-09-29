@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- PR measurement tables identify the base and candidate commits and the shared
+  eval command from the base tree; experiment tables identify launch commits.
+  Verify and review briefs caution against comparing numbers across commits
+  without checking history.
+- Upgrading: no action or backfill needed; the first tick tolerates launch ledger
+  rows without `commit` (shown as unknown), including ended runs and in-flight
+  PRs. New launch records include the sealed commit; existing records and PR
+  bodies are not rewritten. Rollback is safe: older readers ignore the added
+  field.
+
 - Hermes author resumes that exceed the replay budget stay parked with a
   configuration-blocked status, retaining their session and snapshot without
   consuming wake retries. Author/judge separation checks effective key paths
