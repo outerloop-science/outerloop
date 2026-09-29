@@ -50,6 +50,10 @@ def validate_url(value: str, name: str) -> str:
             f"endpoint {name!r}: URL must be an HTTP(S) base URL "
             "without credentials, query or fragment"
         )
+    try:
+        url.port  # noqa: B018 -- raises on a malformed or out-of-range port
+    except ValueError as exc:
+        raise ValueError(f"endpoint {name!r}: URL has an invalid port") from exc
     return value
 
 

@@ -614,6 +614,8 @@ def test_url_file_reloaded_for_sessions(profile, tmp_path, json_value):
         "file:///tmp/server",
         "http://user:pass@localhost",
         "http://localhost?key=secret",
+        "http://localhost:not-a-port",
+        "http://localhost:99999",
     ],
 )
 def test_url_file_validates_values(profile, tmp_path, value):
