@@ -1510,10 +1510,30 @@ def attempt_once(
         # session started with (a wake refreshed it too; this covers a refusal)
         with contextlib.suppress(Exception):
             refresh_tool(workspace)
-        with _watched():
-            wake_result = run_role(
-                spec, harness, prompt, workspace, resume_session_id=session.session_id
-            )
+        from outerloop.endpoints import EndpointUnavailable
+
+        try:
+            with _watched():
+                wake_result = run_role(
+                    spec, harness, prompt, workspace, resume_session_id=session.session_id
+                )
+        except EndpointUnavailable:
+            # A prior leg already ran: keep its native context and budget meters.
+            raise RunParked(
+                phase="author-sleep",
+                afterany="",
+                base_sha=base_sha,
+                seed=run_seed,
+                suite_seed=suite_seed,
+                candidate_sha=snapshot(),
+                session=session,
+                syscall=SyscallRequest(launches=()),
+                launches_used=launches_used,
+                sleeps_used=sleeps_used,
+                gpu_hours_used=gpu_hours_used,
+                judged=failed_gate,
+                capacity_wait=True,
+            ) from None
         session = wake_result.session
         if wake_result.ok:
             _ack(messages)

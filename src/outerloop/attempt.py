@@ -45,7 +45,13 @@ from outerloop.dispatch import (
     should_dispatch,
     snapshot_tree,
 )
-from outerloop.endpoints import author_model_setting, model_key, resolve_endpoint, split_endpoint
+from outerloop.endpoints import (
+    EndpointUnavailable,
+    author_model_setting,
+    model_key,
+    resolve_endpoint,
+    split_endpoint,
+)
 from outerloop.evalcache import seed_dir
 from outerloop.github import (
     GitError,
@@ -271,6 +277,27 @@ def fleet_author_model(backend: str) -> str:
     if not model and backend == "claude":
         return default_claude_model()
     return model
+
+
+def defer_endpoint_wake(root: Path, record: RunRecord) -> bool:
+    """Keep the existing park and refund this delivery when its server is down."""
+    _, profile = resolve_endpoint(record.author_model, record.author_backend or "claude")
+    try:
+        if profile:
+            _ = profile.url
+    except EndpointUnavailable as exc:
+        _defer_endpoint(root, record, exc)
+        return True
+    return False
+
+
+def _defer_endpoint(root: Path, record: RunRecord, exc: EndpointUnavailable) -> None:
+    save_record(
+        root,
+        dc_replace(record, state=PARKED, wake_attempts=max(0, record.wake_attempts - 1)),
+        time.time(),
+    )
+    log.warning("run %s: %s", record.run_id, exc)
 
 
 def resume_author(
@@ -1328,6 +1355,8 @@ def run_author_leg(
 
         kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
+    if not record.resume_session_id:
+        kwargs.setdefault("task_hypothesis", str(record.stage.get("hypothesis") or ""))
     result = attempt_once(
         config,
         contract_text,
@@ -1502,14 +1531,15 @@ def _wake_author_sleep(
                 drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
-    # The wake NEEDS the author harness (it resumes the session). Fail as a
+    # A capacity park before the first session starts with a fresh brief.
+    # Other wakes NEED the author harness and saved session. Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
     # help without the harness, so leaving it PARKED would just hit the stuck
     # cap slowly.
     if (
         harness is None
         or spec is None
-        or not record.resume_session_id
+        or (not record.resume_session_id and not record.stage.get("capacity_wait"))
         or not getattr(harness, "supports_resume", True)
     ):
         return _end(
@@ -1740,6 +1770,10 @@ def _wake_author_sleep(
         if sleep_ref:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
+    except EndpointUnavailable as exc:
+        latest = load_record(run_root, run_id)
+        _defer_endpoint(run_root, latest, exc)
+        return AttemptOutcome(run_id=run_id, outcome="parked", pr_url=latest.pr_url)
     except ResumeContextBlocked as exc:
         latest = load_record(run_root, run_id)
         save_record(
@@ -3238,7 +3272,11 @@ def _panel_lenses_from_args(
         author_backend = getattr(args, "author_backend", "") or "claude"
     if author_model is None:
         author_model = getattr(args, "model", "") or ""
-    parsed = resolve_lenses(args.panel, author_backend, author_model)
+    panel_backend, panel_model = author_backend, author_model
+    if getattr(args, "author_overridden", False):
+        panel_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+        panel_model = fleet_author_model(panel_backend)
+    parsed = resolve_lenses(args.panel, panel_backend, panel_model)
     author_credential = effective_author_credential(
         author_backend, author_model, getattr(args, "key_file", "")
     )
@@ -4264,6 +4302,7 @@ def live_attempt(
     author_backend: str = "claude",
     author_model: str = "",
     author_key_file: str = "",
+    author_overridden: bool = False,
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -4293,8 +4332,10 @@ def live_attempt(
         issue_number=issue_number,
         author_backend=author_backend,
         author_model=author_model,
+        author_overridden=author_overridden,
         author_key_file=author_key_file,
         run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
+        stage={"hypothesis": redact(task_hypothesis, secrets)} if task_hypothesis else {},
     )
     try:
         save_record(run_root, record, now)
@@ -4632,6 +4673,32 @@ def live_attempt(
                 ),
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
+        except EndpointUnavailable as exc:
+            # Reuse a jobless capacity park; its first wake starts the author.
+            sha = snapshot()
+            kept_ref = snapshots[-1].ref
+            p = RunParked(
+                phase="author-sleep",
+                afterany="",
+                base_sha=pre_session_sha,
+                seed=0,
+                suite_seed=0,
+                candidate_sha=sha,
+                capacity_wait=True,
+            )
+            _park_run(
+                run_root,
+                record,
+                p,
+                kept_ref,
+                eval_minutes,
+                time.time(),
+                secrets,
+                base_branch=base_branch,
+            )
+            parked = p
+            log.warning("run %s: %s", run_id, exc)
+            return AttemptOutcome(run_id=run_id, outcome="parked")
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a PARKED record (not an error), keep the
@@ -5001,7 +5068,19 @@ def main() -> int:
     parser.add_argument(
         "--hypothesis-b64", default="", help="base64 task hypothesis (issue text, fenced)"
     )
+    parser.add_argument("--author-bound", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--author-overridden", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    from outerloop.author_overrides import select_override
+
+    try:
+        if not args.resume and not args.author_bound:
+            selected = select_override(args.target, args.agent_id)
+            if selected:
+                args.author_backend, args.model = selected.backend, selected.resolved_model()
+                args.author_overridden = True
+    except ValueError as exc:
+        parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.model and not args.resume:
         # resolved after parsing, never at parser build: a deployment without
@@ -5079,6 +5158,17 @@ def main() -> int:
             # reap (the resume_run finally below only runs once we reach it)
             _release_own_lease(args.run_root, args.resume)
             parser.error(f"parked run {args.resume}: {_err}")
+        try:
+            deferred = isinstance(_wake_record, RunRecord) and defer_endpoint_wake(
+                args.run_root, _wake_record
+            )
+        except ValueError as exc:
+            _release_own_lease(args.run_root, args.resume)
+            parser.error(f"parked run {args.resume}: {exc}")
+        if deferred:
+            _release_own_lease(args.run_root, args.resume)
+            return 0
+        args.author_overridden = bool(getattr(_wake_record, "author_overridden", False))
         args.key_file = wake_key_file
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
@@ -5182,10 +5272,11 @@ def main() -> int:
     if not (args.target and args.benchmark):
         parser.error("--target and --benchmark are required for a fresh climb")
 
-    # a fresh climb authors on the FLEET's configured backend; validate it (codex
-    # writes+executes, so --image + a non-claude model) before any spend.
+    # Validate the selected author before spending; an override's endpoint
+    # selector is independent of the fleet endpoint.
     try:
-        args.model = author_model_setting(args.author_backend, args.model)
+        if not args.author_overridden and not args.author_bound:
+            args.model = author_model_setting(args.author_backend, args.model)
     except ValueError as exc:
         parser.error(str(exc))
     _err = author_config_error(args.author_backend, args.model, args.image)
@@ -5294,6 +5385,7 @@ def main() -> int:
                 issue_number=args.issue,
                 author_backend=args.author_backend,
                 author_model=args.model,
+                author_overridden=args.author_overridden,
                 author_key_file=args.key_file,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()

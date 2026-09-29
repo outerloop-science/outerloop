@@ -6,6 +6,21 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Deployment author overrides select a backend/model per target or agent slot,
+  bind it to each run, and leave panel and CI reviewer inheritance on the fleet
+  author. Per-run board details identify the effective author and overrides.
+- Endpoint profiles accept an absolute `URL_FILE` instead of `URL`, reading bare
+  URLs or JSON addresses on every session. Missing files, failed bounded health
+  checks, and interrupted checks defer sessions without spending wake retries.
+  Init provisions fleet and override backends before validating prerequisites.
+- Upgrading: no action or backfill needed; records without `author_overridden`
+  retain their existing author and panel behavior, including ended runs. New
+  overridden records reuse the saved author route and add this optional flag.
+  Rollback reads the records but loses fleet-only panel inheritance for overrides;
+  finish overridden runs and fresh endpoint capacity parks before rolling back.
+  Fresh endpoint deferrals reuse author-sleep capacity parks without a session ID;
+  older kernels cannot resume those parks.
+
 - Launch ledger submissions require dispatched launch job IDs, preventing stale
   checkpoints from attributing discarded launches to a commit. Gate capacity
   waits still record any dispatched sibling launches. Existing ledger rows and

@@ -85,6 +85,7 @@ CONFIG_KEYS = (
     "OUTERLOOP_CODEX_BIN",
     "REVIEW_HERMES_REPO",
     "OUTERLOOP_AUTHOR_BACKEND",
+    "OUTERLOOP_AUTHOR_OVERRIDES",
     "OUTERLOOP_STEWARD_KEY_FILE",
     "REVIEW_BACKEND",
     "OUTERLOOP_PANEL",
@@ -165,7 +166,9 @@ def status(env: Mapping[str, str]) -> int:
 
 def used_harnesses(env: Mapping[str, str]) -> list[str]:
     author = env.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-    used = {author}
+    from outerloop.author_overrides import overrides
+
+    used = {author, *(selected.backend for selected in overrides(env).values())}
     if env.get("OUTERLOOP_STEWARD_KEY_FILE"):
         used.add("claude")
     if env.get("REVIEW_BACKEND"):

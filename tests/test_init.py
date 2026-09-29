@@ -1183,3 +1183,49 @@ def test_init_ignores_hermes_budget_for_other_authors(tmp_path, monkeypatch, bac
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("backend", ["codex", "hermes"])
+def test_fresh_init_provisions_override_before_validation(tmp_path, monkeypatch, backend):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps({"owner/repo": {"backend": backend, "model": "org/model"}}),
+    )
+    monkeypatch.setenv("REVIEW_HERMES_PROVIDER", "openrouter")
+    monkeypatch.setenv("REVIEW_HERMES_REPO", str(tmp_path / "hermes"))
+    installed = []
+
+    def install(name, target=None):
+        name = name or "claude"
+        installed.append(name)
+        return str(tmp_path / name)
+
+    def ready(repo):
+        return "hermes" in installed
+
+    monkeypatch.setattr(init, "install_harness", install)
+    monkeypatch.setattr(init, "hermes_ready", ready)
+    monkeypatch.setattr("outerloop.hermes_install.hermes_ready", ready)
+    image = tmp_path / "image.sif"
+
+    def download(**kwargs):
+        assert "claude" in installed and backend in installed
+        image.touch()
+        return str(image)
+
+    monkeypatch.setattr(init, "ensure_image", download)
+    assert init.main(["--yes", "--compute", "local", "--target", "owner/repo"]) == 0
+    env = (tmp_path / ".env").read_text()
+    assert f"OUTERLOOP_IMAGE={image}" in env
+    key = "REVIEW_HERMES_REPO" if backend == "hermes" else "OUTERLOOP_CODEX_BIN"
+    assert f"{key}={tmp_path / backend}" in env
+
+
+def test_init_bad_override_json_fails_before_provisioning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", "{")
+    monkeypatch.setattr(init, "install_harness", lambda *a, **k: pytest.fail("installed"))
+    monkeypatch.setattr(init, "ensure_image", lambda **k: pytest.fail("downloaded"))
+    assert init.main(["--yes", "--compute", "local", "--target", "owner/repo"]) == 2
+    assert capsys.readouterr().err.count("outerloop init:") == 1

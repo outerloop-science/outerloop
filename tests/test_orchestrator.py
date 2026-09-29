@@ -2410,3 +2410,27 @@ def test_sibling_launch_capacity_race_keeps_evaluations_and_notifies_author(tmp_
         "REFUSED" in str(m.payload) and "operator GPU limit" in str(m.payload)
         for m in pending(directory, 0)
     )
+
+
+def test_endpoint_loss_between_legs_preserves_session(tmp_path, monkeypatch):
+    from outerloop.endpoints import EndpointUnavailable
+    from outerloop.orchestrator import RunParked
+
+    _write_syscall(
+        tmp_path, {"launches": [{"name": "a", "command": "x"}, {"name": "b", "command": "y"}]}
+    )
+    original = FakeHarness.run
+
+    def run(self, brief_text, workspace, resume_session_id=None):
+        if resume_session_id:
+            raise EndpointUnavailable("down")
+        return original(self, brief_text, workspace, resume_session_id)
+
+    monkeypatch.setattr(FakeHarness, "run", run)
+    tight = CONTRACT.replace("    direction: min\n", "    direction: min\n    depth_k: 1\n", 1)
+    with pytest.raises(RunParked) as raised:
+        run_climb(tmp_path, [], contract=tight, launcher=_fake_launcher([]))
+    park = raised.value
+    assert park.capacity_wait and park.phase == "author-sleep"
+    assert park.session and park.session.session_id == "s1"
+    assert park.candidate_sha and park.sleeps_used == 0 and park.launches_used == 0

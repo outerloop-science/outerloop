@@ -163,3 +163,26 @@ fallback. That requires the pinned clients under network observation.
 
 Legacy records with no model use native model defaults only. A missing native
 Codex model fails preflight; it never adopts an endpoint. No backfill is needed.
+
+## Server addresses that change
+
+Instead of `OUTERLOOP_ENDPOINT_ONPREM_URL`, set
+`OUTERLOOP_ENDPOINT_ONPREM_URL_FILE=/absolute/path/server-address`.
+Exactly one of `URL` and `URL_FILE` must be configured for a profile. The file
+contains either a bare URL (a trailing newline is fine) or a JSON object:
+
+```json
+{"url": "http://localhost:8000/v1"}
+```
+
+Both forms use the same HTTP(S) base URL validation as `URL`: no credentials,
+query string or fragment. Publish updates by atomic rename. The kernel reads
+this file outside the session sandbox each time a session starts, including
+resumes and wakes; an already constructed harness does not cache its value.
+
+A missing or unreadable address defers intake and parked wakes without spending
+wake retries. At session time the file is read once, then a single models-list
+request checks the server with a three-second timeout and the profile key in an
+Authorization header. Missing files, dead servers, and interrupted checks park
+fresh runs and defer wakes without consuming a wake retry. There is no polling. Malformed contents are configuration errors. Profile names, served model,
+API capabilities and credential paths retain their existing semantics.
