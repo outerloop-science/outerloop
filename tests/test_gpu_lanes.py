@@ -88,6 +88,10 @@ def test_parse_invalid(raw):
         "--comment",
         "-A=a",
         "--comment=x\n--account=a",
+        "--nodes=2",
+        "--ntasks-per-node=4",
+        "--exclusive=user",
+        "--tres-per-task=gres/gpu:2",
     ],
 )
 def test_parse_forbidden_extra(flag):

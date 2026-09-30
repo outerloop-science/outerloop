@@ -78,7 +78,11 @@ def parse_gpu_lanes(raw: str) -> dict[str, GpuLane]:
                     raise ValueError(f"{target}: extra flags must have the form --name=value")
                 name = flag[2:].split("=", 1)[0]
                 # later flags win in sbatch, so an extra must not repeat one the kernel sets
-                if name in KERNEL_FLAGS or name.startswith(("gpus", "cpus", "mem")):
+                # node, task and exclusivity counts multiply a per-node GPU request past
+                # what the caps charge, so they are the kernel's too
+                if name in KERNEL_FLAGS or name.startswith(
+                    ("gpus", "cpus", "mem", "nodes", "ntasks", "exclusive", "tres-per")
+                ):
                     raise ValueError(f"{target}: kernel-owned extra flag --{name}")
             lanes[target] = GpuLane(
                 lane["partition"], lane.get("account", ""), gpu_type, tuple(extra)
