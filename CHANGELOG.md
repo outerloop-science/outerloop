@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
+  image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
+  codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.
+
 - `OUTERLOOP_AUTHOR_OVERRIDES` accepts a list of entries per target, so different
   slots of one target can use different authors (each listed entry names its slots;
   a slot may appear only once). The single-object form is unchanged.

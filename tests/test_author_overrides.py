@@ -433,3 +433,38 @@ def test_a_target_may_list_overrides_for_different_slots(monkeypatch):
 def test_listed_overrides_are_validated(entries):
     with pytest.raises(ValueError, match=r"^OUTERLOOP_AUTHOR_OVERRIDES:"):
         parse_overrides(json.dumps({"owner/repo": entries}))
+
+
+def test_startup_validation_uses_the_image_the_tick_runs(monkeypatch):
+    # A deployment that leaves OUTERLOOP_IMAGE unset runs codex sessions on the default
+    # image; startup validation of a codex override must use that same image, or the
+    # tick refuses to start at all.
+    import os
+
+    from outerloop import tick
+    from outerloop.author_overrides import validate_overrides
+
+    monkeypatch.delenv("OUTERLOOP_IMAGE", raising=False)
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps(
+            {"owner/repo": {"backend": "codex", "model": "some-codex-model", "slots": ["agent-03"]}}
+        ),
+    )
+    assert tick.startup_image() == tick._default_image()
+    with pytest.raises(ValueError, match="requires --image"):
+        validate_overrides(os.environ, "")  # the old startup behaviour
+    try:
+        validate_overrides(os.environ, tick.startup_image())
+    except ValueError as exc:
+        assert "requires --image" not in str(exc)
+
+
+def test_tick_startup_validates_with_startup_image():
+    # The tick's entry point must validate overrides with the image sessions run with.
+    import inspect
+
+    from outerloop import tick
+
+    src = inspect.getsource(tick.main)
+    assert "validate_overrides(os.environ, startup_image())" in src

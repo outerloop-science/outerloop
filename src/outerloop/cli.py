@@ -612,8 +612,12 @@ def start(args: argparse.Namespace) -> int:
         from outerloop.author_overrides import validate_overrides
 
         try:
+            from outerloop.tick import _default_image
+
+            # the image the tick will run with: an unset setting means the default image
             validate_overrides(
-                {**values, **os.environ}, _setting_of("OUTERLOOP_IMAGE", values, os.environ)
+                {**values, **os.environ},
+                _setting_of("OUTERLOOP_IMAGE", values, os.environ) or _default_image(),
             )
         except ValueError as exc:
             raise StartError(str(exc)) from exc
