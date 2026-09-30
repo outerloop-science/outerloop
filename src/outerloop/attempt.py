@@ -3084,7 +3084,7 @@ def resume_run(
         result = dc_replace(result, submit_report=str(stage.get("report") or "no report was given"))
         report_path = run_dir / "report.md"
         report_path.write_text(result.report(config, redact_secrets=secrets))
-        if not snapshot_attempted:
+        if not snapshot_attempted and not result.tree_rejected:
             _push_line_snapshot(
                 ws,
                 _line_ref_for(bench, config.agent_id),
@@ -3557,7 +3557,7 @@ def _finish_attempt(
         )
     report_path = run_dir / "report.md"
     report_path.write_text(result.report(config, redact_secrets=secrets))
-    if not snapshot_attempted:
+    if not snapshot_attempted and not result.tree_rejected:
         _push_line_snapshot(
             ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
         )

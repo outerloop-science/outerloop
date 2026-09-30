@@ -457,7 +457,13 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
                     workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit"
                 )
             else:
-                assert "REFUSED" in brief_text and "out-of-scope paths" in brief_text
+                assert (
+                    "Refused:" in brief_text
+                    if len(self.calls) == 1
+                    else "Refused again:" in brief_text
+                )
+                if len(self.calls) == 3:
+                    return super().run(brief_text, workspace, resume_session_id)
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -475,12 +481,14 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
         now=NOW,
         dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
     )
-    assert len(author.calls) == 2
-    assert out.action == "scope-violation"
-    assert (
-        "out-of-scope paths at launch: docs/roadmap.md"
-        in (run_dir(root, "tsp-r1") / "report.md").read_text()
-    )
+    assert len(author.calls) == 4
+    assert out.action == "replied"
+    from outerloop.inbox import pending
+
+    notes = [m for m in pending(run_dir(root, "tsp-r1"), 0) if m.key.startswith("refusal:")]
+    assert len(notes) == 3
+    assert all("docs/roadmap.md" in m.payload["text"] for m in notes)
+    assert all(m.payload["text"].startswith("Refused again:") for m in notes[1:])
 
 
 def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatch, caplog):
@@ -1624,7 +1632,13 @@ def _author_folded_base_scope(
                 if edit_ledger:
                     (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
             else:
-                assert "REFUSED" in brief_text and "out-of-scope paths" in brief_text
+                assert (
+                    "Refused:" in brief_text
+                    if len(self.calls) == 1
+                    else "Refused again:" in brief_text
+                )
+                if len(self.calls) == 3:
+                    return super().run(brief_text, workspace, resume_session_id)
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -1636,8 +1650,8 @@ def _author_folded_base_scope(
     author = FoldingHarness()
     outcome = wake_review(root, "tsp-r1", author, github)
     refused = bool(edit_ledger or rollback_to)
-    assert len(author.calls) == (2 if refused else 1)
-    assert outcome.action == ("scope-violation" if refused else "parked")
+    assert len(author.calls) == (4 if refused else 1)
+    assert outcome.action == ("replied" if refused else "parked")
     assert bool(launched) is not refused
     if rollback_to:
         assert any("docs/roadmap.md" in paths for paths in seen)

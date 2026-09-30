@@ -228,7 +228,7 @@ comment never does.
 | Kept | Why it is the kernel's |
 | --- | --- |
 | the paired measurement, the private seed, the floor, the suite, the cached baseline rule, the zero-change rule (an unchanged tree cannot be credited), the verdict bound to its sealed tree, base and contract | the number must be nobody's claim |
-| scope on the diff before anything is sealed, launched or measured; one uncharged refusal before a consecutive violation ends the run | the out-of-scope edit could be to the ruler |
+| scope on the diff before anything is sealed, launched or measured; uncharged refusals repeat and never end the run | the out-of-scope edit could be to the ruler |
 | containment, the lane from the contract, `--nice` on launches, always queue, cancel on end | the session cannot hold GPUs or credentials |
 | launch, sleep and GPU-hour counts; refusal on exhaustion with the numbers | the meter is the only bound on spend |
 | the publish: open or fast-forward the PR head to the sealed tree, the ledger row rule, disarm before a head moves, refuse when a human pushed or the contract moved; under `merge: auto`, record the blessed head and let the sweep merge a clean, quiet PR at that head only, never arm GitHub auto-merge; otherwise humans merge | credit, merge authority, and nobody's work overwritten |
@@ -236,19 +236,19 @@ comment never does.
 | standing: which comments are messages, the bot's own markers, the task label; the issue claim and its release; one delivery per message | authorization and liveness |
 | leases, the sweep, deadline floors, the stuck cap, the outage latch, the tamper guard, the report on every ending, the line seal at every terminal | liveness and audit |
 
-Scope admission for launch, submit, and stale-submit checkpoints refuses the
-first out-of-scope tree with a kernel inbox note listing up to ten paths.
-Nothing is sealed, launched, measured, or charged for the refused request;
-the author can retry once the tree only changes contract-allowed paths.
-Scope has its own in-memory refusal bound, independent of malformed-request
-and budget refusals, so an unrelated refusal does not remove this recovery
-opportunity. An accepted request resets the bound; a second scope violation
-without acceptance ends as `scope-violation`. A session that cannot resume
-also ends as `scope-violation`; endpoint loss during refusal delivery ends as
-`session-outage` without sealing the rejected tree. The note remains in the
-inbox for operators and later readers. The authoritative scope re-check in
-`measure_and_decide`, including wake re-entry, remains terminal. Judges still
-receive the run record.
+Scope admission for launch, submit, and stale-submit checkpoints refuses every
+out-of-scope request with a kernel inbox note listing up to ten offending paths
+and the contract's allowed scope (up to ten entries and 1,000 characters).
+Later refusals in the same run start with “Refused again:”. Nothing is sealed,
+launched, measured, or charged for a refused request. Refusals repeat and never
+end the run, including requests with malformed content or budget problems.
+The session walltime and contract sleep, launch, and GPU-hour budgets bound
+the loop. A session that cannot resume ends as `session-error`; endpoint loss
+during refusal delivery ends as `session-outage` without sealing the rejected
+tree. Abandoning a rejected tree ends without measuring, sealing, or pushing it.
+Every refusal remains in the inbox for operators and later readers. The
+authoritative scope re-check in `measure_and_decide`, including wake re-entry,
+remains terminal. Judges still receive the run record.
 
 ## What becomes the author's, and what is deleted
 
