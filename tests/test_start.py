@@ -17,7 +17,6 @@ from outerloop import cli
 from outerloop.cli import (
     DEFAULT_LOCAL_ROOT,
     DEFAULT_RESIDENT_MINUTES,
-    RESIDENT_JOB_NAME,
     START_KEYS,
     TICK_ENV_KEYS,
     StartError,
@@ -26,6 +25,7 @@ from outerloop.cli import (
     main,
     plan_start,
 )
+from outerloop.instance import job_name
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -194,7 +194,7 @@ def test_slurm_composes_the_resident_submit(tmp_path: Path) -> None:
         "--parsable",
         "--dependency=singleton",
         f"--time={DEFAULT_RESIDENT_MINUTES}",
-        f"--job-name={RESIDENT_JOB_NAME}",
+        f"--job-name={job_name()}",
         "--account=pr_1_general",
         "--partition=cpu_short",
         "--export=ALL",
@@ -442,7 +442,7 @@ def test_slurm_start_submits_once_and_reports(
     out = capsys.readouterr().out
     assert "job 4242" in out and "cpu_short" in out and "PAUSE" in out
     argv = log.read_text().split("\n")
-    assert argv[0] == "--parsable" and f"--job-name={RESIDENT_JOB_NAME}" in argv
+    assert argv[0] == "--parsable" and f"--job-name={job_name()}" in argv
     assert "--dependency=singleton" in argv
     assert "--export=ALL" in argv  # the knobs ride the inherited env, asserted next
     assert envlog.read_text() == f"1:{home}"  # export_env reached sbatch's environment
@@ -1018,7 +1018,7 @@ def test_resident_tick_takes_no_root_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
     monkeypatch.delenv("OUTERLOOP_TICK_HOST", raising=False)
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path)])
-    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root, **kwargs: (None, None))
     monkeypatch.setattr(mod, "tick", lambda *a, **k: mod.TickReport())
     assert mod.main() == 0
     assert not (tmp_path / "TICK").exists()
@@ -1122,3 +1122,71 @@ def test_start_sees_steward_key_from_env_file(clean_env, monkeypatch, capsys):
     path.write_text(path.read_text() + "OUTERLOOP_CLAUDE_MODEL=claude-x\n")
     assert main(["start", "--local"]) == 0
     assert exports[-1]["OUTERLOOP_STEWARD_KEY_FILE"] == "/keys/steward"
+
+
+def test_start_reads_process_env_file_and_exports_it(clean_env, monkeypatch):
+    selected = env_file(clean_env, "OUTERLOOP_ROOT=/sandbox\nOUTERLOOP_TARGET=owner/repo\n")
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    monkeypatch.chdir(checkout(clean_env))
+    captured = {}
+
+    def execute(cmd, env):
+        captured.update(env)
+        return 0
+
+    monkeypatch.setattr(cli, "_exec", execute)
+    assert main(["start", "--local"]) == 0
+    assert captured["OUTERLOOP_ENV_FILE"] == str(selected)
+    assert captured["OUTERLOOP_ROOT"] == "/sandbox"
+    assert captured["OUTERLOOP_TARGET"] == "owner/repo"
+
+
+@pytest.mark.parametrize("mode", [0o620, 0o602])
+def test_start_override_keeps_trust_checks(clean_env, monkeypatch, capsys, mode):
+    selected = env_file(clean_env, "OUTERLOOP_ROOT=/sandbox\n", mode)
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    assert main(["start", "--local", "--dry-run"]) == 2
+    assert "refusing to read" in capsys.readouterr().err
+
+
+def test_env_file_selector_is_process_only(clean_env, monkeypatch):
+    selected = env_file(clean_env, "OUTERLOOP_ENV_FILE=/other\nOUTERLOOP_ROOT=/sandbox\n")
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    assert env_file_values(keys=None) == {"OUTERLOOP_ROOT": "/sandbox"}
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", "relative.env")
+    assert main(["start", "--local", "--dry-run"]) == 2
+
+
+def test_start_slurm_scopes_lookup_hints_and_inherited_selector(clean_env, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    selected = env_file(clean_env, f"OUTERLOOP_ROOT={clean_env}/sandbox\n")
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    monkeypatch.chdir(checkout(clean_env))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/" + name)
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout="42" if cmd[0] == "sbatch" else "", stderr="")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert main(["start"]) == 0
+    name = job_name()
+    assert f"Stop: scancel --name {name}." in capsys.readouterr().out
+    for cmd, kwargs in calls:
+        if cmd[0] == "squeue":
+            assert f"--name={name}" in cmd
+        if cmd[0] == "sbatch":
+            assert f"--job-name={name}" in cmd
+            assert kwargs["env"]["OUTERLOOP_ENV_FILE"] == str(selected)
+
+
+def test_override_rejects_another_owner(clean_env, monkeypatch):
+    from types import SimpleNamespace
+
+    selected = env_file(clean_env, "OUTERLOOP_ROOT=/sandbox\n")
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    monkeypatch.setattr(Path, "stat", lambda self: SimpleNamespace(st_uid=os.getuid() + 1))
+    with pytest.raises(StartError, match="owned by you"):
+        env_file_values()

@@ -42,6 +42,15 @@
 CADENCE_MIN="${OUTERLOOP_CADENCE_MIN:-30}"
 JOB_NAME="outerloop-tick"
 RESIDENT_JOB_NAME="outerloop-resident"
+# Derive both names from the settings file before any scheduler query/cancellation.
+# The default settings path retains both old names, regardless of state root.
+# Use stdlib Python before deploy has synced dependencies.
+if [ -n "${OUTERLOOP_HOME:-}" ]; then
+    instance_python="$OUTERLOOP_HOME/.venv/bin/python"
+    [ -x "$instance_python" ] || instance_python=python3
+    RESIDENT_JOB_NAME=$("$instance_python" "$OUTERLOOP_HOME/src/outerloop/instance.py") || exit 1
+    JOB_NAME="outerloop-tick${RESIDENT_JOB_NAME#outerloop-resident}"
+fi
 missing=""
 for var in OUTERLOOP_HOME OUTERLOOP_ROOT; do
     eval "val=\${$var:-}"
@@ -105,7 +114,7 @@ while [ "$i" -le "$need" ]; do
     begin=$(date -d "@$begin_epoch" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
             || date -r "$begin_epoch" +%Y-%m-%dT%H:%M:%S)
     for attempt in 1 2 3; do
-        if sbatch --dependency=singleton --begin="$begin" \
+        if sbatch --dependency=singleton --begin="$begin" --job-name="$JOB_NAME" --export=ALL \
                   ${acct_arg:+"$acct_arg"} ${part_arg:+"$part_arg"} ${qos_arg:+"$qos_arg"} \
                   "${OUTERLOOP_HOME:-}/scripts/tick_chain.sbatch"; then
             break

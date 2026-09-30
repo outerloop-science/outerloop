@@ -141,6 +141,8 @@ class JobSpec:
     array: str = ""
     extra: tuple[str, ...] = ()
 
+    gpu_type: str = ""
+
     def to_argv(self) -> list[str]:
         if bool(self.command) == bool(self.script):
             raise ValueError("exactly one of command/script must be set")
@@ -162,7 +164,12 @@ class JobSpec:
             # and Slurm submit plugins commonly classify a job by its
             # per-node GRES — the per-job form has been rejected on a GPU
             # partition as "CPU job setup is not valid"
-            argv.append(f"--gpus-per-node={self.gpus}")
+            # Typed --gres is also per-node.
+            argv.append(
+                f"--gres=gpu:{self.gpu_type}:{self.gpus}"
+                if self.gpu_type
+                else f"--gpus-per-node={self.gpus}"
+            )
         if self.qos:
             argv.append(f"--qos={self.qos}")
         if self.nice:

@@ -532,6 +532,8 @@ def eval_job_spec(
     gpus: int = 0,
     nice: int = 0,
     array: str = "",
+    gpu_type: str = "",
+    extra: tuple[str, ...] = (),
 ) -> JobSpec:
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
@@ -561,6 +563,8 @@ def eval_job_spec(
         gpus=gpus,
         nice=nice,
         array=array,
+        gpu_type=gpu_type,
+        extra=extra,
     )
 
 

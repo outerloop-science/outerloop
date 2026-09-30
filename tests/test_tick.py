@@ -4481,7 +4481,7 @@ def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
     monkeypatch.setattr(
         sys, "argv", ["tick", "--root", str(tmp_path)] + (["--loop"] if loop else [])
     )
-    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root, **kwargs: (None, None))
     seen = []
 
     def one_tick(*args, **kwargs):
@@ -4631,7 +4631,7 @@ def test_sigterm_handler_is_installed_before_the_lease(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "local")
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
-    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root, **kwargs: (None, None))
     seen = []
 
     def acquire(*args, **kwargs):

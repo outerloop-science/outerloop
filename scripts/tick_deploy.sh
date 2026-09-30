@@ -14,7 +14,16 @@
 # Instead single allowlisted keys are read from it, and only when the file is
 # ours and not group/world-writable (a writable one could still inject a
 # malicious VALUE, e.g. a bad codex binary path).
-ENV_FILE="$HOME/.config/outerloop/.env"
+# the selector, trimmed (Python trims it too); empty or blank means the default file
+_sel="${OUTERLOOP_ENV_FILE:-}"
+_sel="${_sel#"${_sel%%[![:space:]]*}"}"; _sel="${_sel%"${_sel##*[![:space:]]}"}"
+ENV_FILE="${_sel:-$HOME/.config/outerloop/.env}"
+case "$ENV_FILE" in
+    /*) ;;
+    *) echo "deploy: OUTERLOOP_ENV_FILE must be an absolute path" >&2
+       export OUTERLOOP_DEPLOY_BROKEN=1
+       return 1 ;;
+esac
 ENV_TRUSTED=""
 if [ -r "$ENV_FILE" ]; then
     # GNU stat first, BSD stat second (a developer's Mac runs this too)
@@ -154,7 +163,7 @@ if [ -n "$ENV_TRUSTED" ]; then
                   OUTERLOOP_VERTEX_ADC OUTERLOOP_VERTEX_SMALL_MODEL \
                   OUTERLOOP_TARGET \
                   OUTERLOOP_GITHUB_APP_FILE OUTERLOOP_BOT_LOGIN OUTERLOOP_BOT_ALIASES \
-                  OUTERLOOP_GPU_PARTITION OUTERLOOP_GPU_ACCOUNT \
+                  OUTERLOOP_GPU_PARTITION OUTERLOOP_GPU_ACCOUNT OUTERLOOP_GPU_LANES \
                   OUTERLOOP_QOS OUTERLOOP_APPTAINER_BIN \
                   OUTERLOOP_IMAGE \
                   OUTERLOOP_PANEL OUTERLOOP_PANEL_KEY_FILE \
