@@ -614,15 +614,16 @@ def start(args: argparse.Namespace) -> int:
         try:
             from outerloop.tick import _default_image
 
-            # the image the launched tick will run with: absent means the default image, an
-            # explicit empty value means no image (as tick.startup_image treats it)
-            image_set = "OUTERLOOP_IMAGE" in os.environ or "OUTERLOOP_IMAGE" in values
-            validate_overrides(
-                {**values, **os.environ},
-                _setting_of("OUTERLOOP_IMAGE", values, os.environ)
-                if image_set
-                else _default_image(),
-            )
+            # the image the launched tick will run with, in the deploy step's order: a line in
+            # the settings file wins (even empty, which means no image), then the inherited
+            # environment, then the default image (as tick.startup_image falls back)
+            if "OUTERLOOP_IMAGE" in values:
+                image = values["OUTERLOOP_IMAGE"].strip()
+            elif "OUTERLOOP_IMAGE" in os.environ:
+                image = os.environ["OUTERLOOP_IMAGE"].strip()
+            else:
+                image = _default_image()
+            validate_overrides({**values, **os.environ}, image)
         except ValueError as exc:
             raise StartError(str(exc)) from exc
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)

@@ -471,9 +471,18 @@ def test_tick_startup_validates_with_startup_image():
 
 
 @pytest.mark.parametrize(
-    ("env_value", "expected"), [(None, "DEFAULT"), ("", ""), ("/img.sif", "/img.sif")]
+    ("env_value", "file_value", "expected"),
+    [
+        (None, None, "DEFAULT"),
+        ("", None, ""),
+        ("/img.sif", None, "/img.sif"),
+        ("/inherited.sif", "", ""),  # the settings file wins, as in the deploy step
+        ("/inherited.sif", "/file.sif", "/file.sif"),
+    ],
 )
-def test_start_validates_with_the_tick_image(monkeypatch, tmp_path, env_value, expected):
+def test_start_validates_with_the_tick_image(
+    monkeypatch, tmp_path, env_value, file_value, expected
+):
     # outerloop start must validate overrides with exactly the image the launched tick uses:
     # absent -> the default image, explicit empty -> no image, set -> that image.
     import contextlib
@@ -490,7 +499,7 @@ def test_start_validates_with_the_tick_image(monkeypatch, tmp_path, env_value, e
     else:
         monkeypatch.setenv("OUTERLOOP_IMAGE", env_value)
     env_file = tmp_path / "settings.env"
-    env_file.write_text("")
+    env_file.write_text("" if file_value is None else f"OUTERLOOP_IMAGE={file_value}\n")
     env_file.chmod(0o600)
     monkeypatch.setattr(cli, "ENV_FILE", env_file)
     monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(env_file))
