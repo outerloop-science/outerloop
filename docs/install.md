@@ -503,6 +503,36 @@ or `scancel --name autoresearch-tick` for the per-cadence chain) and then runs
 `outerloop start`. `start` and the chain refuse a second loop on one root only under the
 current name, `outerloop-resident`.
 
+### Running two instances on one account
+
+Give each instance a separate state root and operator settings file. Keep the
+production settings at `~/.config/outerloop/.env`; select the sandbox file with
+an absolute path in the **process environment** (it cannot select itself):
+
+```bash
+export OUTERLOOP_ENV_FILE="$HOME/.config/outerloop-sandbox/.env"
+outerloop init --root /shared/sandbox-state
+outerloop start
+```
+
+Use the same exported selector for later init, start, limits, and harness status
+commands. The file must be owned by you and not group/world-writable (`chmod 600`
+is recommended). The resident re-reads that file each tick, and successors inherit
+its path. Foreground loops read it once at startup. Use a separate checkout via
+`OUTERLOOP_HOME` if the instances need independent code updates or harness installs.
+
+With `OUTERLOOP_ENV_FILE` unset, or resolving to the default settings path,
+jobs keep the names `outerloop-resident` and `outerloop-tick`, regardless of the
+state root. A different settings file gets `outerloop-resident-<12 hex>` and
+`outerloop-tick-<12 hex>`, using a stable hash of its resolved path. Settings
+file aliases resolve to the same identity. Two instances sharing one settings
+file are not supported. Keep the selected settings path unchanged while its
+chain runs.
+Start's printed `squeue`/`scancel` hints use the instance's name; when inspecting
+or stopping manually, use that exact name. Each root has its own `TICK` lease,
+heartbeat, logs, and `PAUSE` sentinel. Per-user scheduler caps remain shared across
+both instances; separate settings do not increase the account's scheduler limits.
+
 The resident checks its successor every tick and before handover, requeues vanished or terminal jobs with the same dependency, and keeps ticking through the walltime margin if recovery fails.
 
 Experiments run wherever your `compute` backend says. Slurm is the first

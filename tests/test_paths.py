@@ -20,4 +20,33 @@ def test_existing_config_dir(tmp_path: Path) -> None:
 
 def test_deploy_script_config_dir() -> None:
     sh = (Path(__file__).resolve().parents[1] / "scripts" / "tick_deploy.sh").read_text()
-    assert 'ENV_FILE="$HOME/.config/outerloop/.env"' in sh
+    assert 'ENV_FILE="${OUTERLOOP_ENV_FILE-$HOME/.config/outerloop/.env}"' in sh
+
+
+def test_env_file_default_and_process_override(monkeypatch, tmp_path):
+    from outerloop import paths
+
+    monkeypatch.delenv("OUTERLOOP_ENV_FILE", raising=False)
+    assert paths.env_file() == paths.CONFIG_DIR / ".env"
+    selected = tmp_path / "settings.env"
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    assert paths.env_file() == selected
+
+
+def test_harness_status_reads_selected_settings(monkeypatch, tmp_path):
+    from outerloop import harness_cli
+
+    selected = tmp_path / "settings.env"
+    selected.write_text("OUTERLOOP_CLAUDE_BIN=/sandbox/claude\n")
+    selected.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    monkeypatch.delenv("OUTERLOOP_CLAUDE_BIN", raising=False)
+    seen = {}
+
+    def status(env):
+        seen.update(env)
+        return 0
+
+    monkeypatch.setattr(harness_cli, "status", status)
+    assert harness_cli.main(["status"]) == 0
+    assert seen["OUTERLOOP_CLAUDE_BIN"] == "/sandbox/claude"

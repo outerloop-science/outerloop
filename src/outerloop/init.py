@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from outerloop.cli import ENV_FILE, StartError, env_file_values
+from outerloop.cli import ENV_FILE, StartError, env_file_values, operator_env_file
 from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.hermes_install import hermes_ready
 from outerloop.image import ensure_image
@@ -134,10 +134,16 @@ def render_env(
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+def _env_path() -> Path:
+    return operator_env_file(CONFIG_DIR / ENV_FILE.name)
+
+
 def _existing_env() -> str:
     """The current `.env` text, or "" when there is none (a fresh setup)."""
     try:
-        return (CONFIG_DIR / ENV_FILE.name).read_text()
+        path = _env_path()
+        env_file_values(path, keys=None)
+        return path.read_text()
     except OSError:
         return ""
 
@@ -271,6 +277,7 @@ def write_config(
     """Write the PAT file (only when a token is pasted) and the `.env`, both
     owner-only (0600) — `start`/`tick_deploy` refuse a group/world-readable
     `.env`, and a token file must never be wider. Returns (env_path, pat_path)."""
+    config_dir = operator_env_file(config_dir / ENV_FILE.name).parent
     config_dir.mkdir(parents=True, exist_ok=True)
     written_pat: Path | None = None
     if token:
@@ -280,7 +287,7 @@ def write_config(
         write_private(pat_path, token)
         written_pat = pat_path
         pat_file = str(pat_path)
-    env_path = config_dir / ENV_FILE.name
+    env_path = operator_env_file(config_dir / ENV_FILE.name)
     write_private(env_path, render_env(a, pat_file))
     return env_path, written_pat
 
@@ -477,7 +484,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     pasted token is returned separately to be written 0600."""
     preserved: dict[str, str] = {}
     if args.github_app:
-        preserved = env_file_values(CONFIG_DIR / ENV_FILE.name, keys=None)
+        preserved = env_file_values(_env_path(), keys=None)
         existing = preserved.copy()
         explicit_image = args.image
         # Flags, then shell, then the working deployment. Keep unknown keys too.
@@ -649,7 +656,7 @@ def _github_app_recheck(answers: InitAnswers, app_json: Path) -> int:
         problem, fatal = _app_verdict(app_provider_from_file(app_json), answers.target)
     except Exception as exc:
         problem, fatal = f"could not read the App credentials: {exc}", False
-    env_path = CONFIG_DIR / ENV_FILE.name
+    env_path = _env_path()
     write_private(
         env_path,
         render_env(
@@ -677,7 +684,7 @@ def _github_app_setup(
     Interactive by nature (a browser click + install), so no `--yes` variant."""
     from outerloop import appmanifest
 
-    existing = sorted(CONFIG_DIR.glob("github_app.*.json"))
+    existing = sorted(_env_path().parent.glob("github_app.*.json"))
     if len(existing) == 1:
         # a re-run after fixing the installation: re-check the App this machine
         # already has rather than creating a second one
@@ -700,7 +707,7 @@ def _github_app_setup(
     except ValueError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 1
-    pem_path, app_json = appmanifest.save_app_creds(conversion, CONFIG_DIR)
+    pem_path, app_json = appmanifest.save_app_creds(conversion, _env_path().parent)
     repo = answers.target.split("/", 1)[-1]
     print(f"  created App '{conversion['slug']}'; credentials in {app_json} and {pem_path} (0600)")
     mismatch = _app_owner_mismatch_note(conversion, owner, answers.target)
@@ -737,7 +744,7 @@ def _github_app_setup(
             problem, fatal = f"could not read the App credentials: {exc}", False
         if fatal:
             write_private(
-                CONFIG_DIR / ENV_FILE.name,
+                _env_path(),
                 render_env(
                     answers,
                     app_file=str(app_json),
@@ -752,7 +759,7 @@ def _github_app_setup(
     else:
         # the credentials are kept; nothing can run until the App is installed
         write_private(
-            CONFIG_DIR / ENV_FILE.name,
+            _env_path(),
             render_env(
                 answers,
                 app_file=str(app_json),
@@ -763,7 +770,7 @@ def _github_app_setup(
         return _app_failure(
             answers, str(conversion["slug"]), f"the App is not installed on {answers.target}"
         )
-    env_path = CONFIG_DIR / ENV_FILE.name
+    env_path = _env_path()
     write_private(
         env_path,
         render_env(
@@ -782,6 +789,11 @@ def _github_app_setup(
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        env_file_values(_env_path(), keys=None)
+    except StartError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(
         prog="outerloop init",
         description="Guided setup: asks for anything not given as a flag, checks the "
@@ -859,7 +871,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         effective_overrides = {
-            **env_file_values(CONFIG_DIR / ENV_FILE.name, keys=None),
+            **env_file_values(_env_path(), keys=None),
             **answers.preserved_env,
             **os.environ,
         }
@@ -906,7 +918,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Never clobber a working setup silently: a re-run of init on a configured
     # machine must ask (or be told --force). Checked before any App is created.
-    env_path = CONFIG_DIR / ENV_FILE.name
+    env_path = _env_path()
     if env_path.exists() and not args.force:
         if not interactive:
             print(f"outerloop init: {env_path} exists; pass --force to overwrite", file=sys.stderr)
@@ -938,7 +950,11 @@ def main(argv: list[str] | None = None) -> int:
             "(hidden; blank to set later): "
         ).strip()
         if pasted:
-            key_path = write_author_key(answers.author_backend, pasted, config_dir=CONFIG_DIR)
+            key_path = write_author_key(
+                answers.author_backend,
+                pasted,
+                config_dir=_env_path().parent,
+            )
             answers.author_key_file = str(key_path)
             print(f"wrote {key_path} (0600)")
 
@@ -1088,7 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
             "Paste a GitHub PAT with write access to the target (hidden; blank to skip): "
         ).strip()
 
-    env_path, pat_path = write_config(answers, token, pat_file, config_dir=CONFIG_DIR)
+    env_path, pat_path = write_config(answers, token, pat_file, config_dir=_env_path().parent)
     print(f"wrote {env_path}")
     if pat_path:
         print(f"wrote {pat_path} (0600)")
@@ -1141,7 +1157,7 @@ def _claude_model_hint(answers: InitAnswers) -> None:
     if not answers.claude_model:
         print(
             "  OUTERLOOP_CLAUDE_MODEL not recorded — add OUTERLOOP_CLAUDE_MODEL=<model> to "
-            f"{CONFIG_DIR / ENV_FILE.name} before `outerloop start` (every Claude role reads it)"
+            f"{_env_path()} before `outerloop start` (every Claude role reads it)"
         )
 
 
@@ -1149,6 +1165,6 @@ def _author_key_hint(answers: InitAnswers) -> None:
     if not answers.author_key_file:
         print(
             "  no author key set — put it in "
-            f"{author_key_path(answers.author_backend, config_dir=CONFIG_DIR)} "
+            f"{author_key_path(answers.author_backend, config_dir=_env_path().parent)} "
             "before the first climb"
         )
