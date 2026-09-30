@@ -890,7 +890,7 @@ LEGACY_JOB_NAME_LIMIT = 60
 FIXED_JOB_PATTERNS = tuple(
     re.compile(p)
     for p in (
-        r"^outerloop-(resident|tick)$",
+        r"^outerloop-(resident|tick)(-[0-9a-f]{12})?$",
         r"^climb-[\w.-]+-agent-\d+$",
         r"^(steward|climb)-issue-\d+$",
     )
