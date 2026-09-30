@@ -186,3 +186,34 @@ request checks the server with a three-second timeout and the profile key in an
 Authorization header. Missing files, dead servers, and interrupted checks park
 fresh runs and defer wakes without consuming a wake retry. There is no polling. Malformed contents are configuration errors. Profile names, served model,
 API capabilities and credential paths retain their existing semantics.
+
+### Codex on a chat-completions endpoint
+
+A Codex author or panel lens may select a profile with `API=chat`. Install its
+bridge with `outerloop harness upgrade --used` (or `outerloop harness upgrade
+bridge`); the command records `OUTERLOOP_BRIDGE_RUNTIME`. A profile advertising
+`responses` continues to use the direct endpoint, even if it also lists `chat`.
+Authors, overrides, and judges use their own selected profiles and credentials.
+
+The bridge runs pinned LiteLLM and a streaming shim inside the session container,
+with a frozen dependency lock and a managed Python runtime mounted read-only.
+Both listeners bind loopback sockets before launching children and require
+independent ephemeral tokens. Only the shim receives the endpoint credential.
+Configuration uses environment references; sidecar payload/debug logs are disabled.
+Exiting or interrupting the session also stops and reaps the bridge processes.
+
+Codex continues to use Responses over HTTP/SSE and replays full history on resume.
+The bridge supports text, reasoning, function tools, and freeform tools such as
+`apply_patch`. Freeform input travels in a function's `content` string; its grammar
+is described to the model, not enforced by the chat endpoint. Hosted tools,
+images, WebSockets, server-side response references, remote compaction, and
+structured text formats are rejected. Reasoning effort and output token limits
+use LiteLLM's chat translation; model-specific unsupported parameters follow
+LiteLLM's `drop_params` behavior. Codex's ordinary local compaction remains the
+context-management path.
+
+Offline compatibility tests use a fake chat upstream. To include the real pinned
+proxy and CLI in the test gate, set `OUTERLOOP_BRIDGE_TEST_PYTHON` to the installed
+runtime's `venv/bin/python` and `OUTERLOOP_BRIDGE_TEST_CODEX` to the pinned Codex
+binary before running `uv run pytest -q`. These tests never install packages or
+contact a model endpoint; without these artifacts, the real-binary tests skip.

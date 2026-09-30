@@ -513,3 +513,43 @@ def test_tampered_binary_reinstalled(tmp_path, name, marker):
         assert checksum != digest
     (shim / "curl").write_text("#!/bin/sh\nexit 99\n")
     assert subprocess.run(argv, env=env).returncode == 0
+
+
+@pytest.mark.parametrize("setting", ["local", "state", "cache", "explicit", "argument", "empty"])
+def test_bridge_runtime_defaults_match_installer(tmp_path, monkeypatch, setting):
+    from outerloop.bridge_install import runtime_path
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OUTERLOOP_")}
+    expected = home / ".outerloop/cache/bridge"
+    if setting in ("state", "cache", "explicit", "argument"):
+        env["OUTERLOOP_ROOT"] = str(tmp_path / "state")
+        expected = tmp_path / "state/cache/bridge"
+    if setting in ("cache", "explicit", "argument"):
+        env["OUTERLOOP_CACHE_ROOT"] = str(tmp_path / "cache")
+        expected = tmp_path / "cache/bridge"
+    if setting in ("explicit", "argument"):
+        env["OUTERLOOP_BRIDGE_RUNTIME"] = str(tmp_path / "explicit")
+        expected = tmp_path / "explicit"
+    if setting == "empty":
+        env.update(OUTERLOOP_ROOT="", OUTERLOOP_CACHE_ROOT="", OUTERLOOP_BRIDGE_RUNTIME="")
+    assert runtime_path(env) == expected
+    if setting == "argument":
+        expected = tmp_path / "argument"
+    # Stop at the first uv call, after the real installer selects and creates its target.
+    stub = tmp_path / "bin/uv"
+    stub.parent.mkdir()
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$UV_PROJECT_ENVIRONMENT"\nexit 42\n')
+    stub.chmod(0o755)
+    env["PATH"] = f"{stub.parent}:{env['PATH']}"
+    args = [str(expected)] if setting == "argument" else []
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/install_bridge.sh"), *args],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 42, result.stderr
+    assert result.stdout.strip() == str(expected / "venv")
+    assert expected.is_dir()

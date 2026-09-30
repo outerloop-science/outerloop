@@ -234,6 +234,10 @@ def author_config_error(
     except ValueError as exc:
         return str(exc)
     if profile:
+        try:
+            profile.validate_runtime(backend, env)
+        except ValueError as exc:
+            return str(exc)
         if backend != "claude" and not image:
             return f"author-backend {backend} requires --image (it runs contained)"
         return ""
@@ -3359,6 +3363,7 @@ def _panel_lenses_from_args(
         claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
         _, endpoint = resolve_endpoint(model, backend)
         if endpoint:
+            endpoint.validate_runtime(backend)
             if not args.image:
                 raise ValueError(f"a {backend} endpoint panel lens requires --image")
             from outerloop.endpoints import validate_judge_key_file

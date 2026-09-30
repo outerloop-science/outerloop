@@ -1082,6 +1082,12 @@ class CodexHarness:
             "--bind",
             f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
+        if self.endpoint and self.endpoint.codex_bridge:
+            from outerloop.bridge_install import runtime_path
+
+            runtime = runtime_path()
+            script = Path(__file__).with_name("codex_bridge.py").resolve()
+            argv += ["--bind", f"{runtime}:{runtime}:ro", "--bind", f"{script}:{script}:ro"]
         if workspace is not None:
             argv += ["--bind", f"{workspace}:{workspace}", "--pwd", str(workspace)]
         return [*argv, self.container_image, *inner]
@@ -1184,6 +1190,14 @@ class CodexHarness:
                     finally:
                         os.close(codex_fd)
                 os.close(home_fd)
+        bridge = bool(self.endpoint and self.endpoint.codex_bridge)
+        if bridge:
+            from outerloop.bridge_install import ready, runtime_path
+
+            if not ready(runtime_path()):
+                return _error_result(
+                    "bridge-runtime-missing", detail="run outerloop harness upgrade bridge"
+                )
         # Native OpenAI sessions log in via stdin; endpoint sessions use env_key.
         if self.endpoint:
             codex_dir = session_home / ".codex"
@@ -1191,11 +1205,12 @@ class CodexHarness:
                 codex_dir.mkdir(mode=0o700, exist_ok=True)
             except OSError:
                 return _error_result("workspace-error", detail="could not create codex config dir")
+            base_url = "http://127.0.0.1:1/v1" if bridge else self.endpoint.session_url()
             config = (
                 'model_provider = "outerloop_endpoint"\n'
                 "[model_providers.outerloop_endpoint]\n"
                 'name = "Outerloop endpoint"\n'
-                f"base_url = {json.dumps(self.endpoint.session_url())}\n"
+                f"base_url = {json.dumps(base_url)}\n"
                 'env_key = "OUTERLOOP_SESSION_KEY"\n'
                 'wire_api = "responses"\n'
                 "requires_openai_auth = false\n"
@@ -1234,6 +1249,17 @@ class CodexHarness:
             resume_session_id,
             self.extra_args,
         )
+        if bridge:
+            assert self.endpoint is not None
+            codex_argv = [
+                str(runtime_path() / "venv/bin/python"),
+                str(Path(__file__).with_name("codex_bridge.py").resolve()),
+                "run",
+                self.endpoint.session_url(),
+                self.model,
+                str(self.timeout_s),
+                *codex_argv,
+            ]
         command = (
             self._apptainer_argv(codex_argv, session_home, workspace)
             if self.container_image
@@ -1261,6 +1287,10 @@ class CodexHarness:
         try:
             stdout, stderr = process.communicate(input=brief_text, timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
+            if bridge:
+                process.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
             stdout = _kill_and_drain(process)
             path = _write_private(
                 workspace.parent, transcript_stem, ".jsonl", redact(stdout or "", (self.api_key,))
@@ -1274,6 +1304,13 @@ class CodexHarness:
                 path,
                 detail=f"session hit its {self.timeout_s}s walltime and was killed",
             )
+        except BaseException:
+            if bridge:
+                process.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
+                _kill_and_drain(process)
+            raise
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".jsonl", stdout)
         last_message = ""
