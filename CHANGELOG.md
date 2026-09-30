@@ -6,6 +6,13 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Research-line salvage and terminal snapshots now recheck scope admission
+  against the trusted contract before sealing. Out-of-scope changes are
+  dropped from the seal (tracked paths retain their parent content), while
+  admitted work and line memory survive normal endings and crashes after
+  scope refusals. Filtering leaves working files and the real index untouched
+  and logs a bounded list of dropped paths. No persisted-state format changes.
+
 - Launch, submit, and stale-submit checkpoint scope violations now refuse every
   request and resume the author with the offending paths and bounded allowed
   scope in the kernel inbox. Later refusals say “Refused again:”. Refusals
