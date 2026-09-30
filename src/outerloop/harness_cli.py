@@ -302,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "upgrade" and any(name not in NAMES for name in args.names):
         parser.error("harness names must be claude, codex or hermes")
     try:
-        env_file = paths.ENV_FILE
+        env_file = paths.env_file(paths.ENV_FILE)
         env = {**env_file_values(env_file, keys=CONFIG_KEYS), **os.environ}
         if args.command == "status":
             return status(env)

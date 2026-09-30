@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Support separate instances on one cluster account: process-only absolute
+  `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
+  and stable settings-path suffixes for resident and per-cadence scheduler jobs.
+  Init, launch, deploy, harness status, and successor recovery use the selected
+  settings and instance identity.
+- Upgrading: no action needed for the default fleet; its settings path and job
+  names remain unchanged. Existing run records, leases, and heartbeats need no
+  migration. Stop additional instances before rolling back to a version without
+  instance isolation.
+
 - Launch, submit, and stale-submit checkpoint scope violations now refuse every
   request and resume the author with the offending paths and bounded allowed
   scope in the kernel inbox. Later refusals say “Refused again:”. Refusals

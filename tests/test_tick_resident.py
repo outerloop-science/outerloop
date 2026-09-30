@@ -25,6 +25,12 @@ def _install(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             shutil.copy(f, home / "scripts" / f.name)
     root = tmp_path / "root"
     root.mkdir()
+    (home / "src/outerloop").mkdir(parents=True)
+    shutil.copy(ROOT / "src/outerloop/instance.py", home / "src/outerloop/instance.py")
+    config = home / ".config/outerloop/.env"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(f"OUTERLOOP_ROOT={root}\n")
+    config.chmod(0o600)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     shimlog = tmp_path / "shimlog"
@@ -76,6 +82,7 @@ def _env(home: Path, root: Path, bindir: Path, **extra: str) -> dict[str, str]:
     }
     env.pop("OUTERLOOP_PAT_FILE", None)
     env.pop("OUTERLOOP_RESIDENT", None)
+    env.pop("OUTERLOOP_ENV_FILE", None)
     env.update(extra)
     return env
 
@@ -821,7 +828,7 @@ exit 0
 def test_deploy_harness_upgrade_is_best_effort(tmp_path, mode):
     home, root, bindir, shimlog = _install(tmp_path)
     config = home / ".config/outerloop/.env"
-    config.parent.mkdir(parents=True)
+    config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("OUTERLOOP_CLAUDE_BIN=/old/claude\nOUTERLOOP_PANEL=\n")
     config.chmod(0o600)
     (bindir / "uv").write_text(f'''#!/bin/sh
@@ -870,3 +877,105 @@ def test_deploy_configured_cache_precedes_sync(tmp_path, explicit, inherited_def
     )
     assert proc.returncode == 0, proc.stderr
     assert set((tmp_path / "uv-caches").read_text().splitlines()) == {str(chosen)}
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o620, 0o602])
+def test_deploy_env_override_trust(tmp_path, mode):
+    selected = tmp_path / "sandbox.env"
+    selected.write_text("OUTERLOOP_TARGET=owner/sandbox\n")
+    selected.chmod(mode)
+    header = (ROOT / "scripts/tick_deploy.sh").read_text().split("# --- 2. deploy:")[0]
+    proc = subprocess.run(
+        ["bash", "-c", header + '\n_k=OUTERLOOP_TARGET; env_line; env_value; echo "VALUE=$_v"'],
+        env={**os.environ, "OUTERLOOP_ENV_FILE": str(selected)},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    assert ("VALUE=owner/sandbox" in proc.stdout) == (mode == 0o600)
+    assert ("refusing to read" in proc.stdout) == (mode != 0o600)
+
+
+def test_instance_resubmit_preserves_settings_and_does_not_drain_production(tmp_path, monkeypatch):
+    from outerloop.instance import job_name
+
+    home, root, bindir, shimlog = _install(tmp_path)
+    # Production's legacy root differs from this sandbox.
+    (home / ".config/outerloop/.env").write_text("OUTERLOOP_ROOT=/production\n")
+    selected = tmp_path / "sandbox.env"
+    selected.write_text("OUTERLOOP_TARGET=owner/sandbox\nOUTERLOOP_ENV_FILE=/ignored\n")
+    selected.chmod(0o600)
+    sbatch = bindir / "sbatch"
+    sbatch.write_text(
+        sbatch.read_text().replace(
+            'echo "$@"', f'echo "$OUTERLOOP_ENV_FILE" >> "{shimlog}/env-files"\necho "$@"'
+        )
+    )
+    (bindir / "squeue").write_text(f'''#!/bin/sh
+echo "$*" >> "{shimlog}/squeue"
+case "$*" in
+  *"--name=outerloop-tick "*) echo 999 ;;
+  *"-j "*) echo PENDING ;;
+esac
+''')
+    uv = bindir / "uv"
+    uv.write_text(
+        uv.read_text().replace(
+            'echo "tick $(date +%s)"',
+            f'echo "$OUTERLOOP_TARGET" >> "{shimlog}/targets"\necho "tick $(date +%s)"',
+        )
+    )
+    proc = _run_chain(
+        home,
+        _env(
+            home,
+            root,
+            bindir,
+            OUTERLOOP_ENV_FILE=str(selected),
+            OUTERLOOP_RESIDENT="1",
+            OUTERLOOP_RESIDENT_CADENCE_S="1",
+            SLURM_JOB_ID="42",
+        ),
+    )
+    assert proc.returncode == 0, proc.stderr
+    submissions = (shimlog / "sbatch").read_text().splitlines()
+    assert len(submissions) == 2  # initial successor, then shim-change recovery
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    assert all(f"--job-name={job_name()}" in line for line in submissions)
+    assert all("--export=ALL" in line for line in submissions)
+    assert (shimlog / "env-files").read_text().splitlines() == [str(selected)] * 2
+    assert (shimlog / "targets").read_text().splitlines() == ["owner/sandbox"] * 3
+    assert "999" not in (shimlog / "scancel").read_text().splitlines()
+    assert "--name=outerloop-tick-" in (shimlog / "squeue").read_text()
+
+
+def test_legacy_settings_without_root_chain_keeps_names(tmp_path):
+    home, root, bindir, shimlog = _install(tmp_path)
+    (home / ".config/outerloop/.env").write_text("OUTERLOOP_TARGET=owner/repo\n")
+    (bindir / "squeue").write_text(f'#!/bin/sh\necho "$*" >> "{shimlog}/squeue"\n')
+    proc = _run_chain(home, _env(home, root, bindir))
+    assert proc.returncode == 0, proc.stderr
+    queries = (shimlog / "squeue").read_text().splitlines()
+    assert any("--name=outerloop-resident" in line.split() for line in queries)
+    assert any("--name=outerloop-tick" in line.split() for line in queries)
+    submissions = (shimlog / "sbatch").read_text().splitlines()
+    assert len(submissions) == 2
+    assert all("--job-name=outerloop-tick" in line.split() for line in submissions)
+
+
+def test_per_cadence_resubmit_preserves_settings(tmp_path, monkeypatch):
+    from outerloop.instance import job_name
+
+    home, root, bindir, shimlog = _install(tmp_path)
+    selected = tmp_path / "selected.env"
+    selected.write_text("OUTERLOOP_TARGET=owner/repo\n")
+    sbatch = bindir / "sbatch"
+    sbatch.write_text(sbatch.read_text() + f'echo "$OUTERLOOP_ENV_FILE" >> "{shimlog}/env-files"\n')
+    proc = _run_chain(home, _env(home, root, bindir, OUTERLOOP_ENV_FILE=str(selected)))
+    assert proc.returncode == 0, proc.stderr
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    submissions = (shimlog / "sbatch").read_text().splitlines()
+    assert len(submissions) == 2
+    assert all(f"--job-name={job_name('outerloop-tick')}" in line.split() for line in submissions)
+    assert all("--export=ALL" in line.split() for line in submissions)
+    assert (shimlog / "env-files").read_text().splitlines() == [str(selected)] * 2

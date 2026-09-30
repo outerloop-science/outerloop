@@ -20,6 +20,21 @@ CONFIG_DIR = config_dir()
 ENV_FILE = CONFIG_DIR / ".env"
 
 
+class ConfigError(ValueError):
+    """Invalid operator settings path."""
+
+
+def env_file(default: Path = ENV_FILE) -> Path:
+    """Resolve the process-only selector; never read it from settings."""
+    value = os.environ.get("OUTERLOOP_ENV_FILE", "").strip()
+    if not value:  # unset or empty: the default settings file
+        return default
+    path = Path(value)
+    if not path.is_absolute():
+        raise ConfigError("OUTERLOOP_ENV_FILE must be an absolute path")
+    return path
+
+
 def write_private(path: Path, text: str) -> None:
     """Write `text` to `path` so no other user can read it at any moment: the
     file is created (or truncated) with mode 0600 in the same call, and a file

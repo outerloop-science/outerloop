@@ -1229,3 +1229,33 @@ def test_init_bad_override_json_fails_before_provisioning(tmp_path, monkeypatch,
     monkeypatch.setattr(init, "ensure_image", lambda **k: pytest.fail("downloaded"))
     assert init.main(["--yes", "--compute", "local", "--target", "owner/repo"]) == 2
     assert capsys.readouterr().err.count("outerloop init:") == 1
+
+
+def test_init_selects_separate_settings_and_credentials(tmp_path, monkeypatch):
+    selected = tmp_path / "sandbox" / "operator.env"
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(selected))
+    monkeypatch.setattr(init, "CONFIG_DIR", tmp_path / "production")
+    monkeypatch.setattr(init, "validate_pat", lambda pf, t: "")
+    assert (
+        init.main(
+            [
+                "--yes",
+                "--compute",
+                "local",
+                "--target",
+                "owner/sandbox",
+                "--pat-file",
+                "/token",
+                "--claude-model",
+                "claude-test",
+            ]
+        )
+        == 0
+    )
+    assert "OUTERLOOP_TARGET=owner/sandbox" in selected.read_text()
+    assert not (tmp_path / "production").exists()
+    # Direct writes put pasted credentials beside the selected settings too.
+    _, pat = write_config(InitAnswers(compute="local", target="owner/sandbox"), "fake", "")
+    assert pat == selected.parent / "bot_pat"
+    selected.chmod(0o622)
+    assert init.main(["--yes", "--force"]) == 2
