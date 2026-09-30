@@ -185,9 +185,9 @@ def status(env: Mapping[str, str]) -> int:
 
 def used_harnesses(env: Mapping[str, str]) -> list[str]:
     author = env.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-    from outerloop.author_overrides import overrides
+    from outerloop.author_overrides import override_entries
 
-    used = {author, *(selected.backend for selected in overrides(env).values())}
+    used = {author, *(selected.backend for _, selected in override_entries(env))}
     if env.get("OUTERLOOP_STEWARD_KEY_FILE"):
         used.add("claude")
     if env.get("REVIEW_BACKEND"):
@@ -203,7 +203,7 @@ def used_harnesses(env: Mapping[str, str]) -> list[str]:
     model = env.get("OUTERLOOP_AUTHOR_MODEL", "")
     roles = [("author", author, model, env.get("OUTERLOOP_AUTHOR_ENDPOINT", ""))]
     roles.extend(
-        (f"author override {key}", s.backend, s.model, "") for key, s in overrides(env).items()
+        (f"author override {key}", s.backend, s.model, "") for key, s in override_entries(env)
     )
     if env.get("REVIEW_BACKEND"):
         roles.append(

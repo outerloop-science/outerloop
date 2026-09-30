@@ -395,3 +395,41 @@ def test_endpoint_model_default_is_bound(deployment, monkeypatch):
     )
     argv = _climb_author_argv(deployment, "agent-05")
     assert argv[argv.index("--model") + 1] == "served-model[endpoint=onprem]"
+
+
+def test_a_target_may_list_overrides_for_different_slots(monkeypatch):
+    model = "served-model[endpoint=onprem]"
+    raw = json.dumps(
+        {
+            "owner/repo": [
+                {"backend": "claude", "model": model, "slots": ["agent-04"]},
+                {"backend": "codex", "model": model, "slots": ["agent-03"]},
+            ]
+        }
+    )
+    parsed = parse_overrides(raw)["owner/repo"]
+    assert [o.backend for o in parsed] == ["claude", "codex"]
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
+    four, three = (
+        select_override("owner/repo", "agent-04"),
+        select_override("owner/repo", "agent-03"),
+    )
+    assert four is not None and four.backend == "claude"
+    assert three is not None and three.backend == "codex"
+    assert select_override("owner/repo", "agent-01") is None
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [],  # an empty list
+        [{"backend": "claude", "model": "m"}],  # a list entry must name its slots
+        [
+            {"backend": "claude", "model": "m", "slots": ["agent-03"]},
+            {"backend": "codex", "model": "m", "slots": ["agent-03"]},
+        ],  # one slot claimed twice
+    ],
+)
+def test_listed_overrides_are_validated(entries):
+    with pytest.raises(ValueError, match=r"^OUTERLOOP_AUTHOR_OVERRIDES:"):
+        parse_overrides(json.dumps({"owner/repo": entries}))
