@@ -26,10 +26,16 @@ from outerloop.harness_pins import NAMES, OVERRIDE_KEYS, effective, pins
 
 
 def path_key(name: str) -> str:
+    if name == "bridge":
+        return "OUTERLOOP_BRIDGE_RUNTIME"
     return "REVIEW_HERMES_REPO" if name == "hermes" else f"OUTERLOOP_{name.upper()}_BIN"
 
 
 def installed_path(name: str, env: Mapping[str, str]) -> Path:
+    if name == "bridge":
+        from outerloop.bridge_install import runtime_path
+
+        return runtime_path(env)
     value = (
         env.get("REVIEW_HERMES_REPO") or str(Path.home() / "hermes-agent")
         if name == "hermes"
@@ -40,6 +46,10 @@ def installed_path(name: str, env: Mapping[str, str]) -> Path:
 
 def probe(name: str, path: Path) -> tuple[str, bool]:
     """Installed identity and completeness; never provision during inspection."""
+    if name == "bridge":
+        from outerloop.bridge_install import ready
+
+        return (pins(name)["version"], True) if ready(path) else ("missing", False)
     sha = ""
     try:
         argv = (
@@ -81,6 +91,11 @@ def identity(name: str, desired: Mapping[str, str]) -> str:
 
 CONFIG_KEYS = (
     *OVERRIDE_KEYS,
+    "OUTERLOOP_BRIDGE_RUNTIME",
+    "OUTERLOOP_AUTHOR_MODEL",
+    "OUTERLOOP_AUTHOR_ENDPOINT",
+    "REVIEW_MODEL",
+    "REVIEW_ENDPOINT",
     "OUTERLOOP_CLAUDE_BIN",
     "OUTERLOOP_CODEX_BIN",
     "REVIEW_HERMES_REPO",
@@ -95,6 +110,10 @@ CONFIG_KEYS = (
 
 
 def verified(name: str, path: Path, desired: Mapping[str, str]) -> bool:
+    if name == "bridge":
+        from outerloop.bridge_install import ready
+
+        return ready(path)
     if name == "hermes":
         path = Path(f"{path.resolve()}.runtime") / desired["sha"] / "venv/bin/python"
     try:
@@ -178,6 +197,52 @@ def used_harnesses(env: Mapping[str, str]) -> list[str]:
         from outerloop.panel import parse_lenses
 
         used.update(backend for _, backend, _ in parse_lenses(panel, author))
+    from outerloop.endpoints import resolve_endpoint
+    from outerloop.panel import resolve_lenses
+
+    model = env.get("OUTERLOOP_AUTHOR_MODEL", "")
+    roles = [("author", author, model, env.get("OUTERLOOP_AUTHOR_ENDPOINT", ""))]
+    roles.extend(
+        (f"author override {key}", s.backend, s.model, "") for key, s in overrides(env).items()
+    )
+    if env.get("REVIEW_BACKEND"):
+        roles.append(
+            (
+                "reviewer",
+                env["REVIEW_BACKEND"],
+                env.get("REVIEW_MODEL", ""),
+                env.get("REVIEW_ENDPOINT", ""),
+            )
+        )
+
+    def skipped(role: str, exc: ValueError) -> None:
+        print(f"harness: {role}: skipping bridge detection: {exc}", file=sys.stderr)
+
+    if panel:
+        from outerloop.endpoints import author_model_setting
+
+        for entry in panel.split(","):
+            try:
+                # Only inherited models depend on the author's endpoint configuration.
+                _, backend, lens_model = parse_lenses(entry, author)[0]
+                inherited = (
+                    author_model_setting(author, model, env)
+                    if backend == author and not lens_model
+                    else model
+                )
+                kind, backend, lens_model = resolve_lenses(entry, author, inherited, environ=env)[0]
+                roles.append((f"panel {kind}:{backend}", backend, lens_model, ""))
+            except ValueError as exc:
+                skipped(f"panel {entry.strip()}", exc)
+    for role, backend, model, endpoint in roles:
+        if backend == "codex":
+            try:
+                _, profile = resolve_endpoint(model, backend, endpoint, env)
+            except ValueError as exc:
+                skipped(role, exc)
+                continue
+            if profile and profile.codex_bridge:
+                used.add("bridge")
     return [name for name in NAMES if name in used]
 
 
@@ -300,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     up.add_argument("--used", action="store_true", help="only configured deployment backends")
     args = parser.parse_args(argv)
     if args.command == "upgrade" and any(name not in NAMES for name in args.names):
-        parser.error("harness names must be claude, codex or hermes")
+        parser.error("harness names must be claude, codex, hermes or bridge")
     try:
         env_file = paths.ENV_FILE
         env = {**env_file_values(env_file, keys=CONFIG_KEYS), **os.environ}

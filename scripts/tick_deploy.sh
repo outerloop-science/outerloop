@@ -143,7 +143,7 @@ if [ -n "$ENV_TRUSTED" ]; then
     for _k in OUTERLOOP_CLAUDE_VERSION OUTERLOOP_CODEX_VERSION \
                   OUTERLOOP_CLAUDE_SHA256 OUTERLOOP_CODEX_SHA256 \
                   OUTERLOOP_HERMES_REF OUTERLOOP_HERMES_SHA \
-                  OUTERLOOP_CACHE_ROOT REVIEW_BACKEND \
+                  OUTERLOOP_CACHE_ROOT REVIEW_BACKEND OUTERLOOP_BRIDGE_RUNTIME \
                   OUTERLOOP_AUTHOR_ENDPOINT REVIEW_ENDPOINT REVIEW_MODEL \
                   OUTERLOOP_AUTHOR_BACKEND OUTERLOOP_AUTHOR_MODEL OUTERLOOP_AUTHOR_OVERRIDES \
                   OUTERLOOP_CLAUDE_MODEL \
@@ -247,7 +247,7 @@ if [ -n "$HARNESS_UPDATE_READY" ]; then
         fi
     fi
     # The upgrade atomically records verified paths; use them in this tick too.
-    for _k in OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN REVIEW_HERMES_REPO; do
+    for _k in OUTERLOOP_CLAUDE_BIN OUTERLOOP_CODEX_BIN REVIEW_HERMES_REPO OUTERLOOP_BRIDGE_RUNTIME; do
         env_line
         if [ -n "$_line" ]; then
             env_value

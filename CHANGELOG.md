@@ -6,6 +6,21 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Codex authors and judges can use chat-only endpoint profiles through a
+  per-session LiteLLM bridge and streaming shim, including tool calls and
+  reasoning replay on resume. The bridge runtime is isolated, transitively
+  locked, installed by `outerloop harness upgrade`, and mounted read-only.
+  Direct Responses profiles keep their existing route and interruption behavior;
+  the Codex pin is unchanged. Bridge runtime defaults use `OUTERLOOP_CACHE_ROOT`,
+  else `$OUTERLOOP_ROOT/cache` (local fallback: `~/.outerloop/cache`). Harness
+  upgrades skip bridge detection for misconfigured roles with a diagnostic and
+  continue upgrading the other configured harnesses.
+- Upgrading: install the bridge with `outerloop harness upgrade --used` before
+  selecting chat-only Codex profiles. Existing run records, session homes, and
+  harness retry records retain their formats; no backfill is needed. In-flight
+  direct-endpoint runs are unchanged. Before rollback, finish chat-only Codex
+  sessions or select a Responses-capable profile; older kernels reject that route.
+
 - Launch, submit, and stale-submit checkpoint scope violations now refuse every
   request and resume the author with the offending paths and bounded allowed
   scope in the kernel inbox. Later refusals say “Refused again:”. Refusals

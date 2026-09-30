@@ -18,7 +18,7 @@ OVERRIDE_KEYS = (
     "OUTERLOOP_HERMES_SHA",
 )
 
-NAMES = ("claude", "codex", "hermes")
+NAMES = ("claude", "codex", "hermes", "bridge")
 
 
 def pins(name: str) -> dict[str, str]:
@@ -34,6 +34,8 @@ def pins(name: str) -> dict[str, str]:
 def effective(name: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
     env = os.environ if env is None else env
     result = pins(name)
+    if name == "bridge":
+        return result
     for field in ("ref", "sha") if name == "hermes" else ("version",):
         value = env.get(f"OUTERLOOP_{name.upper()}_{field.upper()}")
         if value:

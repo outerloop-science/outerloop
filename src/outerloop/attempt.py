@@ -232,6 +232,11 @@ def author_config_error(
     except ValueError as exc:
         return str(exc)
     if profile:
+        if backend == "codex" and profile.codex_bridge:
+            from outerloop.bridge_install import ready, runtime_path
+
+            if not ready(runtime_path(env)):
+                return "codex chat endpoint needs outerloop harness upgrade bridge"
         if backend != "claude" and not image:
             return f"author-backend {backend} requires --image (it runs contained)"
         return ""

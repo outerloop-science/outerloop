@@ -426,7 +426,9 @@ def test_native_model_ids_are_unchanged(model):
 def test_api_compatibility(profile, backend, api):
     profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = api
     assert endpoint_profile("local", backend, environ=profile).apis == (api,)
-    profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = "chat" if api != "chat" else "responses"
+    profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = (
+        "anthropic" if backend == "codex" else ("chat" if api != "chat" else "responses")
+    )
     with pytest.raises(ValueError, match="requires API"):
         endpoint_profile("local", backend, environ=profile)
     del profile["OUTERLOOP_ENDPOINT_LOCAL_API"]
