@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Reject Codex authors and judges on chat-only endpoints during preflight when
+  the bridge runtime is missing or stale, with `outerloop harness upgrade --used`
+  as the fix, before spending the author budget.
+
 - Codex authors and judges can use chat-only endpoint profiles through a
   per-session LiteLLM bridge and streaming shim, including tool calls and
   reasoning replay on resume. The bridge runtime is isolated, transitively

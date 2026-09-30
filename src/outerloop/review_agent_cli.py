@@ -59,6 +59,7 @@ def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
             review_model, backend, os.environ.get("REVIEW_ENDPOINT", "").strip()
         )
         if endpoint:
+            endpoint.validate_runtime(backend)
             repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
             harness = build_harness(
                 "",

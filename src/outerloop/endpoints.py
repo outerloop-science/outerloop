@@ -71,6 +71,17 @@ class EndpointProfile:
     def codex_bridge(self) -> bool:
         return "chat" in self.apis and "responses" not in self.apis
 
+    def validate_runtime(self, backend: str, environ: Mapping[str, str] | None = None) -> None:
+        """Reject bridge-backed roles before starting work or spending author budget."""
+        if backend == "codex" and self.codex_bridge:
+            from outerloop.bridge_install import ready, runtime_path
+
+            if not ready(runtime_path(environ)):
+                raise ValueError(
+                    "codex chat-only endpoint bridge runtime is not ready; "
+                    "run outerloop harness upgrade --used"
+                )
+
     @property
     def url(self) -> str:
         if self.url_file is None:

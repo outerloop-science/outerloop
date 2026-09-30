@@ -2541,6 +2541,7 @@ def _panel_preflight_error(
             if profile is None:
                 traditional.append((kind, backend, model))
                 continue
+            profile.validate_runtime(backend)
             if not spec.image or not Path(spec.image).is_file():
                 return f"a {backend} endpoint panel lens requires a real container image"
             from outerloop.endpoints import validate_judge_key_file
