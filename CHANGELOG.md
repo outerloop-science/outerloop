@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- `OUTERLOOP_AUTHOR_OVERRIDES` accepts a list of entries per target, so different
+  slots of one target can use different authors (each listed entry names its slots;
+  a slot may appear only once). The single-object form is unchanged.
+
 - Reject Codex authors and judges on chat-only endpoints during preflight when
   the bridge runtime is missing or stale, with `outerloop harness upgrade --used`
   as the fix, before spending the author budget.

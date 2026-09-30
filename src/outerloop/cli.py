@@ -419,11 +419,11 @@ def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str])
 
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
     """Check all configured authors' host CLIs using the harness's lookup."""
-    from outerloop.author_overrides import overrides
+    from outerloop.author_overrides import override_entries
 
     env = {**values, **environ}
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
-    backends = dict.fromkeys([backend, *(value.backend for value in overrides(env).values())])
+    backends = dict.fromkeys([backend, *(value.backend for _, value in override_entries(env))])
     for selected in backends:
         problem = _missing_author_binary(selected, env)
         if problem:
