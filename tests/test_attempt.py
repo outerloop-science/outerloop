@@ -7459,3 +7459,165 @@ def test_endpoint_unavailable_parks_and_recovers(
     if not wake:
         assert "try a new move" in seen_briefs[0]
     assert load_record(root, "tsp-1").ending != "aborted"
+
+
+@pytest.mark.parametrize("entry", ["fresh", "wake"])
+@pytest.mark.parametrize(
+    "ending", ["end", "explicit-end", "outage", "timeout", "budget", "error", "repeat", "crash"]
+)
+def test_scope_rejected_tree_never_reaches_active_line(
+    tmp_path, target_repo_lines, monkeypatch, entry, ending
+):
+    import json
+    from dataclasses import replace
+
+    from outerloop.endpoints import EndpointUnavailable
+    from outerloop.roles import author_spec
+
+    state = tmp_path / "state"
+    run_id = "scope-line"
+    github = FakeGitHub()
+    dispatch = _fake_dispatch()
+    if entry == "wake":
+        with _queued_local([]):
+            parked = live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=state,
+                run_id=run_id,
+                harness=ScriptedHarness(edits={".outerloop/syscall.json": '{"type":"sleep"}'}),
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+                dispatch=dispatch,
+            )
+        assert parked.outcome == "parked"
+
+    tips = []
+
+    class Author:
+        calls = 0
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                tips.append(_git(target_repo_lines, "rev-parse", "agents/agent-01").strip())
+                (workspace / "rejected.txt").write_text("must never be sealed")
+            else:
+                assert self.calls <= (4 if ending == "repeat" else 2)
+                assert (
+                    "Refused:" in brief_text if self.calls == 2 else "Refused again:" in brief_text
+                )
+                if ending == "crash":
+                    raise RuntimeError("harness failed")
+                if ending == "outage":
+                    raise EndpointUnavailable("endpoint unavailable")
+                if ending in ("timeout", "budget", "error"):
+                    return replace(
+                        ScriptedHarness(edits={}).run(brief_text, workspace),
+                        is_error=True,
+                        stop_reason="timeout" if ending == "timeout" else "tool_use",
+                        error_detail="error_max_turns: Reached maximum number of turns (120)"
+                        if ending == "budget"
+                        else "session failed",
+                    )
+            if self.calls == 1 or (ending == "repeat" and self.calls < 4):
+                (workspace / ".outerloop/syscall.json").write_text(
+                    json.dumps({"type": "sleep", "submit": True, "report": "candidate"})
+                )
+            elif ending == "explicit-end":
+                (workspace / ".outerloop/syscall.json").write_text('{"type":"end"}')
+            return ScriptedHarness(edits={}).run(brief_text, workspace)
+
+    def no_snapshot(*args, **kwargs):
+        pytest.fail("rejected tree reached a snapshot")
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", no_snapshot)
+    monkeypatch.setattr(climb_mod, "snapshot_tree", no_snapshot)
+    author = Author()
+    with _queued_local([]):
+        if entry == "fresh":
+            outcome = live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=state,
+                run_id=run_id,
+                harness=author,
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+                dispatch=dispatch,
+            )
+        else:
+            outcome = resume_run(
+                state,
+                run_id,
+                dispatch=dispatch,
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_100.0,
+                harness=author,
+                spec=author_spec(),
+            )
+    assert author.calls == (4 if ending == "repeat" else 2)
+    assert outcome.outcome == {
+        "outage": "session-outage",
+        "timeout": "session-budget",
+        "budget": "session-budget",
+        "error": "session-error",
+        "crash": "session-error",
+    }.get(ending, "no-improvement")
+    assert not github.prs
+    assert _git(target_repo_lines, "rev-parse", "agents/agent-01").strip() == tips[0]
+    record = load_record(state, run_id)
+    assert record.state == "ended"
+    assert not record.stage.get("launches_used", 0)
+    assert not record.stage.get("gpu_hours_used", 0)
+
+
+@pytest.mark.parametrize("submitted", [False, True])
+def test_candidate_wake_scope_backstop_never_snapshots_active_line(
+    tmp_path, monkeypatch, submitted
+):
+    from dataclasses import replace
+
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+
+    # A legacy park may predate admission checks. Its authoritative scope
+    # verdict must suppress both submitted and ordinary terminal snapshots.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, contract=CONTRACT_LINES, agent_id="agent-01"
+    )
+    record = load_record(state, run_id)
+    root = state / "runs" / run_id / "ws"
+    (root / "rejected.txt").write_text("legacy rejected candidate")
+    snap = snapshot_tree(Workspace(root=root), str(record.stage["base_sha"]))
+    save_record(
+        state,
+        replace(
+            record,
+            stage={
+                **record.stage,
+                "candidate_sha": snap.commit,
+                "candidate_ref": snap.ref,
+                "submitted": submitted,
+            },
+        ),
+        1_000_050.0,
+    )
+
+    def no_snapshot(*args, **kwargs):
+        pytest.fail("scope backstop verdict reached a line snapshot")
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", no_snapshot)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == ("negative-result" if submitted else "scope-violation")
+    assert load_record(state, run_id).state == "ended"
