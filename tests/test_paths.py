@@ -20,7 +20,7 @@ def test_existing_config_dir(tmp_path: Path) -> None:
 
 def test_deploy_script_config_dir() -> None:
     sh = (Path(__file__).resolve().parents[1] / "scripts" / "tick_deploy.sh").read_text()
-    assert 'ENV_FILE="${OUTERLOOP_ENV_FILE-$HOME/.config/outerloop/.env}"' in sh
+    assert 'ENV_FILE="${OUTERLOOP_ENV_FILE:-$HOME/.config/outerloop/.env}"' in sh
 
 
 def test_env_file_default_and_process_override(monkeypatch, tmp_path):
