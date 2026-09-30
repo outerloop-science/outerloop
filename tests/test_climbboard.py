@@ -1234,10 +1234,12 @@ def test_status_carries_the_kernel_queue_attributed_to_agents(tmp_path: Path) ->
             "cpu",
         ),
         job("786", "wake-speedrun-20260905-063328-agent-09", "PENDING", "0:00", "cpu"),  # not ours
+        job("787", "outerloop-tick-0123456789ab", "PENDING", "0:00", "cpu"),  # a second instance
+        job("788", "outerloop-resident-mine", "RUNNING", "0:01", "cpu"),  # not an instance suffix
     ]
     body = collect_status(tmp_path, "org/repo", 3.0, queue=snap)
     q = {j["id"]: j for j in body["queue"]}
-    assert set(q) == {"777", "778", "780", "783", "784", "785"}
+    assert set(q) == {"777", "778", "780", "783", "784", "785", "787"}
     assert q["777"]["agent"] == "agent-01" and q["777"]["run_id"] == record.run_id
     assert q["778"]["agent"] == "agent-01" and q["778"]["run_id"] == record.run_id
     assert q["780"]["agent"] == "" and q["785"]["agent"] == "agent-04"

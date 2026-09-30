@@ -41,6 +41,7 @@ from outerloop.compute import (
     quote_command,
 )
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
+from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
 from outerloop.job_names import run_job_name
@@ -243,6 +244,8 @@ class ServiceSpec:
     # here (see MAX_ATTEMPT_JOB_MINUTES). Raise together with job_partition.
     max_job_minutes: int = MAX_ATTEMPT_JOB_MINUTES
     qos: str = ""
+    # Preflight only; wake jobs inherit the environment and resolve their own target.
+    gpu_lanes: dict[str, GpuLane] = field(default_factory=dict)
 
 
 # Generous vs the ~2 h job walltimes plus queue wait, tight enough that
@@ -303,7 +306,7 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: ServiceSpec) -> str:
     counts, not just the climbed one: the suite gate measures siblings.
     A backend without lanes (local compute) runs GPU jobs on the default
     placement, so the check does not apply."""
-    if spec.gpu_partition or not spec.has_lanes:
+    if spec.gpu_partition or spec.target in spec.gpu_lanes or not spec.has_lanes:
         return ""
     gpu_benches = [
         b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "gpus", 0) or 0)
@@ -931,7 +934,11 @@ def write_wake_spec(root: Path, spec: ServiceSpec) -> None:
     """Publish the tick's wake recipe for the jobs that park runs: a park
     submits its own wake (`arm_wake`) with exactly the tick's settings, so
     dispatched wakes stay one recipe with one owner."""
-    data = {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(spec).items()}
+    data = {
+        k: (str(v) if isinstance(v, Path) else v)
+        for k, v in asdict(spec).items()
+        if k != "gpu_lanes"  # deployment config stays out of the persisted wake recipe
+    }
     tmp = root / f".{WAKE_SPEC_NAME}.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(data))
     os.replace(tmp, root / WAKE_SPEC_NAME)
@@ -3432,10 +3439,13 @@ def _default_image() -> str:
     return os.path.expanduser("~/outerloop-images/agent-py312.sif")
 
 
-def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
+def _service_spec_from_env(
+    root: Path, *, gpu_lanes: dict[str, GpuLane] | None = None
+) -> tuple[Any, ServiceSpec | None]:
     """GitHub client + ServiceSpec from the chain environment, or Nones when
     the environment is incomplete (the tick then runs without parked
     servicing, and logs what is absent)."""
+    lanes = gpu_lanes_from_env() if gpu_lanes is None else gpu_lanes
     pat_file = os.environ.get("OUTERLOOP_PAT_FILE", "")
     app_file = os.environ.get("OUTERLOOP_GITHUB_APP_FILE", "")
     account = os.environ.get("OUTERLOOP_ACCOUNT", "")
@@ -3498,6 +3508,7 @@ def _service_spec_from_env(root: Path) -> tuple[Any, ServiceSpec | None]:
                 job_partition=os.environ.get("OUTERLOOP_JOB_PARTITION", ""),
                 gpu_partition=os.environ.get("OUTERLOOP_GPU_PARTITION", ""),
                 gpu_account=os.environ.get("OUTERLOOP_GPU_ACCOUNT", ""),
+                gpu_lanes=lanes,
                 max_job_minutes=_max_job_minutes_from_env(),
                 has_lanes=compute_from_env().has_lanes,
             )
@@ -3575,6 +3586,7 @@ def main() -> int:
     from outerloop.author_overrides import validate_overrides
 
     try:
+        gpu_lanes = gpu_lanes_from_env()
         validate_overrides(os.environ, os.environ.get("OUTERLOOP_IMAGE", ""))
     except ValueError as exc:
         parser.error(str(exc))
@@ -3598,7 +3610,7 @@ def main() -> int:
     compute = compute_from_env()
 
     def run_once() -> None:
-        github, service_spec = _service_spec_from_env(args.root)
+        github, service_spec = _service_spec_from_env(args.root, gpu_lanes=gpu_lanes)
         now = time.time()
         dispatcher, wake_live = _wake_dispatcher_from_env(compute, service_spec, now, args.root)
         # parks arm their own wake from this recipe; without it the sweep delivers.

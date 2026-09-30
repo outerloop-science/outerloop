@@ -13,6 +13,16 @@ Versions follow [SemVer](https://semver.org).
   scope refusals. Filtering leaves working files and the real index untouched
   and logs a bounded list of dropped paths. No persisted-state format changes.
 
+- Support separate instances on one cluster account: process-only absolute
+  `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
+  and stable settings-path suffixes for resident and per-cadence scheduler jobs.
+  Init, launch, deploy, harness status, and successor recovery use the selected
+  settings and instance identity.
+- Upgrading: no action needed for the default fleet; its settings path and job
+  names remain unchanged. Existing run records, leases, and heartbeats need no
+  migration. Stop additional instances before rolling back to a version without
+  instance isolation.
+
 - Launch, submit, and stale-submit checkpoint scope violations now refuse every
   request and resume the author with the offending paths and bounded allowed
   scope in the kernel inbox. Later refusals say “Refused again:”. Refusals
@@ -125,6 +135,8 @@ Versions follow [SemVer](https://semver.org).
 
 ### Added
 
+- Optional per-target GPU lanes route evals and author launches to deployment-specific partitions, accounts, GPU types, and sbatch flags.
+
 - Packaged `harnesses.toml` owns Claude, Codex, and Hermes pins. `outerloop harness status` reports installed versions, paths, drift, and operator overrides; `harness upgrade [name...]` verifies versioned installations before atomically recording their paths. Successful kernel deploys upgrade only configured backends; failures retain the previous installation.
 
 - Live, tighten-only `<root>/limits.toml` GPU and active-attempt ceilings, with global defaults and per-target sections. Scheduler-reported GPU usage covers pending and running experiments, sweeps, evaluations, and GPU-bearing sessions. Authors receive uncharged launch refusals; evaluations wait for capacity. Lowering a ceiling does not cancel jobs.
@@ -139,6 +151,8 @@ Versions follow [SemVer](https://semver.org).
 - Hermes installs a standalone Python and venv once per pinned commit in a sibling runtime, then launches Python directly. Full `init` provisions configured Hermes judges and records their source path; `--no-install-harness` opts out.
 
 ### Upgrading
+
+- No action needed; OUTERLOOP_GPU_LANES is optional.
 
 - Upgrading: full run-ID names and legacy 60-character queue names remain readable; shortened names use a derived run key without changing run records. Intake adds `@intake-<issue>` files in the existing pending directory; legacy unsuffixed and agent-slot markers remain readable. Drain queued intake jobs from older submitters (which wrote no marker) before relying on attempt ceilings. Upgrade all kernels together; older kernels do not recognize shortened names or intake markers, so drain those jobs before rollback.
 

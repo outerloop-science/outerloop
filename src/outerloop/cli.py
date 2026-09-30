@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from outerloop import paths
 from outerloop.endpoints import author_model_setting, endpoint_config_key
 from outerloop.harness import HARNESS_INSTALL, default_binary
+from outerloop.instance import job_name
 
 if TYPE_CHECKING:
     from outerloop.init import AppPermissionGaps
@@ -84,6 +85,7 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_BOT_ALIASES",
     "OUTERLOOP_GPU_PARTITION",
     "OUTERLOOP_GPU_ACCOUNT",
+    "OUTERLOOP_GPU_LANES",
     "OUTERLOOP_QOS",
     "OUTERLOOP_APPTAINER_BIN",
     "OUTERLOOP_IMAGE",
@@ -96,18 +98,26 @@ TICK_ENV_KEYS = (
 )
 
 
-class StartError(Exception):
+class StartError(paths.ConfigError):
     """A start that cannot proceed; the message is the whole diagnosis."""
 
 
+def operator_env_file(default: Path | None = None) -> Path:
+    try:
+        return paths.env_file(ENV_FILE if default is None else default)
+    except paths.ConfigError as exc:
+        raise StartError(str(exc)) from exc
+
+
 def env_file_values(
-    path: Path = ENV_FILE, keys: tuple[str, ...] | None = START_KEYS
+    path: Path | None = None, keys: tuple[str, ...] | None = START_KEYS
 ) -> dict[str, str]:
     """`keys` from the operator's .env under the deploy step's trust rule: the
     file must be ours and not group/world-writable, or it is refused. Last
     assignment wins; surrounding quotes and a CR are stripped; a key set to
     an empty value is present (an off-switch), an absent key is absent.
     `keys=None` reads all assignments. No file: nothing."""
+    path = operator_env_file() if path is None else path
     try:
         st = path.stat()
     except OSError:
@@ -127,6 +137,8 @@ def env_file_values(
             continue
         key, value = line.split("=", 1)
         key = key.strip()
+        if key == "OUTERLOOP_ENV_FILE":
+            continue
         if (
             keys is not None
             and key not in keys
@@ -184,7 +196,7 @@ class StartPlan:
             "--parsable",
             "--dependency=singleton",  # two starts can both submit; only one ever runs
             f"--time={self.resident_minutes}",
-            f"--job-name={RESIDENT_JOB_NAME}",
+            f"--job-name={job_name()}",
         ]
         if self.account:  # unset bills the caller's default Slurm association
             argv.append(f"--account={self.account}")
@@ -280,7 +292,7 @@ def plan_start(
         raise StartError(
             "Slurm mode needs the state root on the shared filesystem: "
             "--root, OUTERLOOP_ROOT in the environment, or OUTERLOOP_ROOT= in "
-            "~/.config/outerloop/.env"
+            f"{operator_env_file()}"
         )
     acc = _setting("OUTERLOOP_ACCOUNT", account, environ, from_file)
     part = _setting("OUTERLOOP_PARTITION", partition, environ, from_file)
@@ -315,7 +327,7 @@ def plan_start(
     return StartPlan(
         mode=mode,
         qos=qos,
-        root=Path(root_s).expanduser(),
+        root=Path(root_s).expanduser().resolve(),
         home=home,
         account=acc,
         partition=part,
@@ -341,7 +353,7 @@ def _resident_jobs() -> list[str] | None:
                 "squeue",
                 "-u",
                 os.environ.get("USER", ""),
-                f"--name={RESIDENT_JOB_NAME}",
+                f"--name={job_name()}",
                 "-h",
                 "-o",
                 "%i",
@@ -522,7 +534,7 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
         return ""
     return (
         "OUTERLOOP_CLAUDE_MODEL is not set, but this deployment runs Claude roles: "
-        f"{'; '.join(roles)}. Add the line OUTERLOOP_CLAUDE_MODEL=<model> to {ENV_FILE} "
+        f"{'; '.join(roles)}. Add the line OUTERLOOP_CLAUDE_MODEL=<model> to {operator_env_file()} "
         "(or export it in the shell) and start again"
     )
 
@@ -550,7 +562,7 @@ def permissions(args: argparse.Namespace) -> int:
     from outerloop.appmanifest import DEFAULT_PERMISSIONS
 
     try:
-        values = {**env_file_values(ENV_FILE, APP_PERMISSION_KEYS), **os.environ}
+        values = {**env_file_values(operator_env_file(ENV_FILE), APP_PERMISSION_KEYS), **os.environ}
         gaps = _app_gaps_from_env(values)
         if gaps is None:
             if values.get("OUTERLOOP_PAT_FILE", "").strip():
@@ -593,7 +605,9 @@ def permissions(args: argparse.Namespace) -> int:
 
 def start(args: argparse.Namespace) -> int:
     try:
-        values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
+        values = env_file_values(
+            operator_env_file(ENV_FILE), START_KEYS + TICK_ENV_KEYS
+        )  # one read for everything
         from outerloop.author_overrides import validate_overrides
 
         try:
@@ -628,10 +642,14 @@ def start(args: argparse.Namespace) -> int:
             sbatch_on_path=shutil.which("sbatch") is not None,
             cwd=Path.cwd(),
         )
-    except StartError as e:
+    except (StartError, ValueError, OSError) as e:
         print(f"outerloop start: {e}", file=sys.stderr)
         return 2
-    cmd = plan.command()
+    try:
+        cmd = plan.command()
+    except (ValueError, OSError) as exc:
+        print(f"outerloop start: {exc}", file=sys.stderr)
+        return 2
     if args.dry_run:
         print(shlex.join(cmd))
         return 0
@@ -710,7 +728,7 @@ def start(args: argparse.Namespace) -> int:
         print(
             "outerloop start: could not ask the scheduler whether a resident tick "
             "exists (squeue failed); nothing submitted. Retry, or check "
-            f"`squeue --name {RESIDENT_JOB_NAME}`.",
+            f"`squeue --name {job_name()}`.",
             file=sys.stderr,
         )
         return 1
@@ -767,7 +785,7 @@ def start(args: argparse.Namespace) -> int:
         f"resident tick submitted: job {job} on {plan.partition}, "
         f"{plan.resident_minutes} min walltime, hands over to itself. "
         f"Logs: {plan.root}/logs. Pause: touch {plan.root}/PAUSE. "
-        f"Stop: scancel --name {RESIDENT_JOB_NAME}."
+        f"Stop: scancel --name {job_name()}."
     )
     return 0
 

@@ -15,6 +15,7 @@ from outerloop import cli, tick
 from outerloop.attempt import _make_launcher, _park_run
 from outerloop.compute import JobSpec
 from outerloop.contract import load_contract
+from outerloop.gpu_lanes import GpuLane
 from outerloop.limits import effective_limits
 from outerloop.measure import DispatchedMeasurer, DispatchSettings, Measure, MeasurementPending
 from outerloop.operator_limits import (
@@ -114,13 +115,20 @@ def test_sweep_maximum_simultaneous_demand(array, expected):
     assert gpu_demand(spec(2, array)) == expected
 
 
+@pytest.mark.parametrize("target_lane", [False, True])
 @pytest.mark.parametrize("array", [1, 5])
-def test_syscall_launch_path(tmp_path, array):
+def test_syscall_launch_path(tmp_path, array, target_lane):
     directory = run(tmp_path)
     backend = compute()
-    launcher = _make_launcher(
-        DispatchSettings(backend, "", "", ""), directory, tmp_path / "workspace", "run", gpus=2
-    )
+    dispatch = DispatchSettings(backend, "", "", "")
+    if target_lane:
+        backend.has_lanes = True
+        dispatch = replace(
+            dispatch,
+            target=TARGET,
+            gpu_lanes={TARGET: GpuLane("gpu-large", "my-account", "a100", ("--comment=reserved",))},
+        )
+    launcher = _make_launcher(dispatch, directory, tmp_path / "workspace", "run", gpus=2)
     request = SyscallRequest(launches=(Launch("probe", "true", 1, array=array, concurrency=2),))
     demand = 2 * min(array, 2)
     limits(tmp_path, f"[defaults]\nmax_gpus={demand - 1}\n")
@@ -130,6 +138,12 @@ def test_syscall_launch_path(tmp_path, array):
     limits(tmp_path, f"[defaults]\nmax_gpus={demand}\n")
     assert launcher("sha", request) == "afterany:100"
     assert backend.submit.call_count == 1
+    if target_lane:
+        argv = backend.submit.call_args.args[0].to_argv()
+        assert "--partition=gpu-large" in argv
+        assert "--account=my-account" in argv
+        assert "--gres=gpu:a100:2" in argv
+        assert "--comment=reserved" in argv
 
 
 def test_launch_batch_has_no_partial_admission(tmp_path):

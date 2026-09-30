@@ -503,6 +503,36 @@ or `scancel --name autoresearch-tick` for the per-cadence chain) and then runs
 `outerloop start`. `start` and the chain refuse a second loop on one root only under the
 current name, `outerloop-resident`.
 
+### Running two instances on one account
+
+Give each instance a separate state root and operator settings file. Keep the
+production settings at `~/.config/outerloop/.env`; select the sandbox file with
+an absolute path in the **process environment** (it cannot select itself):
+
+```bash
+export OUTERLOOP_ENV_FILE="$HOME/.config/outerloop-sandbox/.env"
+outerloop init --root /shared/sandbox-state
+outerloop start
+```
+
+Use the same exported selector for later init, start, limits, and harness status
+commands. The file must be owned by you and not group/world-writable (`chmod 600`
+is recommended). The resident re-reads that file each tick, and successors inherit
+its path. Foreground loops read it once at startup. Use a separate checkout via
+`OUTERLOOP_HOME` if the instances need independent code updates or harness installs.
+
+With `OUTERLOOP_ENV_FILE` unset, or resolving to the default settings path,
+jobs keep the names `outerloop-resident` and `outerloop-tick`, regardless of the
+state root. A different settings file gets `outerloop-resident-<12 hex>` and
+`outerloop-tick-<12 hex>`, using a stable hash of its resolved path. Settings
+file aliases resolve to the same identity. Two instances sharing one settings
+file are not supported. Keep the selected settings path unchanged while its
+chain runs.
+Start's printed `squeue`/`scancel` hints use the instance's name; when inspecting
+or stopping manually, use that exact name. Each root has its own `TICK` lease,
+heartbeat, logs, and `PAUSE` sentinel. Per-user scheduler caps remain shared across
+both instances; separate settings do not increase the account's scheduler limits.
+
 The resident checks its successor every tick and before handover, requeues vanished or terminal jobs with the same dependency, and keeps ticking through the walltime margin if recovery fails.
 
 Experiments run wherever your `compute` backend says. Slurm is the first
@@ -542,6 +572,23 @@ shares the author's backend, and must name an explicit model on any other
 backend); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
 
+For a target-specific GPU lane, add a JSON mapping to the deployment's `.env`:
+
+```bash
+OUTERLOOP_GPU_LANES='{"owner/repo":{"partition":"gpu-large","account":"my-account","gpu_type":"a100","extra":["--comment=reserved"]}}'
+```
+
+This lane submits `--account=my-account --partition=gpu-large --gres=gpu:a100:N
+--comment=reserved` for that target's GPU evals and author launches (including
+arrays and re-measures). Other targets keep the fleet GPU lane; CPU jobs are
+unchanged. Only `partition` is required; an omitted `account` uses the CPU/default
+account, and omitted `gpu_type` preserves untyped per-node GPU requests. `extra`
+is a list of `--name=value` flags. A flag the kernel sets itself (account,
+partition, gres, gpus*, cpus*, mem*, time, qos, nice, array, dependency, begin,
+job-name, output, error, wrap, parsable, chdir) is rejected, since sbatch lets the
+later flag win; so are unknown keys and malformed JSON.
+These are cluster settings, not target contract fields.
+
 `OUTERLOOP_AUTHOR_OVERRIDES` optionally selects an author for individual targets
 and agent slots, without changing judges or other targets:
 
@@ -580,7 +627,8 @@ so it also needs the image
 cluster, evals run inside the Apptainer image at `OUTERLOOP_IMAGE` (default
 `~/outerloop-images/agent-py312.sif`) in a jail that binds only the
 checked-out tree — an eval that needs data must fetch it into the tree, and
-GPU jobs are requested per node (`--gpus-per-node`). The tick has three
+GPU jobs are requested per node: `--gpus-per-node=N`, or `--gres=gpu:<type>:N`
+for a lane with a GPU type (see `OUTERLOOP_GPU_LANES`). The tick has three
 scheduling knobs. `OUTERLOOP_CADENCE_MIN`, read from the `.env`, is how often the
 chain ticks (minutes; default 30). Two finer ones are read from the tick's own
 environment (set at launch, not the per-tick `.env`): `OUTERLOOP_MIN_TICK_MINUTES`
