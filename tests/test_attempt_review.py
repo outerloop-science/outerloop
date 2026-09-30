@@ -450,9 +450,14 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
 
     class CommittingHarness(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            (workspace / "docs/roadmap.md").write_text("out of scope")
-            _git(workspace, "add", "docs/roadmap.md")
-            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit")
+            if not self.calls:
+                (workspace / "docs/roadmap.md").write_text("out of scope")
+                _git(workspace, "add", "docs/roadmap.md")
+                _git(
+                    workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit"
+                )
+            else:
+                assert "REFUSED" in brief_text and "out-of-scope paths" in brief_text
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -460,15 +465,17 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
             assert main(["sleep"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
+    author = CommittingHarness()
     out = wake_review(
         root,
         "tsp-r1",
-        CommittingHarness(),
+        author,
         cast(GitHubClient, FakeGitHub(comments=[member(101, "experiment")])),
         bot_login=BOT,
         now=NOW,
         dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
     )
+    assert len(author.calls) == 2
     assert out.action == "scope-violation"
     assert (
         "out-of-scope paths at launch: docs/roadmap.md"
@@ -1593,28 +1600,31 @@ def _author_folded_base_scope(
 
     class FoldingHarness(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            _git(workspace, "reset", "--mixed", "origin/main")
-            _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
-            (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
-            reference = (
-                head
-                if rollback_to == "head"
-                else _git(workspace, "rev-parse", "origin/main").strip()
-            )
-            if moved_again:
-                if rollback_to:
-                    (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
-                (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
-                _git(seed, "add", "-A")
-                _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
-                _git(seed, "push", str(bare), "main")
-                _git(workspace, "fetch", "origin")
-            if rollback_to:
+            if not self.calls:
                 _git(workspace, "reset", "--mixed", "origin/main")
                 _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
-                _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
-            if edit_ledger:
-                (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
+                (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
+                reference = (
+                    head
+                    if rollback_to == "head"
+                    else _git(workspace, "rev-parse", "origin/main").strip()
+                )
+                if moved_again:
+                    if rollback_to:
+                        (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
+                    (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
+                    _git(seed, "add", "-A")
+                    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
+                    _git(seed, "push", str(bare), "main")
+                    _git(workspace, "fetch", "origin")
+                if rollback_to:
+                    _git(workspace, "reset", "--mixed", "origin/main")
+                    _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
+                    _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
+                if edit_ledger:
+                    (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
+            else:
+                assert "REFUSED" in brief_text and "out-of-scope paths" in brief_text
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -1623,8 +1633,10 @@ def _author_folded_base_scope(
             return super().run(brief_text, workspace, resume_session_id)
 
     github = FakeGitHub(pr={"state": "open", "head": {"sha": head}})
-    outcome = wake_review(root, "tsp-r1", FoldingHarness(), github)
+    author = FoldingHarness()
+    outcome = wake_review(root, "tsp-r1", author, github)
     refused = bool(edit_ledger or rollback_to)
+    assert len(author.calls) == (2 if refused else 1)
     assert outcome.action == ("scope-violation" if refused else "parked")
     assert bool(launched) is not refused
     if rollback_to:

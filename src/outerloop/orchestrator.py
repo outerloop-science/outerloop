@@ -1488,11 +1488,13 @@ def attempt_once(
     baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
+    # Independent of malformed/budget refusals; only acceptance resets this bound.
+    scope_refused_once = False
     # Reuse a negative only for the same measurement base and candidate tree.
     failed_gate: tuple[str, str, AttemptResult] | None = judged
     tree = tree_of or (lambda sha: sha)
 
-    def _resume(message: Message) -> AttemptResult | None:
+    def _resume(message: Message, *, allow_checkpoint: bool = True) -> AttemptResult | None:
         """Deliver pending messages; return an ending only if the resume fails."""
         nonlocal session
         if on_meter is not None:
@@ -1517,7 +1519,16 @@ def attempt_once(
                 wake_result = run_role(
                     spec, harness, prompt, workspace, resume_session_id=session.session_id
                 )
-        except EndpointUnavailable:
+        except EndpointUnavailable as exc:
+            if not allow_checkpoint:
+                # A rejected tree cannot be sealed even to preserve an outage park.
+                return AttemptResult(
+                    outcome="session-outage",
+                    baseline=baseline,
+                    session=session,
+                    note=f"scope refusal delivery unavailable: {exc}",
+                    run_seed=run_seed,
+                )
             # A prior leg already ran: keep its native context and budget meters.
             raise RunParked(
                 phase="author-sleep",
@@ -1693,19 +1704,51 @@ def attempt_once(
                 request, gpus=bench.gpus, max_concurrent_gpus=contract.budgets.max_concurrent_gpus
             )
             if not problem:
-                if stale_submit:
-                    violations = scope_validator(list(changed_paths()), contract)
-                    if violations:
+                # Admission precedes every seal, dispatch and budget charge, including
+                # a stale submit's jobless checkpoint. Keep the measurement backstop.
+                measured = tuple(changed_paths())
+                violations = scope_validator(list(measured), contract)
+                if violations:
+                    where = (
+                        " at checkpoint" if stale_submit else "" if request.submit else " at launch"
+                    )
+                    problem = f"out-of-scope paths{where}: {', '.join(sorted(violations)[:10])}"
+                    if scope_refused_once or not _can_resume():
                         return AttemptResult(
                             outcome="scope-violation",
                             baseline=baseline,
                             session=session,
-                            note=(
-                                "out-of-scope paths at checkpoint: "
-                                + ", ".join(sorted(violations)[:10])
-                            ),
+                            note=problem,
                             run_seed=run_seed,
+                            panel_transcript="\n\n".join(panel_sections),
+                            panel_rounds=panel_reads,
                         )
+                    scope_refused_once = True
+                    presealed = ""
+                    failed = _resume(
+                        Message(
+                            0,
+                            "note",
+                            "kernel",
+                            inbox_thread,
+                            time.time(),
+                            f"refusal:{session.session_id}:{inbox_seq}",
+                            {
+                                "text": (
+                                    "Your syscall request was REFUSED. Nothing was snapshotted, "
+                                    "launched, measured or charged. The request can be made again "
+                                    "once the tree only changes paths the contract allows."
+                                ),
+                                "quoted_text": problem,
+                            },
+                            origin=inbox_dir.name,
+                        ),
+                        allow_checkpoint=False,
+                    )
+                    if failed is not None:
+                        return failed
+                    continue
+                if stale_submit:
                     sha = snapshot()
                     sleeps_used += 1
                     if preflight.status == "stale":
@@ -1778,6 +1821,7 @@ def attempt_once(
                     # the walltime THIS submit declares (else the contract's):
                     # a resubmit without a declaration reverts to the default,
                     # never inheriting a prior park's.
+                    scope_refused_once = False
                     submitted = request
                     sleeps_used += 1
                     evals_charge = evals_gpu_hours(
@@ -1793,22 +1837,6 @@ def attempt_once(
                     break
                 # a launch park: its launches are dispatched right below, so
                 # they are charged now
-                # Scope BEFORE the snapshot, same invariant as the candidate
-                # path below: an out-of-scope tree is never snapshotted OR
-                # executed — the out-of-scope edit could be to the ruler
-                # itself, and a launch runs code from this tree in an external
-                # job. Same ending as the candidate path.
-                violations = scope_validator(list(changed_paths()), contract)
-                if violations:
-                    return AttemptResult(
-                        outcome="scope-violation",
-                        baseline=baseline,
-                        session=session,
-                        note=(
-                            f"out-of-scope paths at launch: {', '.join(sorted(violations)[:10])}"
-                        ),
-                        run_seed=run_seed,
-                    )
                 sha = snapshot()
                 assert launcher is not None
                 try:
@@ -1873,7 +1901,8 @@ def attempt_once(
                 return AttemptResult(
                     outcome="no-improvement", session=session, note="ended without a submit"
                 )
-        measured = tuple(changed_paths())
+        if submitted is None:
+            measured = tuple(changed_paths())
         # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
         # OR measured — the out-of-scope edit could be to the ruler itself. This
         # early exit keeps the snapshot off a rejected tree; measure_and_decide

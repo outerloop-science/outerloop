@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Launch, submit, and stale-submit checkpoint scope violations now refuse once
+  and resume the author with the offending paths in the kernel inbox. Refusal
+  seals nothing, runs no jobs or measurements, and spends no request budget.
+  A second scope violation without an accepted request remains terminal, as
+  does the authoritative measurement scope check.
+- Upgrading: no action or backfill needed. Scope refusals use the existing
+  kernel note payload and refusal keys; old inboxes, ended runs, and in-flight
+  runs remain readable without rewriting delivered messages. The next request
+  uses the new admission behavior. No run-record fields change; rollback is
+  safe and restores terminal scope admission checks.
+
 - Deployment author overrides select a backend/model per target or agent slot,
   bind it to each run, and leave panel and CI reviewer inheritance on the fleet
   author. Per-run board details identify the effective author and overrides.
