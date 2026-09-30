@@ -22,6 +22,11 @@ uv run pre-commit run --all-files
   `.github/` are forbidden write paths everywhere, regardless of contract YAML.
 - Budget caps are load-bearing safety features, not tunables to raise casually.
 - Never commit credentials, transcripts, or run artifacts (SECURITY.md).
+- This repository is public: code, tests, docs, commit messages and PR
+  descriptions carry no deployment specifics (cluster, account, partition or
+  node names, or what hardware a lab has). Use generic examples such as
+  `owner/repo`, `my-account`, `gpu-large`, and motivate a change by the general
+  need.
 - Merge commits only; never rebase, squash, or force-push.
 - **Review until quiet**: development PRs iterate advisory-review rounds
   (after a fix commit, remove then re-add the `autoresearch:review` label

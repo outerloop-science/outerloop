@@ -212,6 +212,9 @@ def test_job_terminal_without_a_result_fails_instead_of_parking(tmp_path: Path) 
         def lane_load(self, partition: str) -> dict[str, int]:
             return {}
 
+        def gpu_jobs(self) -> list[tuple[str, int]]:
+            return []
+
         def queue_snapshot(self) -> list[dict[str, str]]:
             return []
 
@@ -1058,3 +1061,26 @@ def test_unannounced_reservation_keeps_live_submitter_or_grace_period(
         )
         is live
     )
+
+
+def test_endpoint_settings_cross_local_job_boundary(tmp_path, monkeypatch):
+    import json
+
+    out = tmp_path / "env.json"
+    settings = {
+        "OUTERLOOP_ENDPOINT_LOCAL_URL": "https://llm.example.internal/v1",
+        "OUTERLOOP_ENDPOINT_LOCAL_KEY_FILE": "/keys/local",
+        "OUTERLOOP_ENDPOINT_LOCAL_MODEL": "open-model",
+        "OUTERLOOP_AUTHOR_ENDPOINT": "local",
+        "REVIEW_ENDPOINT": "judge",
+        "REVIEW_MODEL": "open-model",
+        "REVIEW_BACKEND": "hermes",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OUTERLOOP_ENDPOINT_LOCAL_KEY", "do-not-forward")
+    monkeypatch.setenv("APPTAINERENV_OUTERLOOP_SESSION_KEY", "do-not-forward")
+    LocalCompute().submit(_spec(command=f"/usr/bin/env > {out}"))
+    env = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+    assert all(env.get(k) == v for k, v in settings.items())
+    assert "do-not-forward" not in json.dumps(env)

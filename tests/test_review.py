@@ -301,6 +301,8 @@ def test_large_diffs_are_truncated_and_flagged() -> None:
     pr = make_pr(diff="x" * (MAX_DIFF_CHARS + 5_000))
     prompt = build_prompt(pr)
     assert "truncated" in prompt
+    assert "Numbers measured on different commits are not directly comparable" in prompt
+    assert "check the commits in the checkout history before attributing a gap" in prompt
     assert len(prompt) < MAX_DIFF_CHARS + 2_000
 
 

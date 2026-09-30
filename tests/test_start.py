@@ -702,10 +702,9 @@ def test_start_refuses_without_the_claude_model(clean_env, monkeypatch, capsys, 
     assert main(argv) == 0
 
 
-def test_hermes_is_a_review_backend_not_an_author(tmp_path):
+def test_hermes_author_requires_pinned_runtime(tmp_path):
     problem = cli.missing_harness_binary({"OUTERLOOP_AUTHOR_BACKEND": "hermes"}, {})
-    assert "unsupported author backend 'hermes'" in problem
-    assert "scripts/install_hermes.sh" in problem
+    assert "REVIEW_HERMES_REPO with pinned source and runtime" in problem
 
 
 # ---------------------------------------------------------------- uv

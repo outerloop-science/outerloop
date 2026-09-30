@@ -32,6 +32,7 @@ from outerloop.dispatch import (
     write_eval_job,
 )
 from outerloop.gpu_lanes import GpuLane
+from outerloop.job_names import run_job_name
 from outerloop.orchestrator import EvalError
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ class MeasurementPending(Exception):
     dependency (the colon-joined job ids: `afterany:<a>:<b>` in one wake job)
     so the caller can park the run as `parked` on exactly this set."""
 
-    def __init__(self, job_ids: tuple[str, ...]):
+    def __init__(self, job_ids: tuple[str, ...], *, capacity_wait: bool = False):
+        self.capacity_wait = capacity_wait
         self.job_ids = job_ids
         super().__init__(f"{len(job_ids)} measure(s) pending: {':'.join(job_ids)}")
 
@@ -338,7 +340,8 @@ class DispatchedMeasurer:
         # jobs across runs sharing one Slurm account); the readable prefixes
         # are for a human reading squeue.
         h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:16]
-        return f"eval-{self.run_tag[:10]}-{m.name[:12]}-{h}"
+        run_id = self.run_dir.name if self.run_dir.parent.name == "runs" else self.run_tag
+        return run_job_name(run_id, prefix="eval-", suffix=f"-{m.name[:12]}-{h}")
 
     def _done(self, m: Measure) -> bool:
         return (self._ev(m) / "exit-code").exists()
@@ -407,7 +410,14 @@ class DispatchedMeasurer:
             gpu_type=self.gpu_type if m.gpus and self.compute.has_lanes else "",
             extra=self.gpu_extra if m.gpus and self.compute.has_lanes else (),
         )
-        job_id = self.compute.submit(spec)
+        from outerloop.operator_limits import run_target, state_root, submit_batch
+
+        job_id = submit_batch(
+            state_root(self.run_dir),
+            run_target(self.run_dir),
+            self.compute,
+            [spec],
+        )[0]
         (self._ev(m) / "submitted").write_text(job_id)
         log.info("dispatched measure %s (sha %s) as job %s", m.name, m.tree_sha[:12], job_id)
         return job_id
@@ -426,6 +436,7 @@ class DispatchedMeasurer:
         """
         pending: list[str] = []
         blind = False
+        capacity_wait = False
         for m in measures:
             if self._done(m):
                 continue
@@ -457,7 +468,15 @@ class DispatchedMeasurer:
             # (never loops — the redispatch writes a marker). Cost is one
             # wasted eval in a triple-failure conjunction; fully closing it
             # needs sacct-by-name over job history, not worth that surface.
-            job_id = self._dispatch(m)
+            from outerloop.operator_limits import CapacityError
+
+            try:
+                job_id = self._dispatch(m)
+            except CapacityError as exc:
+                capacity_wait = True
+                log.warning("measure %s waiting for capacity: %s", m.name, exc)
+                blind = True
+                continue
             if self._done(m):
                 continue  # a synchronous compute finished the job inside submit
             try:
@@ -474,7 +493,7 @@ class DispatchedMeasurer:
                 raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
             pending.append(job_id)
         if pending or blind:
-            raise MeasurementPending(tuple(pending))
+            raise MeasurementPending(tuple(pending), capacity_wait=capacity_wait)
         out: dict[str, float] = {}
         for m in measures:
             self._settled(m)  # exit-code seen, stdout possibly still on its way

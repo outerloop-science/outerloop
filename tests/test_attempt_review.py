@@ -450,9 +450,20 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
 
     class CommittingHarness(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            (workspace / "docs/roadmap.md").write_text("out of scope")
-            _git(workspace, "add", "docs/roadmap.md")
-            _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit")
+            if not self.calls:
+                (workspace / "docs/roadmap.md").write_text("out of scope")
+                _git(workspace, "add", "docs/roadmap.md")
+                _git(
+                    workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "edit"
+                )
+            else:
+                assert (
+                    "Refused:" in brief_text
+                    if len(self.calls) == 1
+                    else "Refused again:" in brief_text
+                )
+                if len(self.calls) == 3:
+                    return super().run(brief_text, workspace, resume_session_id)
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -460,20 +471,24 @@ def test_review_launch_checks_committed_edits(review_run, monkeypatch):
             assert main(["sleep"], root=workspace) == 0
             return super().run(brief_text, workspace, resume_session_id)
 
+    author = CommittingHarness()
     out = wake_review(
         root,
         "tsp-r1",
-        CommittingHarness(),
+        author,
         cast(GitHubClient, FakeGitHub(comments=[member(101, "experiment")])),
         bot_login=BOT,
         now=NOW,
         dispatch=DispatchSettings(compute=LocalCompute(), image="", account="", partition=""),
     )
-    assert out.action == "scope-violation"
-    assert (
-        "out-of-scope paths at launch: docs/roadmap.md"
-        in (run_dir(root, "tsp-r1") / "report.md").read_text()
-    )
+    assert len(author.calls) == 4
+    assert out.action == "replied"
+    from outerloop.inbox import pending
+
+    notes = [m for m in pending(run_dir(root, "tsp-r1"), 0) if m.key.startswith("refusal:")]
+    assert len(notes) == 3
+    assert all("docs/roadmap.md" in m.payload["text"] for m in notes)
+    assert all(m.payload["text"].startswith("Refused again:") for m in notes[1:])
 
 
 def test_publish_review_addendum_failure_keeps_the_record(review_run, monkeypatch, caplog):
@@ -1593,28 +1608,37 @@ def _author_folded_base_scope(
 
     class FoldingHarness(ResumingHarness):
         def run(self, brief_text, workspace, resume_session_id=None):
-            _git(workspace, "reset", "--mixed", "origin/main")
-            _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
-            (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
-            reference = (
-                head
-                if rollback_to == "head"
-                else _git(workspace, "rev-parse", "origin/main").strip()
-            )
-            if moved_again:
-                if rollback_to:
-                    (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
-                (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
-                _git(seed, "add", "-A")
-                _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
-                _git(seed, "push", str(bare), "main")
-                _git(workspace, "fetch", "origin")
-            if rollback_to:
+            if not self.calls:
                 _git(workspace, "reset", "--mixed", "origin/main")
                 _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
-                _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
-            if edit_ledger:
-                (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
+                (workspace / "src/pilot/solvers/tsp.py").write_text("author's edit\n")
+                reference = (
+                    head
+                    if rollback_to == "head"
+                    else _git(workspace, "rev-parse", "origin/main").strip()
+                )
+                if moved_again:
+                    if rollback_to:
+                        (seed / "docs/roadmap.md").write_text("reviewed ruler B2\n")
+                    (seed / "BENCHMARKS.md").write_text("main's next ledger\n")
+                    _git(seed, "add", "-A")
+                    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "B2")
+                    _git(seed, "push", str(bare), "main")
+                    _git(workspace, "fetch", "origin")
+                if rollback_to:
+                    _git(workspace, "reset", "--mixed", "origin/main")
+                    _git(workspace, "checkout", "origin/main", "--", "BENCHMARKS.md")
+                    _git(workspace, "checkout", reference, "--", "docs/roadmap.md")
+                if edit_ledger:
+                    (workspace / "BENCHMARKS.md").write_text("author's ledger\n")
+            else:
+                assert (
+                    "Refused:" in brief_text
+                    if len(self.calls) == 1
+                    else "Refused again:" in brief_text
+                )
+                if len(self.calls) == 3:
+                    return super().run(brief_text, workspace, resume_session_id)
             assert (
                 main(["launch", "--name", "probe", "--minutes", "1", "--", "true"], root=workspace)
                 == 0
@@ -1623,9 +1647,11 @@ def _author_folded_base_scope(
             return super().run(brief_text, workspace, resume_session_id)
 
     github = FakeGitHub(pr={"state": "open", "head": {"sha": head}})
-    outcome = wake_review(root, "tsp-r1", FoldingHarness(), github)
+    author = FoldingHarness()
+    outcome = wake_review(root, "tsp-r1", author, github)
     refused = bool(edit_ledger or rollback_to)
-    assert outcome.action == ("scope-violation" if refused else "parked")
+    assert len(author.calls) == (4 if refused else 1)
+    assert outcome.action == ("replied" if refused else "parked")
     assert bool(launched) is not refused
     if rollback_to:
         assert any("docs/roadmap.md" in paths for paths in seen)

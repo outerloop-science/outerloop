@@ -17,10 +17,11 @@ post — the result-policy (kernel) acts on the RoleResult.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from outerloop.endpoints import resolve_endpoint
 from outerloop.harness import (
     ClaudeCodeHarness,
     CodexHarness,
@@ -61,7 +62,7 @@ _HERMES_TOOLSETS = (
 # hermes resolves credentials per provider (a registry); "openai" maps to its
 # canonical `openai-api` provider id (api-key auth against api.openai.com —
 # plain "openai" is a provider GROUP there, not an id).
-_HERMES_PROVIDERS = {
+HERMES_PROVIDERS = {
     "openrouter": ("openrouter", "OPENROUTER_API_KEY"),
     "openai": ("openai-api", "OPENAI_API_KEY"),
 }
@@ -94,6 +95,7 @@ def build_harness(
     codex_extra_args: tuple[str, ...] = (),
     hermes_repo: Path | None = None,
     hermes_provider: str = "",
+    endpoint: str = "",
 ) -> Harness:
     """Construct the harness for any role on any backend — the ONE deployment
     wiring (`spec.tools` → native flags, `spec.budget` → turns/walltime,
@@ -115,6 +117,9 @@ def build_harness(
     deployment has a jail (the cluster), pass none where the runner itself is
     the ephemeral boundary (CI). The tokenless split keeps credentials out of
     the session either way."""
+    model, profile = resolve_endpoint(model or "", backend, endpoint)
+    if profile:
+        api_key = profile.key()
     if backend == "codex":
         # the web, when the spec grants it: the config override, because
         # `codex exec` does not accept `--search`
@@ -123,6 +128,7 @@ def build_harness(
             api_key=api_key,
             binary=binary or "codex",
             model=model or "",  # "" -> codex's configured default; pin a verified id
+            endpoint=profile,
             sandbox="danger-full-access",
             timeout_s=spec.budget.walltime_s,
             container_image=container_image,
@@ -131,9 +137,13 @@ def build_harness(
     if backend == "hermes":
         if hermes_repo is None:
             raise ValueError("hermes backend needs hermes_repo (the pinned clone)")
-        if (hermes_provider or "openrouter") not in _HERMES_PROVIDERS:
+        if not profile and (hermes_provider or "openrouter") not in HERMES_PROVIDERS:
             raise ValueError(f"unknown hermes provider: {hermes_provider!r}")
-        seed, key_env = _HERMES_PROVIDERS[hermes_provider or "openrouter"]
+        seed, key_env = (
+            ("outerloop_endpoint", "OUTERLOOP_SESSION_KEY")
+            if profile
+            else HERMES_PROVIDERS[hermes_provider or "openrouter"]
+        )
         # `terminal` (the shell) is keyed on the SAME signal claude uses — the
         # spec granting the Bash tool — not on can_execute, so every backend
         # gives a role the same shell/no-shell whether or not those two ever
@@ -146,6 +156,7 @@ def build_harness(
             key_env=key_env,
             repo_dir=hermes_repo,
             provider=seed,
+            endpoint=profile,
             model=model or "",
             max_turns=spec.budget.max_turns,
             timeout_s=spec.budget.walltime_s,
@@ -170,7 +181,8 @@ def build_harness(
         # Vertex (ADC) billing when the deployment configures it; the env
         # contract has ONE owner (harness.vertex_from_env), so every claude
         # role on every CLI flips together and the API key stays the fallback
-        vertex=vertex_from_env(),
+        vertex=None if profile else vertex_from_env(),
+        endpoint=profile,
     )
 
 
@@ -185,6 +197,24 @@ class RoleResult:
     session: SessionResult
     data: dict[str, Any] | None = None
     error: str = ""
+
+
+def redact_role_result(result: RoleResult, harness: Harness) -> RoleResult:
+    """Scrub verdict strings structurally, including JSON-escaped credentials."""
+    from outerloop.harness import redact
+
+    secrets = (getattr(harness, "api_key", ""),)
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            return redact(value, secrets)
+        if isinstance(value, dict):
+            return {clean(key): clean(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    return replace(result, data=clean(result.data), error=clean(result.error))
 
 
 def run_role(
@@ -212,6 +242,10 @@ def run_role(
         from outerloop.syscall import install_tool
 
         install_tool(workspace)
+    if not is_judge:
+        from outerloop.syscall import tool_command
+
+        brief_text = brief_text.replace("python .outerloop/syscall", tool_command(workspace))
     session = harness.run(brief_text, workspace, resume_session_id)
     if session.is_error:
         return RoleResult(
@@ -227,4 +261,4 @@ def run_role(
         return RoleResult(ok=False, session=session, error=f"invalid verdict: {exc}")
     if data is None:
         return RoleResult(ok=False, session=session, error="judge produced no verdict")
-    return RoleResult(ok=True, session=session, data=data)
+    return redact_role_result(RoleResult(ok=True, session=session, data=data), harness)

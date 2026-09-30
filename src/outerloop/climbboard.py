@@ -31,6 +31,7 @@ from typing import Any
 from outerloop.hypothesis import MAX_HYPOTHESIS_CHARS as MAX_HYPOTHESIS_CHARS
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import wake_pending
+from outerloop.job_names import run_job_name, run_key
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as BOARD_BRANCH
 from outerloop.markers import marker
 from outerloop.runstate import ENDED, PARKED, RunRecord, list_runs, run_dir
@@ -740,6 +741,12 @@ def render_html(
         "      a.textContent = 'PR'; top.append(a);\n"
         "    }\n"
         "    card.append(top);\n"
+        "    if (r.author_model) {\n"
+        "      const a = document.createElement('span');\n"
+        "      a.textContent = r.author_backend + ' / ' + r.author_model\n"
+        "        + (r.author_overridden ? ' (override)' : '');\n"
+        "      a.style.display = 'block'; card.append(a);\n"
+        "    }\n"
         "    if (r.direction) {\n"
         "      const d = document.createElement('span'); d.className = 'dir';\n"
         "      d.textContent = r.direction; d.style.display = 'block';\n"
@@ -875,11 +882,11 @@ STATUS_PATH = "climb/status.json"
 # The queue view shows the kernel's own jobs only. Fixed-name jobs (the tick
 # chain, issue sessions, climb sessions) are matched by shape; per-run jobs
 # (wake, launch) are matched against the names the kernel itself
-# derives from this target's run ids, with the same 60-character cut Slurm
-# forces on them; an eval's name is a liveness hash and is claimed only
+# derives from this target's run ids, including legacy 60-character cuts
+# and current run keys; an eval is claimed only
 # through its run's marker. Anything else on the account is the operator's
 # and never leaves the cluster.
-JOB_NAME_LIMIT = 60
+LEGACY_JOB_NAME_LIMIT = 60
 FIXED_JOB_PATTERNS = tuple(
     re.compile(p)
     for p in (
@@ -912,10 +919,13 @@ def run_job_names(
             continue
         rid, agent = record.run_id, record.agent_id
         for name, prefix in (
-            (f"wake-{rid}", False),
+            (f"wake-{rid}"[:LEGACY_JOB_NAME_LIMIT], False),  # legacy 60-character names
+            (f"{rid}-launch-"[:LEGACY_JOB_NAME_LIMIT], True),
+            (run_job_name(rid, prefix="wake-"), False),
             (f"{rid}-launch-", True),
+            (f"{run_key(rid)}-launch-", True),
         ):
-            key = name[:JOB_NAME_LIMIT]
+            key = name
             if key in out and out[key][0] != rid:
                 # two runs whose names collide under the cut: the job is still
                 # the kernel's, but nobody can say whose, so it is claimed by none
@@ -974,7 +984,8 @@ def queue_rows(
         elif name in expected and not expected[name][2]:  # wake, exact
             run_id, agent = expected[name][:2]
         elif any(name.startswith(k) for k, v in expected.items() if v[2]):  # a launch
-            run_id, agent = next(v[:2] for k, v in expected.items() if v[2] and name.startswith(k))
+            key = max((k for k, v in expected.items() if v[2] and name.startswith(k)), key=len)
+            run_id, agent = expected[key][:2]
         elif is_fixed_kernel_job(name):
             found = _AGENT_RE.search(name)
             agent = found.group(0) if found else ""
@@ -1083,7 +1094,10 @@ def collect_status(
         if record.target != target or record.state not in _LIVE_STATES:
             continue
         stage = record.stage or {}
-        note = str(stage.get("report") or "")
+        from outerloop.harness import resume_config_block
+
+        blocked = resume_config_block(stage)
+        note = blocked or str(stage.get("report") or "")
         hyp = report_hypothesis(note) or str(stage.get("hypothesis") or "")[:MAX_HYPOTHESIS_CHARS]
         exp_done, exp_total, exp_minutes = _experiment_progress(root, record)
         depth_k, sleep_k, bench_minutes = budgets.get(record.benchmark, (None, None, 0))
@@ -1097,11 +1111,14 @@ def collect_status(
             {
                 "run_id": record.run_id,
                 "agent": record.agent_id,
+                "author_backend": record.author_backend or "claude",
+                "author_model": record.author_model,
+                "author_overridden": record.author_overridden,
                 "benchmark": record.benchmark,
                 "state": record.state,
-                "phase": stage.get("phase", ""),
+                "phase": "configuration-blocked" if blocked else stage.get("phase", ""),
                 # the agent's own headline: what it says it is working on
-                "direction": _phrase(hyp or note.replace("\n", " ")),
+                "direction": blocked or _phrase(hyp or note.replace("\n", " ")),
                 "hypothesis": hyp,
                 "since": record.updated or record.created,
                 # a run that never launched HAS used zero — absent keys must
@@ -1173,6 +1190,9 @@ def service_status(
             # edits the contract — all real transitions the strip must show
             keys = (
                 "run_id",
+                "author_backend",
+                "author_model",
+                "author_overridden",
                 "state",
                 "phase",
                 "waiting",

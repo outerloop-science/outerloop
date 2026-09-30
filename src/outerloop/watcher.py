@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.climbboard import queue_rows
+from outerloop.job_names import run_key
 from outerloop.launchlog import history, why_by_job
 from outerloop.runstate import run_dir
 from outerloop.syscall import MAX_WHY_CHARS, mark_done, marker_requested, write_channel_json
@@ -147,7 +148,14 @@ class SessionWatcher:
         for r in rows:
             rid = str(r.get("run_id") or "")
             name = str(r.get("name") or "")
-            prefix = f"{rid}-launch-" if rid else ""
+            prefix = next(
+                (
+                    p
+                    for p in (f"{rid}-launch-", f"{run_key(rid)}-launch-")
+                    if rid and name.startswith(p)
+                ),
+                "",
+            )
             r["mine"] = bool(rid) and rid == ctx.run_id
             job_id = str(r.get("id") or "")
             throttle = _ARRAY_THROTTLE.search(job_id)

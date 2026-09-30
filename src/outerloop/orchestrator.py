@@ -53,6 +53,7 @@ from outerloop.inbox import (
     render_inbox,
 )
 from outerloop.inbox import pending as pending_messages
+from outerloop.operator_limits import CapacityError
 from outerloop.panel import PanelVerdict
 from outerloop.role_runner import run_role
 from outerloop.roles import author_spec
@@ -147,7 +148,9 @@ class RunParked(Exception):
         eval_minutes: int | None = None,
         judged: tuple[str, str, AttemptResult] | None = None,
         launch_afterany: str = "",
+        capacity_wait: bool = False,
     ):
+        self.capacity_wait = capacity_wait
         self.phase = phase
         # the author's launch jobs alone (a candidate park's `afterany` also
         # carries the gate's evals): the wake reconciles their charge
@@ -517,6 +520,8 @@ class AttemptResult:
     panel_rounds: int = 0
     panel_blocking_open: bool = False
     panel_degraded: bool = False
+    # In-memory ending guard: rejected trees must never reach line snapshots.
+    tree_rejected: bool = False
 
     def report(self, config: RunConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -859,6 +864,7 @@ def measure_and_decide(
     if violations:
         return AttemptResult(
             outcome="scope-violation",
+            tree_rejected=True,
             note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
             run_seed=seed,
         )
@@ -1115,6 +1121,7 @@ def resume_attempt(
         raise RunParked(
             phase="candidate",
             afterany=pending.afterany(),
+            capacity_wait=pending.capacity_wait,
             base_sha=base_sha,
             seed=seed,
             suite_seed=suite_seed,
@@ -1484,11 +1491,23 @@ def attempt_once(
     baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
+    # Rejection protects stop/error paths; it is never a refusal limit.
+    tree_rejected = False
+    scope_refused = any(
+        m.source == "kernel"
+        and m.kind == "note"
+        and m.key.startswith("refusal:")
+        and (
+            str(m.payload.get("text", "")).startswith(("Refused:", "Refused again:"))
+            or str(m.payload.get("quoted_text", "")).startswith("out-of-scope paths")
+        )
+        for m in pending_messages(inbox_dir, 0)
+    )
     # Reuse a negative only for the same measurement base and candidate tree.
     failed_gate: tuple[str, str, AttemptResult] | None = judged
     tree = tree_of or (lambda sha: sha)
 
-    def _resume(message: Message) -> AttemptResult | None:
+    def _resume(message: Message, *, allow_checkpoint: bool = True) -> AttemptResult | None:
         """Deliver pending messages; return an ending only if the resume fails."""
         nonlocal session
         if on_meter is not None:
@@ -1506,9 +1525,51 @@ def attempt_once(
         # session started with (a wake refreshed it too; this covers a refusal)
         with contextlib.suppress(Exception):
             refresh_tool(workspace)
-        with _watched():
-            wake_result = run_role(
-                spec, harness, prompt, workspace, resume_session_id=session.session_id
+        from outerloop.endpoints import EndpointUnavailable
+
+        try:
+            with _watched():
+                wake_result = run_role(
+                    spec, harness, prompt, workspace, resume_session_id=session.session_id
+                )
+        except EndpointUnavailable as exc:
+            if not allow_checkpoint or scope_validator(list(changed_paths()), contract):
+                # A rejected tree cannot be sealed even to preserve an outage park.
+                return AttemptResult(
+                    outcome="session-outage",
+                    tree_rejected=True,
+                    baseline=baseline,
+                    session=session,
+                    note=f"scope refusal delivery unavailable: {exc}",
+                    run_seed=run_seed,
+                )
+            # A prior leg already ran: keep its native context and budget meters.
+            raise RunParked(
+                phase="author-sleep",
+                afterany="",
+                base_sha=base_sha,
+                seed=run_seed,
+                suite_seed=suite_seed,
+                candidate_sha=snapshot(),
+                session=session,
+                syscall=SyscallRequest(launches=()),
+                launches_used=launches_used,
+                sleeps_used=sleeps_used,
+                gpu_hours_used=gpu_hours_used,
+                judged=failed_gate,
+                capacity_wait=True,
+            ) from None
+        except Exception as exc:
+            if not tree_rejected:
+                raise
+            # Preserve rejection even when the harness fails without a session result.
+            return AttemptResult(
+                outcome="session-error",
+                tree_rejected=True,
+                baseline=baseline,
+                session=session,
+                note=f"scope refusal delivery failed: {type(exc).__name__}: {exc}",
+                run_seed=run_seed,
             )
         session = wake_result.session
         if wake_result.ok:
@@ -1526,6 +1587,7 @@ def attempt_once(
             baseline=baseline,
             candidate=candidate,
             session=session,
+            tree_rejected=tree_rejected,
             note=wake_result.error or session.error_detail or session.stop_reason,
             run_seed=run_seed,
             panel_transcript="\n\n".join(panel_sections),
@@ -1551,18 +1613,95 @@ def attempt_once(
         evals_charge = 0.0  # GPU-hours this pass took for gate evals
         presealed = ""  # a seal taken early to compare against the judged tree
         while launcher is not None or on_replies is not None:
+            read_error = ""
             try:
                 request = _consume_request()
             except SyscallError as exc:
-                # loud, never silent: the author meant something by the file
+                # Scope admission also covers unreadable requests.
+                read_error = f"unhonorable syscall request: {exc}"
+                request = SyscallRequest(launches=(), problem=read_error)
+            if request is None:
+                break
+            # Refresh ancestry before deriving the paths admitted below.
+            no_backend = (
+                "sleep is not available here: this run has no compute backend for "
+                "launches; end your leg instead"
+                if launcher is None and not (on_stop and request.submit)
+                else ""
+            )
+            preflight = (
+                submit_preflight()
+                if request.sleep
+                and not request.problem
+                and request.submit
+                and not no_backend
+                and submit_preflight is not None
+                else SubmitPreflight("ready")
+            )
+            stale_submit = preflight.status in ("stale", "outdated-pin")
+            # A valid end abandons the tree; it does not request admission.
+            # Otherwise scope takes precedence over syscall/budget problems.
+            if not (request.end and not request.problem):
+                # Admission precedes every seal, dispatch and budget charge, including
+                # a stale submit's jobless checkpoint. Keep the measurement backstop.
+                measured = tuple(changed_paths())
+                violations = scope_validator(list(measured), contract)
+                if violations:
+                    where = (
+                        "checkpoint" if stale_submit else "submit" if request.submit else "launch"
+                    )
+                    # Preserve scope entries as written, bounded by count and length.
+                    allowed = ", ".join(contract.scope.allowed[:10])
+                    if len(contract.scope.allowed) > 10:
+                        allowed += ", …"
+                    if len(allowed) > 1000:
+                        allowed = allowed[:997] + "…"
+                    prefix = "Refused again:" if scope_refused else "Refused:"
+                    problem = (
+                        f"{prefix} this request at {where} changes paths the contract "
+                        "does not allow authors to change: "
+                        f"{', '.join(sorted(violations)[:10])}. "
+                        "Nothing ran and nothing was charged. "
+                        f"Authors may change: {allowed}."
+                    )
+                    scope_refused = True
+                    tree_rejected = True
+                    presealed = ""
+                    message = Message(
+                        0,
+                        "note",
+                        "kernel",
+                        inbox_thread,
+                        time.time(),
+                        f"refusal:{session.session_id}:{inbox_seq}",
+                        {"text": problem},
+                        origin=inbox_dir.name,
+                    )
+                    if not _can_resume():
+                        append(inbox_dir, message)
+                        _write_messages()
+                        return AttemptResult(
+                            outcome="session-error",
+                            tree_rejected=True,
+                            baseline=baseline,
+                            session=session,
+                            note="Session cannot resume to receive the scope refusal.",
+                            run_seed=run_seed,
+                            panel_transcript="\n\n".join(panel_sections),
+                            panel_rounds=panel_reads,
+                        )
+                    failed = _resume(message, allow_checkpoint=False)
+                    if failed is not None:
+                        return failed
+                    continue
+            if read_error:
                 return AttemptResult(
                     outcome="session-error",
                     baseline=baseline,
                     session=session,
-                    note=f"unhonorable syscall request: {exc}",
+                    note=read_error,
+                    tree_rejected=tree_rejected,
                 )
-            if request is None:
-                break
             if request.withdraw and not request.problem:
                 problem = (
                     on_withdraw(request.withdraw)
@@ -1603,9 +1742,10 @@ def attempt_once(
                     if request.report and on_replies is not None:
                         on_replies(({"to": "thread", "text": request.report, "reply_to": None},))
                     session = dc_replace(session, final_text=request.report)
-                    return on_stop(session)
+                    return dc_replace(on_stop(session), tree_rejected=tree_rejected)
                 return AttemptResult(
                     outcome="no-improvement",
+                    tree_rejected=tree_rejected,
                     session=session,
                     note=(failed_gate[2].note or failed_gate[2].outcome)
                     if failed_gate
@@ -1613,18 +1753,6 @@ def attempt_once(
                 )
             if not request.sleep:
                 break
-            no_backend = (
-                "sleep is not available here: this run has no compute backend for "
-                "launches; end your leg instead"
-                if launcher is None and not (on_stop and request.submit)
-                else ""
-            )
-            preflight = (
-                submit_preflight()
-                if request.submit and not no_backend and submit_preflight is not None
-                else SubmitPreflight("ready")
-            )
-            stale_submit = preflight.status in ("stale", "outdated-pin")
             if stale_submit:
                 # Budget only the effective checkpoint, never the rejected compute.
                 request = SyscallRequest(launches=())
@@ -1670,18 +1798,6 @@ def attempt_once(
             )
             if not problem:
                 if stale_submit:
-                    violations = scope_validator(list(changed_paths()), contract)
-                    if violations:
-                        return AttemptResult(
-                            outcome="scope-violation",
-                            baseline=baseline,
-                            session=session,
-                            note=(
-                                "out-of-scope paths at checkpoint: "
-                                + ", ".join(sorted(violations)[:10])
-                            ),
-                            run_seed=run_seed,
-                        )
                     sha = snapshot()
                     sleeps_used += 1
                     if preflight.status == "stale":
@@ -1754,6 +1870,7 @@ def attempt_once(
                     # the walltime THIS submit declares (else the contract's):
                     # a resubmit without a declaration reverts to the default,
                     # never inheriting a prior park's.
+                    tree_rejected = False
                     submitted = request
                     sleeps_used += 1
                     evals_charge = evals_gpu_hours(
@@ -1769,41 +1886,29 @@ def attempt_once(
                     break
                 # a launch park: its launches are dispatched right below, so
                 # they are charged now
-                gpu_hours_used += launches_gpu_hours(request, gpus=bench.gpus)
-                # Scope BEFORE the snapshot, same invariant as the candidate
-                # path below: an out-of-scope tree is never snapshotted OR
-                # executed — the out-of-scope edit could be to the ruler
-                # itself, and a launch runs code from this tree in an external
-                # job. Same ending as the candidate path.
-                violations = scope_validator(list(changed_paths()), contract)
-                if violations:
-                    return AttemptResult(
-                        outcome="scope-violation",
-                        baseline=baseline,
-                        session=session,
-                        note=(
-                            f"out-of-scope paths at launch: {', '.join(sorted(violations)[:10])}"
-                        ),
-                        run_seed=run_seed,
-                    )
                 sha = snapshot()
                 assert launcher is not None
-                launch_afterany = launcher(sha, request)
-                raise RunParked(
-                    phase="author-sleep",
-                    judged=failed_gate,
-                    afterany=launch_afterany,
-                    launch_afterany=launch_afterany,
-                    base_sha=base_sha,
-                    seed=run_seed,
-                    suite_seed=suite_seed,
-                    candidate_sha=sha,
-                    session=session,
-                    syscall=request,
-                    launches_used=launches_used + len(request.launches),
-                    sleeps_used=sleeps_used + 1,
-                    gpu_hours_used=gpu_hours_used,
-                )
+                try:
+                    launch_afterany = launcher(sha, request)
+                except CapacityError as exc:
+                    problem = str(exc)
+                else:
+                    gpu_hours_used += launches_gpu_hours(request, gpus=bench.gpus)
+                    raise RunParked(
+                        phase="author-sleep",
+                        judged=failed_gate,
+                        afterany=launch_afterany,
+                        launch_afterany=launch_afterany,
+                        base_sha=base_sha,
+                        seed=run_seed,
+                        suite_seed=suite_seed,
+                        candidate_sha=sha,
+                        session=session,
+                        syscall=request,
+                        launches_used=launches_used + len(request.launches),
+                        sleeps_used=sleeps_used + 1,
+                        gpu_hours_used=gpu_hours_used,
+                    )
             if refused_once or not _can_resume():
                 if stale_submit:
                     return AttemptResult(
@@ -1840,12 +1945,20 @@ def attempt_once(
             on_meter(launches_used, sleeps_used, gpu_hours_used)
         if submitted is None:
             if on_stop is not None:
-                return on_stop(session)
+                return dc_replace(on_stop(session), tree_rejected=tree_rejected)
+            if tree_rejected:
+                return AttemptResult(
+                    outcome="no-improvement",
+                    session=session,
+                    tree_rejected=True,
+                    note="ended without a submit",
+                )
             if launcher is not None and getattr(harness, "supports_resume", True):
                 return AttemptResult(
                     outcome="no-improvement", session=session, note="ended without a submit"
                 )
-        measured = tuple(changed_paths())
+        if submitted is None:
+            measured = tuple(changed_paths())
         # Scope BEFORE the snapshot: an out-of-scope tree is never snapshotted
         # OR measured — the out-of-scope edit could be to the ruler itself. This
         # early exit keeps the snapshot off a rejected tree; measure_and_decide
@@ -1855,6 +1968,7 @@ def attempt_once(
         if violations:
             return AttemptResult(
                 outcome="scope-violation",
+                tree_rejected=True,
                 baseline=baseline,
                 session=session,
                 note=f"out-of-scope paths: {', '.join(sorted(violations)[:10])}",
@@ -1929,12 +2043,36 @@ def attempt_once(
             launch_afterany = ""
             if submitted is not None and submitted.launches:
                 assert launcher is not None  # a submit only arrives through it
-                launch_afterany = launcher(candidate_sha, submitted)
-                launches_used += len(submitted.launches)
-                gpu_hours_used += launches_gpu_hours(submitted, gpus=bench.gpus)
+                try:
+                    launch_afterany = launcher(candidate_sha, submitted)
+                except CapacityError as exc:
+                    append(
+                        inbox_dir,
+                        Message(
+                            0,
+                            "note",
+                            "kernel",
+                            inbox_thread,
+                            time.time(),
+                            f"capacity-refusal:{session.session_id}:{sleeps_used}",
+                            {
+                                "text": (
+                                    "Your sibling launch request was REFUSED "
+                                    "and nothing was launched."
+                                ),
+                                "quoted_text": str(exc),
+                            },
+                            origin=inbox_dir.name,
+                        ),
+                    )
+                    submitted = dc_replace(submitted, launches=())
+                else:
+                    launches_used += len(submitted.launches)
+                    gpu_hours_used += launches_gpu_hours(submitted, gpus=bench.gpus)
             raise RunParked(
                 phase="candidate",
                 afterany=_merge_afterany(pending.afterany(), launch_afterany),
+                capacity_wait=pending.capacity_wait,
                 launch_afterany=launch_afterany,
                 base_sha=base_sha,
                 seed=run_seed,
@@ -2162,8 +2300,8 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
         f"{len(rows)} job(s) launched by the author this run, from the kernel's ledger; "
         "the result column is the last line each job printed.",
         "",
-        "| sleep | launch | why | job | ended | result |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| sleep | launch | commit | why | job | ended | result |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in rows[:MAX_EXPERIMENT_ROWS]:
         pace = ""
@@ -2172,6 +2310,7 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
             pace = f" (x{row['array']}, {k} at a time)"
         lines.append(
             f"| {row.get('sleep', '')} | {_cell(row.get('launch', ''), 48)}{pace} | "
+            f"{_cell(row.get('commit') or 'unknown', 7)} | "
             f"{_cell(row.get('why', ''), 120)} | {_cell(row.get('job', ''), 48)} | "
             f"{_ended(row)} | {_cell(row.get('result', ''), 160)} |"
         )
@@ -2179,7 +2318,7 @@ def _experiments_section(rows: list[dict[str, Any]]) -> list[str]:
     if rest:
         ok = sum(1 for r in rest if r.get("back") and r.get("exit_code") == 0)
         lines.append(
-            f"| | … {len(rest)} more job(s): {ok} exit 0, {len(rest) - ok} otherwise | | | | |"
+            f"| | … {len(rest)} more job(s): {ok} exit 0, {len(rest) - ok} otherwise | | | | | |"
         )
     return lines
 
@@ -2190,6 +2329,8 @@ def pr_body(
     redact_secrets: tuple[str, ...],
     display_digits: int | None = None,
     experiments: list[dict[str, Any]] | None = None,
+    *,
+    base_sha: str = "",
 ) -> str:
     """The PR body for an improved run: the author's report, the experiments
     the run actually ran (from the launch ledger), the measured table, and
@@ -2265,7 +2406,7 @@ def pr_body(
         [
             *banner,
             f"Automated improvement attempt on `{config.benchmark}` "
-            f"(agent `{config.agent_id}`, one hypothesis per PR).",
+            f"(agent `{config.agent_id}`, one idea per PR).",
             "",
             "## Research report",
             "",
@@ -2280,8 +2421,9 @@ def pr_body(
             f"| candidate | {fmt_metric(result.candidate, display_digits)} |",
             *suite_lines,
             "",
-            "Both numbers were measured by the orchestrator re-running the "
-            "contract's eval command — not taken from the session. CI "
+            f"Base `{base_sha[:7] or 'unknown'}` and candidate "
+            f"`{result.candidate_sha[:7] or 'unknown'}` were both measured by the orchestrator "
+            "using the same eval command read from the base tree — not taken from the session. CI "
             "re-verifies independently.",
             *panel_section,
         ]

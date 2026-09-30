@@ -147,10 +147,26 @@ jobs:
           enable-cache: true
           cache-dependency-glob: kernel/uv.lock
       # Native binary, pinned to the validated version — bump deliberately.
+      - name: Resolve harness pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          reader="kernel/src/outerloop/harness_pins.py"
+          # Compatibility fallback for reviewer refs predating packaged pins:
+          # refuse provisioning explicitly rather than use an empty/latest version.
+          [ -f "$reader" ] || { echo "::error::Harness pins reader missing from reviewer ref; select a ref containing harness pins"; exit 1; }
+          CLAUDE_VERSION=$(python3 "$reader" claude version) || { echo "::error::Cannot read Claude pin"; exit 1; }
+          CODEX_VERSION=$(python3 "$reader" codex version) || { echo "::error::Cannot read Codex pin"; exit 1; }
+          HERMES_REF=$(python3 "$reader" hermes ref) || { echo "::error::Cannot read Hermes ref"; exit 1; }
+          HERMES_SHA=$(python3 "$reader" hermes sha) || { echo "::error::Cannot read Hermes SHA"; exit 1; }
+          for key in CLAUDE_VERSION CODEX_VERSION HERMES_REF HERMES_SHA; do
+            [ -n "${!key}" ] || { echo "::error::Empty harness pin: $key"; exit 1; }
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
+          done
       - name: Install the Claude CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+          curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run the session (emit only — nothing posted from this job)
         working-directory: kernel

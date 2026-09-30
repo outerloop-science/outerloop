@@ -1,7 +1,7 @@
 """HermesHarness command construction and output parsing.
 
 Hermes is not run here; these pin the argv shape (verified against
-hermes-agent v0.20.1 source) and the defensive trajectory parsing."""
+hermes-agent v2026.9.24 source) and the defensive trajectory parsing."""
 
 from __future__ import annotations
 
@@ -9,8 +9,52 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import outerloop.harness as harness_mod
 from outerloop.harness import HermesHarness, _hermes_command, _parse_hermes_result
+from outerloop.hermes_install import HERMES_SHA, hermes_runtime
+
+
+@pytest.fixture(autouse=True)
+def installed_runtime(tmp_path: Path) -> None:
+    for name in ("hermes", "hermes-agent"):
+        repo = tmp_path / name
+        repo.mkdir()
+        (repo / "run_agent.py").touch()
+        runtime = hermes_runtime(repo)
+        (runtime / "venv/bin").mkdir(parents=True)
+        python = runtime / "venv/bin/python"
+        python.write_text("#!/bin/sh\n")
+        python.chmod(0o755)
+        (runtime / ".complete").write_text(HERMES_SHA)
+
+
+@pytest.mark.parametrize("missing", ["runtime", "marker", "wrong-pin", "python", "executable"])
+def test_missing_environment_errors(tmp_path: Path, monkeypatch: Any, missing: str) -> None:
+    import shutil
+
+    repo = tmp_path / "hermes"
+    runtime = hermes_runtime(repo)
+    if missing == "runtime":
+        shutil.rmtree(runtime)
+    elif missing == "marker":
+        (runtime / ".complete").unlink()
+    elif missing == "wrong-pin":
+        (runtime / ".complete").write_text("old-pin")
+    elif missing == "python":
+        (runtime / "venv/bin/python").unlink()
+    else:
+        (runtime / "venv/bin/python").chmod(0o600)
+
+    def unexpected_spawn(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("missing environment must be rejected before spawning")
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", unexpected_spawn)
+    result = HermesHarness(api_key="k", repo_dir=repo).run("brief", tmp_path / "workspace")
+    assert result.is_error
+    assert result.stop_reason == "environment-unavailable"
+    assert "scripts/install_hermes.sh" in result.error_detail
 
 
 def test_command_shape_and_toolsets() -> None:
@@ -24,11 +68,16 @@ def test_command_shape_and_toolsets() -> None:
         ("terminal", "web"),
         (),
     )
-    assert cmd[:4] == ["uv", "run", "--project", "/opt/hermes"]
+    assert cmd[:3] == [
+        str(hermes_runtime(Path("/opt/hermes")) / "venv/bin/python"),
+        "-B",
+        "/opt/hermes/run_agent.py",
+    ]
+    assert "uv" not in cmd
     assert "--save_sample" in cmd
-    # embedded quotes so fire literal-evals a STRING, not a tuple
-    assert '--enabled_toolsets="file"' in cmd
-    assert '--disabled_toolsets="terminal,web"' in cmd
+    # argparse receives comma-separated strings without embedded quotes
+    assert "--enabled_toolsets=file" in cmd
+    assert "--disabled_toolsets=terminal,web" in cmd
     assert "--max_turns=40" in cmd
     assert not any("--base_url" in part for part in cmd)  # empty -> hermes default
 
@@ -249,8 +298,8 @@ def test_parse_sharegpt_trajectory() -> None:
 
 def test_parse_conversations_wrapper() -> None:
     # run_agent.py --save_sample wraps the turns under "conversations"
-    # (run_agent.py:8404, v0.20.1). Missing this key was read as zero turns and
-    # dropped a real verdict as a bogus error — the whole "produced no verdict" bug.
+    # (run_agent.py::_save_sample_trajectory, v2026.9.24). A missing wrapper
+    # used to discard a real verdict as a zero-turn error.
     sample = {
         "conversations": [
             {"from": "human", "value": "the brief"},
@@ -293,8 +342,7 @@ def test_config_write_refuses_symlink(tmp_path: Path) -> None:
 
 def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     # container on: apptainer wraps the identical hermes argv — workspace and
-    # per-run home bound, the pinned repo read-only, key + uv vars via
-    # APPTAINERENV, never argv
+    # per-run home bound, source and runtime read-only, key via env.
     import subprocess
 
     from outerloop.harness import HermesHarness
@@ -308,7 +356,7 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     repo = tmp_path / "hermes-agent"
-    repo.mkdir()
+    repo.mkdir(exist_ok=True)
     ws = tmp_path / "runs" / "r1" / "ws"
     ws.mkdir(parents=True)
     monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
@@ -330,9 +378,113 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     assert "sk-h" not in " ".join(cmd)  # the key never rides argv
     env = captured["env"]
     assert env["APPTAINERENV_OPENROUTER_API_KEY"] == "sk-h"
-    assert env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"].startswith(str(home))
+    runtime = hermes_runtime(repo)
+    assert f"{runtime}:{runtime}:ro" in cmd
+    assert not any("UV_" in key for key in env)
+    assert cmd[cmd.index("/img.sif") + 1] == str(runtime / "venv/bin/python")
     # uncontained: same argv, no apptainer
     captured.clear()
     h2 = HermesHarness(api_key="sk-h", repo_dir=repo, provider="openai-api")
     h2.run("brief", ws)
-    assert captured["command"][0] == "uv"
+    assert captured["command"][0] == str(runtime / "venv/bin/python")
+
+
+def test_author_fresh_and_resume_commands(monkeypatch, tmp_path):
+    from outerloop.role_runner import build_harness, run_role
+    from outerloop.roles import author_spec
+    from outerloop.syscall import install_tool, tool_command
+
+    workspace = tmp_path / "author"
+    workspace.mkdir()
+    install_tool(workspace)
+    home = tmp_path / "author-home"
+    spec = author_spec(max_turns=12, walltime_s=90)
+    harness = build_harness(
+        "author-secret",
+        spec,
+        backend="hermes",
+        hermes_repo=tmp_path / "hermes",
+        hermes_provider="openai",
+        model="gpt-native",
+        container_image="image.sif",
+    )
+    captured = []
+
+    def popen(command, **kwargs):
+        seen = {"command": command, **kwargs}
+        captured.append(seen)
+        return _make_hermes_popen(home, "reply", seen)(command)
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", popen)
+    first = run_role(spec, harness, "ORIGINAL python .outerloop/syscall sleep", workspace)
+    assert first.ok and first.session.num_turns == 1
+    second = run_role(
+        spec,
+        harness,
+        "LATEST_RESULTS python .outerloop/syscall submit",
+        workspace,
+        first.session.session_id,
+    )
+    assert second.ok and second.session.session_id == first.session.session_id
+    for seen in captured:
+        command = seen["command"]
+        assert any(arg.startswith("--enabled_toolsets=file,terminal") for arg in command)
+        assert "--max_turns=12" in command
+        assert f"{workspace}:{workspace}" in command
+        assert f"{home}:{home}" in command
+        assert f"{tmp_path / 'hermes'}:{tmp_path / 'hermes'}:ro" in command
+        assert seen["cwd"] == home
+        assert seen["env"]["APPTAINERENV_OPENAI_API_KEY"] == "author-secret"
+        assert seen["env"]["APPTAINERENV_TERMINAL_CWD"] == str(workspace)
+        assert tool_command(workspace) in seen["brief_text"]
+        assert "python .outerloop/syscall" not in seen["brief_text"]
+    assert "ORIGINAL" in captured[1]["brief_text"]
+    assert "LATEST_RESULTS" in captured[1]["brief_text"]
+
+
+def test_bounded_replay_keeps_brief_tail_and_latest():
+    from outerloop.harness import _bounded_resume_brief
+
+    turns = [{"role": "user", "text": "ORIGINAL_BRIEF"}]
+    turns += [{"role": "assistant", "text": f"OLD_{i}_" + "x" * 200} for i in range(100)]
+    turns += [
+        {"role": "user", "text": "RECENT_INSTRUCTIONS"},
+        {"role": "assistant", "text": "RECENT_REPLY"},
+    ]
+    replay = _bounded_resume_brief(turns, "LATEST_RESULTS", 400)
+    assert len(replay) <= 400
+    for text in ("ORIGINAL_BRIEF", "RECENT_INSTRUCTIONS", "RECENT_REPLY", "LATEST_RESULTS"):
+        assert text in replay
+    assert "100 earlier turns omitted" in replay
+    assert "OLD_" not in replay
+    short = [{"role": "user", "text": "brief"}, {"role": "assistant", "text": "ok"}]
+    complete = _bounded_resume_brief(short, "results", 1000)
+    assert _bounded_resume_brief(short, "results", len(complete)) == complete
+    assert "omitted" not in complete
+    with pytest.raises(ValueError, match="original brief and latest results"):
+        _bounded_resume_brief(turns, "LATEST_RESULTS" * 100, 600)
+
+
+def test_legacy_resume_replay_retry_does_not_rewrite_history(monkeypatch, tmp_path):
+    from outerloop.harness import _resume_transcript_path
+
+    workspace = tmp_path / "legacy"
+    workspace.mkdir()
+    home = tmp_path / "legacy-home"
+    home.mkdir()
+    legacy = json.loads((Path(__file__).parent / "fixtures/hermes_resume_legacy.json").read_text())
+    path = _resume_transcript_path(home, "legacy-id")
+    path.write_text(json.dumps(legacy))
+    original = path.read_bytes()
+    harness = HermesHarness(api_key="key", repo_dir=tmp_path / "hermes", resume_max_chars=10)
+    for _ in range(2):
+        with pytest.raises(harness_mod.ResumeContextBlocked, match="configuration-blocked"):
+            harness.run("latest results", workspace, "legacy-id")
+        assert path.read_bytes() == original
+    harness.resume_max_chars = 1000
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", _make_hermes_popen(home, "reply", seen))
+    assert not harness.run("latest results", workspace, "legacy-id").is_error
+    saved = json.loads(path.read_text())
+    assert saved["turns"][:2] == legacy["turns"]
+    assert "original" in seen["brief_text"] and "latest results" in seen["brief_text"]

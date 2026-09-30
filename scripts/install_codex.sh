@@ -12,19 +12,47 @@
 #                (default: $OUTERLOOP_CODEX_BIN, else ~/.local/bin/codex)
 set -euo pipefail
 
-# Pinned: 0.130.0 is harness-verified — it needs neither the code-mode-host helper
-# that 0.149.x requires nor bubblewrap on the (danger-full-access) author path.
-WANT="0.130.0"
-# SHA256 of codex-x86_64-unknown-linux-musl.tar.gz for rust-v0.130.0. The download
-# is verified against this BEFORE anything in it is extracted or run, so a swapped
-# release asset can never execute on the host (integrity, not self-reported
-# version). To bump WANT: fetch the new asset and `sha256sum` it, then update both.
-WANT_SHA256="16779e7b7857508a768a36d7d4e084eec336ec23946ed70a9b09489b8f861190"
+# A checkout needs no installed kernel; wheels use the same packaged reader.
+pin() {
+    local reader
+    reader="$(dirname "${BASH_SOURCE[0]}")/../src/outerloop/harness_pins.py"
+    if [ -f "$reader" ]; then
+        python3 "$reader" "$@"
+    else
+        python3 -m outerloop.harness_pins "$@"
+    fi
+}
+WANT="$(pin codex version)"
+WANT_SHA256="$(pin codex sha256)"
 TARGET="${1:-${OUTERLOOP_CODEX_BIN:-$HOME/.local/bin/codex}}"
 
-have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][[:alnum:].-]+)?' | head -1 || true)"
+
 if [ "$have" = "$WANT" ]; then
-    echo "install_codex: codex $WANT already at $TARGET"
+    actual=$(sha256sum "$TARGET" | cut -d' ' -f1)
+    expected="$WANT_SHA256 $actual"
+    if [ "$(cat "$TARGET.verified-sha256" 2>/dev/null || true)" = "$expected" ]; then
+        echo "install_codex: codex $WANT already at $TARGET"
+        exit 0
+    fi
+    echo "install_codex: installed sha256 marker missing/mismatch — reinstalling" >&2
+fi
+
+# npm verifies registry integrity and supports operator trial releases.
+if [ -n "${OUTERLOOP_CODEX_VERSION:-}" ]; then
+    export npm_config_cache="${npm_config_cache:-${OUTERLOOP_CACHE_ROOT:-${OUTERLOOP_ROOT:-$HOME/.outerloop}/cache}/npm}"
+    mkdir -p "$(dirname "$TARGET")"
+    npm install --prefix "$TARGET.package" "@openai/codex@$WANT"
+    bin="$(find "$TARGET.package/node_modules" -type f -path '*/codex/codex' | head -1)"
+    [ -n "$bin" ] || { echo "codex native binary missing" >&2; exit 1; }
+    actual=$(sha256sum "$bin" | cut -d' ' -f1)
+    [ "$actual" = "$WANT_SHA256" ] || { echo "codex sha256 mismatch — refusing" >&2; exit 1; }
+    got="$("$bin" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][[:alnum:].-]+)?' | head -1)"
+    [ "$got" = "$WANT" ] || { echo "codex version mismatch: $got" >&2; exit 1; }
+    trap 'rm -f "$TARGET.tmp.$$"' EXIT
+    install -m 0755 "$bin" "$TARGET.tmp.$$"
+    mv -f "$TARGET.tmp.$$" "$TARGET"
+    printf '%s %s\n' "$WANT_SHA256" "$actual" > "$TARGET.verified-sha256"
     exit 0
 fi
 
@@ -65,11 +93,12 @@ mkdir -p "$(dirname "$TARGET")"
 install -m 0755 "$bin" "$staged"
 # secondary sanity (integrity is already the sha256 gate above, so this runs
 # VERIFIED bytes): the staged binary reports the pinned version before the mv
-got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][[:alnum:].-]+)?' | head -1 || true)"
 if [ "$got" != "$WANT" ]; then
     echo "install_codex: downloaded codex reports '$got', wanted '$WANT' — not installing" >&2
     exit 1
 fi
 # atomic replace on the same filesystem: never leave a half-written binary
 mv -f "$staged" "$TARGET"
+printf '%s %s\n' "$WANT_SHA256" "$(sha256sum "$TARGET" | cut -d' ' -f1)" > "$TARGET.verified-sha256"
 echo "install_codex: installed codex $got at $TARGET"

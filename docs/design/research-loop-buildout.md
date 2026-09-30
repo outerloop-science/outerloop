@@ -33,7 +33,8 @@ kernel prescribes none of it.
   the *trigger* to the author; the plumbing underneath is this.
 - **Session resume** — `climb_once`'s resume-entry (`resume_session_id` +
   the inbox, the #129 primitives) is the wake-the-same-session
-  mechanism; `supports_resume` gates backends that cannot (hermes).
+  mechanism; `supports_resume` gates backends that cannot. Hermes resumes
+  through bounded saved-transcript replay.
 - **The composition seam** (#128) — the decide-next policy extraction. Retained
   as internal structure; no further orchestrator decision policies get built on
   it (the author decides next moves now).
@@ -95,7 +96,7 @@ Build notes, not spec (spec lands with the PR):
   delivers (job output into the resumed session, not a gate decision).
 - **The harness seam.** The wake resumes via `resume_session_id` with the
   results (data-fenced) as the continuation. Per-backend: claude and codex
-  both resume; hermes (`supports_resume=False`) cannot host this.
+  both resume; Hermes also resumes via bounded saved-transcript replay.
 - **Containment unchanged.** Launched jobs run agent-directed code with
   eval-grade containment (the `SubprocessEvaluator` posture).
 

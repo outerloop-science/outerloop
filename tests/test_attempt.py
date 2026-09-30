@@ -90,6 +90,7 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
     ledger_dir = tmp_path / "runs" / "tsp-7"
     entries = history(ledger_dir)
     assert [(e["name"], e["job_ids"]) for e in entries] == [("a", ["201"]), ("sw", ["202", "203"])]
+    assert [e["commit"] for e in entries] == ["c" * 40, "c" * 40]
     assert entries[0]["why"] == "probe a" and entries[0]["sleep"] == 1 and entries[0]["jobs"] == []
     assert why_by_job(ledger_dir)["203"] == {
         "name": "sw",
@@ -115,6 +116,53 @@ def test_park_run_appends_the_launch_ledger(tmp_path) -> None:
         ("a", 1000.0),
         ("sw", 1000.0),
     ]
+
+
+@pytest.mark.parametrize(
+    ("phase", "afterany", "launch_afterany", "capacity_wait", "expected_ids"),
+    [
+        pytest.param("author-sleep", "", "", False, [], id="stale-checkpoint"),
+        pytest.param("author-sleep", "afterany:501", "", False, ["501"], id="sleep"),
+        pytest.param(
+            "candidate", "afterany:101:501", "afterany:501", False, ["501"], id="submit-gate"
+        ),
+        pytest.param("candidate", "", "", True, [], id="capacity-no-launch"),
+        pytest.param(
+            "candidate", "afterany:501", "afterany:501", True, ["501"], id="capacity-with-launch"
+        ),
+        pytest.param("candidate", "afterany:101", "", False, [], id="gate-only"),
+    ],
+)
+def test_park_run_records_only_dispatched_launches(
+    tmp_path, phase, afterany, launch_afterany, capacity_wait, expected_ids
+):
+    from outerloop.launchlog import read_ledger
+    from outerloop.syscall import Launch, SyscallRequest
+
+    record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
+    # Retain a descriptor at the stale checkpoint to exercise the ledger
+    # boundary independently of the kernel's discarded-request normalization.
+    parked = RunParked(
+        phase=phase,
+        afterany=afterany,
+        launch_afterany=launch_afterany,
+        capacity_wait=capacity_wait,
+        base_sha="base",
+        candidate_sha="sealed",
+        seed=1,
+        suite_seed=0,
+        syscall=SyscallRequest(launches=(Launch(name="probe", command="x", minutes=5),)),
+        sleeps_used=1,
+    )
+    _park_run(tmp_path, record, parked, "ref", None, 1000)
+    rows = read_ledger(tmp_path / "runs" / "test")
+    if expected_ids:
+        assert len(rows) == 1
+        assert rows[0]["event"] == "submitted"
+        assert rows[0]["job_ids"] == expected_ids
+        assert rows[0]["commit"] == "sealed"
+    else:
+        assert rows == []
 
 
 def test_park_run_keeps_the_submits_report_for_the_wake(tmp_path) -> None:
@@ -826,6 +874,7 @@ def run_live(
     author_key_file="",
     eval_image="",
     submit=False,
+    task_hypothesis="",
 ) -> tuple:
     github = FakeGitHub()
     queue = list(values)
@@ -844,6 +893,7 @@ def run_live(
             author_backend=author_backend,
             author_model=author_model,
             author_key_file=author_key_file,
+            task_hypothesis=task_hypothesis,
             eval_image=eval_image,
         )
     return outcome, github
@@ -908,6 +958,9 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
     assert pr["head"] == "feat/auto/agent-01/tsp-1"
     assert pr["title"] == "[agent] tsp: 13.88 -> 13.1"  # 4 sig figs, not full floats
     assert "measured by the orchestrator" in pr["body"]
+    base_commit = _git(target_repo, "rev-parse", "main").strip()
+    candidate_commit = _git(target_repo, "rev-parse", str(pr["head"])).strip()
+    assert f"Base `{base_commit[:7]}` and candidate `{candidate_commit[:7]}`" in pr["body"]
     # run record went parked with the PR url
     record = load_record(tmp_path / "state", "tsp-1")
     assert record.state == "parked"
@@ -988,7 +1041,7 @@ def test_codex_author_config_error() -> None:
     assert "codex/openai model" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
     assert "codex/openai model" in codex_author_config_error("codex", "", "img.sif")
     # an unknown backend (typo'd env default) is rejected, not silently accepted
-    assert "unknown author backend" in codex_author_config_error("hermes", "m", "img.sif")
+    assert "unknown author backend" in codex_author_config_error("typo", "m", "img.sif")
 
 
 def test_resolve_author_key_file(monkeypatch, tmp_path) -> None:
@@ -3845,6 +3898,10 @@ def test_codex_panel_lens_requires_the_judges_own_key(monkeypatch) -> None:
 
 
 def test_codex_only_panel_never_reads_the_claude_key(monkeypatch, tmp_path) -> None:
+    author = tmp_path / "author"
+    author.write_text("sk-author")
+    author.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(author))
     # a codex-only panel must not demand the (unused) anthropic panel key
     import argparse
 
@@ -3940,6 +3997,10 @@ def test_codex_panel_lens_refuses_to_run_uncontained(monkeypatch, tmp_path) -> N
 
 
 def test_hermes_panel_lens_shares_the_judge_key_rules(monkeypatch, tmp_path) -> None:
+    author = tmp_path / "author"
+    author.write_text("sk-author")
+    author.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_KEY_FILE", str(author))
     # hermes joins the shelled-judge rules via the SAME helper as codex:
     # image required, own key named, never the author's or the claude panel's
     import argparse
@@ -4620,13 +4681,13 @@ def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_
     assert "A session ends whenever" in brief
 
 
-def test_panel_claim_carries_the_one_contribution_mandate() -> None:
+def test_panel_claim_carries_the_one_idea_mandate() -> None:
     from outerloop.attempt import _panel_claim_body
 
     lines = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=True)
-    assert "ONE clean contribution" in lines and "BLOCKING finding" in lines
+    assert "ONE idea" in lines and "BLOCKING" in lines
     plain = _panel_claim_body("tsp", 13.8, 13.1, "report text", lines=False)
-    assert "ONE clean contribution" not in plain
+    assert "ONE idea" not in plain
     assert "measured by the orchestrator" in plain
 
 
@@ -7178,3 +7239,385 @@ def test_contains_tip_falls_back_for_missing_objects(tmp_path, answer):
     ws = Workspace(root=tmp_path)
     assert _contains_tip(ws, "tip", "measured", cast(Any, GitHub()), "o/r") is bool(answer)
     assert not _contains_tip(ws, "tip", "measured")
+
+
+@pytest.mark.parametrize("pr", [False, True])
+@pytest.mark.parametrize("sleep_again", [False, True])
+def test_hermes_resume_configuration_block_preserves_park(
+    tmp_path, monkeypatch, caplog, pr, sleep_again
+):
+    from dataclasses import replace
+
+    from outerloop.climbboard import collect_status
+    from outerloop.harness import HermesHarness, _save_resume_transcript
+    from outerloop.roles import author_spec
+    from outerloop.tick import _sweep_one
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(tmp_path, monkeypatch)
+    record = load_record(state, run_id)
+    record = replace(
+        record,
+        author_backend="hermes",
+        author_model="gpt-native",
+        wake_attempts=1,
+        pr_url="https://github.com/org/pilot/pull/1" if pr else "",
+        deadline=1_000_001,
+    )
+    save_record(state, record, 1_000_000)
+    home = wsroot.parent / f"{wsroot.name}-home"
+    home.mkdir()
+    _save_resume_transcript(
+        home,
+        "s1",
+        [
+            {"role": "user", "text": "original brief"},
+            {"role": "assistant", "text": "previous reply"},
+        ],
+    )
+    monkeypatch.setattr("outerloop.harness.hermes_ready", lambda repo: True)
+    monkeypatch.setenv("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "10")
+    kwargs = dict(
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+        spec=author_spec(),
+    )
+    for _ in range(2):
+        outcome = resume_run(
+            state,
+            run_id,
+            harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"),
+            **kwargs,
+        )
+        assert outcome.outcome == "parked"
+        saved = load_record(state, run_id)
+        assert saved.state == "parked" and saved.wake_attempts == 0
+        assert saved.resume_session_id == "s1" and saved.pr_url == record.pr_url
+        assert saved.stage["candidate_ref"] == record.stage["candidate_ref"]
+        assert _git(wsroot, "rev-parse", str(record.stage["candidate_ref"])).strip()
+        assert int(str(saved.stage["hermes_resume_required_chars"])) > 10
+    status = collect_status(state, record.target, 1_000_100, records=[saved])["runs"][0]
+    assert status["phase"] == "configuration-blocked"
+    assert "OUTERLOOP_HERMES_RESUME_MAX_CHARS" in status["direction"]
+    assert "configuration-blocked" in caplog.text
+    deferred: list[str] = []
+    woke: list[tuple] = []
+
+    def sweep():
+        _sweep_one(
+            state,
+            _fake_dispatch().compute,
+            None,  # type: ignore[arg-type]
+            1_000_200,
+            0,
+            60,
+            False,
+            load_record(state, run_id),
+            "test",
+            lambda *a: woke.append(a),
+            deferred,
+            [],
+            [],
+        )
+
+    sweep()
+    assert deferred == [run_id] and not woke
+    monkeypatch.setenv("OUTERLOOP_HERMES_RESUME_MAX_CHARS", "1000000")
+    sweep()
+    assert woke
+    # The operator's retry reaches the author again using the same saved session.
+    resumed = []
+
+    def successful_resume(self, brief, workspace, resume_session_id=None):
+        resumed.append(resume_session_id)
+        if sleep_again:
+            from outerloop.syscall_cli import main
+
+            assert main(["sleep"], root=workspace) == 0
+        return SessionResult(
+            session_id="s1",
+            final_text="done",
+            cost_usd=0,
+            num_turns=1,
+            stop_reason="end_turn",
+            is_error=False,
+            transcript_path="",
+        )
+
+    monkeypatch.setattr(HermesHarness, "run", successful_resume)
+    resume_run(
+        state, run_id, harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"), **kwargs
+    )
+    assert resumed == ["s1"]
+    saved = load_record(state, run_id)
+    assert "hermes_resume_required_chars" not in saved.stage
+    if sleep_again:
+        assert saved.state == "parked"
+        assert saved.stage["phase"] == "author-sleep"
+        woke.clear()
+        for _ in range(2):
+            sweep()
+        assert not woke
+
+
+@pytest.mark.parametrize("wake", [False, True])
+@pytest.mark.parametrize("failure", ["missing", "dead", "term", "interrupt"])
+def test_endpoint_unavailable_parks_and_recovers(
+    tmp_path, target_repo_syscalls, monkeypatch, wake, failure
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from outerloop.endpoints import EndpointProfile
+    from outerloop.roles import author_spec
+
+    root = tmp_path / "state"
+    dispatch = _fake_dispatch()
+    if wake:
+        outcome, _ = run_live(
+            tmp_path,
+            target_repo_syscalls,
+            edits={".outerloop/syscall.json": json.dumps({"type": "sleep", "launches": []})},
+            values=[],
+            dispatch=dispatch,
+        )
+        assert outcome.outcome == "parked"
+        before = load_record(root, "tsp-1")
+        save_record(root, replace(before, wake_attempts=3), 1_000_001)
+
+    address = tmp_path / "address"
+    key = tmp_path / "key"
+    key.write_text("secret")
+    key.chmod(0o600)
+    endpoint = EndpointProfile("local", "", key, "model", ("anthropic",), address)
+    if failure != "missing":
+        address.write_text("http://localhost:8000/v1")
+    connection = Mock()
+    connection.request.side_effect = {
+        "dead": ConnectionRefusedError(),
+        "term": climb_mod.Terminated(),
+        "interrupt": KeyboardInterrupt(),
+        "missing": None,
+    }[failure]
+    monkeypatch.setattr("outerloop.endpoints.HTTPConnection", Mock(return_value=connection))
+    original = ScriptedHarness.run
+    seen_briefs = []
+
+    def unavailable(self, *args, **kwargs):
+        endpoint.session_url()
+        pytest.fail("author started")
+
+    monkeypatch.setattr(ScriptedHarness, "run", unavailable)
+
+    def resume():
+        return resume_run(
+            root,
+            "tsp-1",
+            dispatch=dispatch,
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100,
+            harness=ScriptedHarness(edits={".outerloop/syscall.json": json.dumps({"type": "end"})}),
+            spec=author_spec(),
+        )
+
+    if wake:
+        outcome = resume()
+    else:
+        outcome, _ = run_live(
+            tmp_path,
+            target_repo_syscalls,
+            edits={},
+            values=[],
+            dispatch=dispatch,
+            task_hypothesis="try a new move",
+        )
+    assert outcome.outcome == "parked"
+    waiting = load_record(root, "tsp-1")
+    assert waiting.state == "parked" and not waiting.ending
+    assert waiting.wake_attempts == (2 if wake else 0)
+    if wake:
+        assert waiting.stage == before.stage
+        assert waiting.resume_session_id == before.resume_session_id
+    else:
+        assert waiting.stage["capacity_wait"] and not waiting.resume_session_id
+    assert _git(root / "runs/tsp-1/ws", "rev-parse", str(waiting.stage["candidate_ref"])).strip()
+
+    # A repeated unavailable wake refunds exactly its own delivery, including
+    # the fresh run which has never had a native session id.
+    save_record(root, replace(waiting, wake_attempts=waiting.wake_attempts + 1), 1_000_101)
+    assert resume().outcome == "parked"
+    assert load_record(root, "tsp-1").wake_attempts == waiting.wake_attempts
+
+    def recovered(self, brief, *args, **kwargs):
+        seen_briefs.append(brief)
+        return original(self, brief, *args, **kwargs)
+
+    monkeypatch.setattr(ScriptedHarness, "run", recovered)
+    assert resume().outcome != "parked"
+    if not wake:
+        assert "try a new move" in seen_briefs[0]
+    assert load_record(root, "tsp-1").ending != "aborted"
+
+
+@pytest.mark.parametrize("entry", ["fresh", "wake"])
+@pytest.mark.parametrize(
+    "ending", ["end", "explicit-end", "outage", "timeout", "budget", "error", "repeat", "crash"]
+)
+def test_scope_rejected_tree_never_reaches_active_line(
+    tmp_path, target_repo_lines, monkeypatch, entry, ending
+):
+    import json
+    from dataclasses import replace
+
+    from outerloop.endpoints import EndpointUnavailable
+    from outerloop.roles import author_spec
+
+    state = tmp_path / "state"
+    run_id = "scope-line"
+    github = FakeGitHub()
+    dispatch = _fake_dispatch()
+    if entry == "wake":
+        with _queued_local([]):
+            parked = live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=state,
+                run_id=run_id,
+                harness=ScriptedHarness(edits={".outerloop/syscall.json": '{"type":"sleep"}'}),
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+                dispatch=dispatch,
+            )
+        assert parked.outcome == "parked"
+
+    tips = []
+
+    class Author:
+        calls = 0
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls += 1
+            if self.calls == 1:
+                tips.append(_git(target_repo_lines, "rev-parse", "agents/agent-01").strip())
+                (workspace / "rejected.txt").write_text("must never be sealed")
+            else:
+                assert self.calls <= (4 if ending == "repeat" else 2)
+                assert (
+                    "Refused:" in brief_text if self.calls == 2 else "Refused again:" in brief_text
+                )
+                if ending == "crash":
+                    raise RuntimeError("harness failed")
+                if ending == "outage":
+                    raise EndpointUnavailable("endpoint unavailable")
+                if ending in ("timeout", "budget", "error"):
+                    return replace(
+                        ScriptedHarness(edits={}).run(brief_text, workspace),
+                        is_error=True,
+                        stop_reason="timeout" if ending == "timeout" else "tool_use",
+                        error_detail="error_max_turns: Reached maximum number of turns (120)"
+                        if ending == "budget"
+                        else "session failed",
+                    )
+            if self.calls == 1 or (ending == "repeat" and self.calls < 4):
+                (workspace / ".outerloop/syscall.json").write_text(
+                    json.dumps({"type": "sleep", "submit": True, "report": "candidate"})
+                )
+            elif ending == "explicit-end":
+                (workspace / ".outerloop/syscall.json").write_text('{"type":"end"}')
+            return ScriptedHarness(edits={}).run(brief_text, workspace)
+
+    def no_snapshot(*args, **kwargs):
+        pytest.fail("rejected tree reached a snapshot")
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", no_snapshot)
+    monkeypatch.setattr(climb_mod, "snapshot_tree", no_snapshot)
+    author = Author()
+    with _queued_local([]):
+        if entry == "fresh":
+            outcome = live_attempt(
+                config=RunConfig(target="org/pilot", benchmark="tsp"),
+                run_root=state,
+                run_id=run_id,
+                harness=author,
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_000.0,
+                created="2026-08-06T00:00:00Z",
+                dispatch=dispatch,
+            )
+        else:
+            outcome = resume_run(
+                state,
+                run_id,
+                dispatch=dispatch,
+                github=github,  # type: ignore[arg-type]
+                bot_auth=NoAuth(),
+                now=1_000_100.0,
+                harness=author,
+                spec=author_spec(),
+            )
+    assert author.calls == (4 if ending == "repeat" else 2)
+    assert outcome.outcome == {
+        "outage": "session-outage",
+        "timeout": "session-budget",
+        "budget": "session-budget",
+        "error": "session-error",
+        "crash": "session-error",
+    }.get(ending, "no-improvement")
+    assert not github.prs
+    assert _git(target_repo_lines, "rev-parse", "agents/agent-01").strip() == tips[0]
+    record = load_record(state, run_id)
+    assert record.state == "ended"
+    assert not record.stage.get("launches_used", 0)
+    assert not record.stage.get("gpu_hours_used", 0)
+
+
+@pytest.mark.parametrize("submitted", [False, True])
+def test_candidate_wake_scope_backstop_never_snapshots_active_line(
+    tmp_path, monkeypatch, submitted
+):
+    from dataclasses import replace
+
+    from outerloop.dispatch import snapshot_tree
+    from outerloop.github import Workspace
+
+    # A legacy park may predate admission checks. Its authoritative scope
+    # verdict must suppress both submitted and ordinary terminal snapshots.
+    state, run_id = _write_parked_candidate(
+        tmp_path, monkeypatch, contract=CONTRACT_LINES, agent_id="agent-01"
+    )
+    record = load_record(state, run_id)
+    root = state / "runs" / run_id / "ws"
+    (root / "rejected.txt").write_text("legacy rejected candidate")
+    snap = snapshot_tree(Workspace(root=root), str(record.stage["base_sha"]))
+    save_record(
+        state,
+        replace(
+            record,
+            stage={
+                **record.stage,
+                "candidate_sha": snap.commit,
+                "candidate_ref": snap.ref,
+                "submitted": submitted,
+            },
+        ),
+        1_000_050.0,
+    )
+
+    def no_snapshot(*args, **kwargs):
+        pytest.fail("scope backstop verdict reached a line snapshot")
+
+    monkeypatch.setattr(climb_mod, "_push_line_snapshot", no_snapshot)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    assert outcome.outcome == ("negative-result" if submitted else "scope-violation")
+    assert load_record(state, run_id).state == "ended"

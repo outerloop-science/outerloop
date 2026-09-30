@@ -303,7 +303,7 @@ outerloop checkout, run `bash scripts/install_claude.sh [target_path]` or
 The default target is `$OUTERLOOP_<BACKEND>_BIN`, else `~/.local/bin/<backend>`.
 Claude 2.1.272 is pinned for Linux x64 (glibc/musl) and ARM64; other platforms
 are refused. Installation needs `curl`, `sha256sum`, and a writable target
-directory. Hermes remains a review backend, provisioned with
+directory. Hermes runs authors and reviewers, provisioned with
 `bash scripts/install_hermes.sh [target_dir]`.
 
 **Host prerequisites for model backends.** From the outerloop checkout:
@@ -312,8 +312,8 @@ directory. Hermes remains a review backend, provisioned with
   `bash scripts/install_claude.sh`.
 - Codex, as author or reviewer: the pinned Codex CLI; install with
   `bash scripts/install_codex.sh`.
-- Hermes, as reviewer only (not an author backend): the pinned hermes-agent
-  source checkout, run through `uv`; install with `bash scripts/install_hermes.sh`.
+- Hermes, as author or reviewer: the pinned hermes-agent
+  source checkout and runtime; install with `bash scripts/install_hermes.sh`.
 
 `init` records the absolute Claude
 or Codex path found on PATH (or in `~/.local/bin`) as `OUTERLOOP_<BACKEND>_BIN`.
@@ -322,7 +322,84 @@ precedence, otherwise it searches PATH, then `~/.local/bin`. A missing or non-ex
 launch before any job runs. After installing or moving it, run
 `outerloop init --force` to record its path again. `--dry-run` prints the launch
 command without checking the CLI. For Hermes, set `REVIEW_HERMES_REPO` to the installed checkout (the installer
-defaults to `~/hermes-agent`); contained review sessions bind its source read-only.
+defaults to `~/hermes-agent`). Full `init` installs a missing Hermes runtime when
+`OUTERLOOP_AUTHOR_BACKEND=hermes`, `OUTERLOOP_PANEL` includes a Hermes lens, or `REVIEW_BACKEND=hermes`, reading the
+shell or existing `.env`, and records `REVIEW_HERMES_REPO`. `--no-install-harness`
+skips this installation too.
+
+To use Hermes as the author, set `OUTERLOOP_AUTHOR_BACKEND=hermes`,
+`OUTERLOOP_AUTHOR_MODEL` to your provider's model ID, `REVIEW_HERMES_REPO`
+to the installed pinned checkout, and `OUTERLOOP_IMAGE` to the agent container.
+Set `REVIEW_HERMES_PROVIDER=openai` or `openrouter`, or select an
+[endpoint profile](endpoints.md) with `OUTERLOOP_AUTHOR_ENDPOINT`.
+Native provider credentials come from `OUTERLOOP_HERMES_KEY_FILE` (default
+`~/.config/outerloop/hermes_key`); endpoint credentials come from the profile.
+Author and judge keys must be separate. The author gets file and terminal
+tools; the kernel owns branches, commits, sleep/wake, and submission as for
+other backends.
+
+Hermes resumes from the saved transcript in the per-run home. Keep that home
+until the run ends. `OUTERLOOP_HERMES_RESUME_MAX_CHARS` (default `120000`, a
+positive character count) bounds the entire replay brief, including new results.
+The kernel preserves the original brief and the latest results verbatim, keeps
+a contiguous tail of recent messages that fits, and reports the number of
+omitted turns (individual user/assistant messages). If the original brief and
+latest results alone exceed the budget, resume fails explicitly; increase the
+setting before retrying. The saved transcript remains complete and unchanged
+in format; omission affects only the prompt sent on that wake.
+
+The pinned Hermes version has native compression (`compression.enabled=true`,
+threshold `0.50`, floored at `0.75` below 512K context;
+`cli-config.yaml.example:631` and `:663`, implemented
+in `agent/context_compressor.py`; defaults parsed in `agent/agent_init.py:1478`).
+It remains enabled for each invocation.
+However, `run_agent.py:1558` starts a fresh `run_conversation(user_query)`;
+`--save_sample` exports a trajectory, not a resumable compressed session.
+Our replay is text read from a brief file, so native compression cannot bound
+what the kernel replays across wakes. The kernel limit above handles that.
+Hermes sample output provides assistant turn counts but no dollar usage;
+`SessionResult.cost_usd` remains zero, so use provider-side spend limits for
+Hermes billing. Kernel execution, turn and walltime limits still apply.
+
+Upgrade compatibility: no record or transcript migration is needed. Existing
+Claude/Codex records and Hermes judge transcripts remain readable, including
+records with absent legacy author fields. The first wake applies the replay
+limit without rewriting old turns. New runs may record `author_backend=hermes`.
+Kernels predating Hermes author support reject those author wakes; the
+endpoint-profile predecessor supports endpoint Hermes wakes but rejects native
+provider Hermes authors. Finish Hermes author runs before rollback. Ended
+records remain readable; no backfill is required.
+
+Hermes resume configuration blocks reuse the existing `parked` run state.
+The optional `stage.hermes_resume_required_chars` field records the minimum replay
+budget after an oversized wake; the session ID, snapshot reference, and pending
+inbox stay intact. Tick logs and live run status show `configuration-blocked` until
+`OUTERLOOP_HERMES_RESUME_MAX_CHARS` reaches that value, then the next tick or manual
+wake retries. Legacy records (including ended records) lacking the field require
+no backfill. Existing full transcripts remain readable. Resolve blocked runs
+before rolling back: older kernels ignore the field and can abort or exhaust
+wake retries on oversized resumes.
+
+The Hermes installer needs `git` and `uv`. After verifying the pinned source it
+installs a uv-managed Python under `<repo>.runtime/<commit-sha>/python` and runs
+`uv sync --frozen --no-install-project` into the sibling runtime's `venv`.
+A completion marker written last makes repeated installs fast. The runtime stays
+outside the checkout so source cleanup cannot remove it. Sessions run
+`<runtime>/venv/bin/python -B <repo>/run_agent.py` directly, with no dependency
+installation or uv cache in the per-run home. Contained sessions bind both source
+and the whole runtime read-only at their original absolute paths, alongside the
+workspace and private per-run home. Install on the same OS and architecture as
+the session image; a runtime built on macOS cannot execute in a Linux image.
+A missing or incomplete runtime is an error naming the installer.
+
+**Upgrading existing Hermes installs:** rerun
+`bash scripts/install_hermes.sh "$REVIEW_HERMES_REPO"` (or full
+`outerloop init --force` with Hermes configured). Source-only installs remain
+valid installer input; the first run builds the runtime, retries complete an
+interrupted build, and later runs reuse it. If a forcibly killed installer leaves
+`<runtime>/.installing`, confirm no installer is running, remove that empty lock
+directory, and retry. Existing run records and resume transcripts are unchanged. Rolling back leaves an unused sibling runtime;
+older kernels retain their previous session-launch behavior.
 
 The quickest path is the guided setup:
 
@@ -464,6 +541,7 @@ default, and a lens that names no model runs the author's model when it
 shares the author's backend, and must name an explicit model on any other
 backend); the author backend is
 `OUTERLOOP_AUTHOR_BACKEND`/`OUTERLOOP_AUTHOR_MODEL`.
+
 For a target-specific GPU lane, add a JSON mapping to the deployment's `.env`:
 
 ```bash
@@ -480,6 +558,30 @@ partition, gres, gpus*, cpus*, mem*, time, qos, nice, array, dependency, begin,
 job-name, output, error, wrap, parsable, chdir) is rejected, since sbatch lets the
 later flag win; so are unknown keys and malformed JSON.
 These are cluster settings, not target contract fields.
+
+`OUTERLOOP_AUTHOR_OVERRIDES` optionally selects an author for individual targets
+and agent slots, without changing judges or other targets:
+
+```sh
+OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":{"backend":"claude","model":"served-model[endpoint=onprem]","slots":["agent-05"]}}'
+```
+
+Each entry requires `backend` (`claude`, `codex`, or `hermes`) and `model`.
+Omit `slots` to cover every author slot on that target; otherwise use the existing
+`agent-01`, `agent-02`, … identities allocated by the contract's authors-abreast
+width. This is deployment configuration, not a contract setting. The setting is
+parsed and validated at startup. Endpoint overrides select their own profile in
+`model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
+the selected backend's author credential. Normal author/judge credential
+separation still applies to the effective override credential.
+
+Queued climbs bind the selection when submitted (before an intake claim is
+launched); direct climbs bind at startup. Backend, model and key path are saved
+in the run record. Changing overrides cannot switch an existing run, even at a
+resume or wake. Panel inheritance and CI reviewers still use the fleet author,
+exactly as for a run without an override. Per-run board details show the author
+backend/model and mark overrides. Remove the setting (or use `{}`) to stop
+selecting overrides for new work.
 
 `OUTERLOOP_CLAUDE_MODEL` names the model for every Claude role (author,
 panel judges, steward) when no explicit or inherited model covers that role:
@@ -519,6 +621,71 @@ until `rm <root>/HOLD_LAUNCHES`, with no chain restart, while the sweep, wake an
 message delivery, GitHub polling, self-merge sweep, board, and ending records
 continue; existing runs keep spending, including their panels, author sessions,
 and the authors' own `launch` submissions.
+
+**Live operator ceilings.** Create `<root>/limits.toml` to limit this fleet while
+leaving target contracts under their normal review process:
+
+```toml
+[defaults]
+max_gpus = 8
+max_active_attempts = 2
+
+[targets."owner/repo"]
+max_gpus = 4
+max_active_attempts = 1
+```
+
+`defaults.max_gpus` caps aggregate fleet usage across this state root. Defaults
+also bound each target; target sections can only tighten them. Attempt widths
+are the minimum of the operator values and the contract's existing
+`max_active_attempts` (default one). GPU ceilings are operator-only;
+`budgets.max_concurrent_gpus` still separately clamps each experiment sweep.
+Omitted keys impose no ceiling; zero stops new admissions for that resource.
+Without a limits file, admission follows the existing behavior and does not
+query scheduler usage or scan run records for limits.
+
+Limits are re-read at admission, including inside existing runs. Invalid TOML,
+unknown keys, unreadable files, negative values, and non-integers are logged and
+fail closed for GPU work and fresh attempts. Replace the file atomically.
+
+Each GPU check with a finite ceiling takes one scheduler snapshot of the user's
+running and pending jobs. A job belongs to this fleet only when its name
+contains a full run ID present under `<root>/runs/`; that run's `state.json`
+provides the target, cached for this check. Unrelated operator jobs do not count.
+Experiments, sweeps, evaluations and wakes retain their full run IDs in names.
+Fresh author/steward session wrappers currently request zero GPUs. The CLI
+starter, tick chain and resident successor are also CPU-only control-plane
+jobs: their zero-GPU submissions are exempt, so a closed ceiling can still be
+observed and retried. Requeued and preempted jobs count as the scheduler
+currently reports them, without consulting job history.
+
+Arrays count running tasks plus pending tasks up to the array throttle (or all
+pending tasks without a throttle), multiplied by GPUs per task. A launch batch
+is checked together before submission. There is deliberately no admission lock
+or reservation ledger: **two simultaneous admissions can see the same usage
+and together exceed the ceiling by at most one batch**. More concurrent
+admissions or delayed scheduler visibility can increase this overshoot. These
+are live admission ceilings, not a scheduler-enforced hard quota.
+
+Over-ceiling experiments receive an author-visible refusal without launch or
+GPU-hour charges. Evaluations wait for capacity; a combined submit retains its
+waiting evaluation while refusing its over-cap sibling launches. Waiting does
+not exhaust wake retries. Lowering a ceiling never cancels existing jobs.
+Scheduler query failures block GPU admissions only when a finite ceiling
+applies; CPU jobs and admissions without a GPU ceiling continue.
+
+`outerloop limits --root <root>` is read-only and reports operator ceilings,
+current fleet/target GPU usage, malformed files and scheduler query failures.
+Attempt widths additionally clamp to the contract loaded by the tick; the
+command does not fetch contracts or retain a contract cache.
+
+**Upgrading:** no admission ledger, lock or contract schema change is needed.
+The optional `stage.capacity_wait` flag defaults to the existing retry policy
+when absent. Old state records need only their existing target field for
+attribution. Older job names that omit or truncate their run ID cannot be
+attributed; drain those jobs and upgrade all submitters before relying on
+ceilings. Local compute stores transient scheduler metadata for active jobs;
+older local jobs lack it and should likewise drain before enabling a ceiling.
 
 **Local mode without an image.** On a machine with no Apptainer image,
 `OUTERLOOP_COMPUTE=local` still runs. Sessions run under the harness's own
@@ -700,3 +867,60 @@ Update the fleet by commit. Before deploying this stage, check every fleet's
 `legacy follow-up records: N` tick line and require zero. Old records migrate
 on read; an older kernel cannot read the new state names. The incompatibility
 is confined to the state field, so rollbacks need state translation.
+
+
+## Harness pins and upgrades
+
+`src/outerloop/harnesses.toml` ships in the wheel and owns harness versions and
+integrity pins. Installers and CI read it through `outerloop.harness_pins`.
+Bump the version and its checksums together; Hermes needs both its tag and the
+full dereferenced commit SHA.
+
+Run `outerloop harness status` to inspect all three harnesses without installing
+anything. It reports the kernel pin, installed version (Hermes source SHA and
+runtime `.complete`), path, `DRIFT`, and any `override`. Drift compares against
+the effective operator override when one is present.
+
+`outerloop harness upgrade [claude codex hermes]` defaults to all three.
+`--used` selects the author, configured review/panel backends, and the Claude
+steward when configured. The deployment runs this after a successful kernel
+sync; a failure is logged without preventing the tick.
+
+Each changed harness is built below `<state-root>/harnesses/<name>/<version>/`
+in its final location. Verification precedes an atomic replacement of the
+operator `.env`, recording `OUTERLOOP_CLAUDE_BIN`, `OUTERLOOP_CODEX_BIN`, or
+`REVIEW_HERMES_REPO`. Old installations remain available; failed candidates
+are deleted and never become active. Each harness has a 300-second deadline
+(configurable with exported `OUTERLOOP_HARNESS_TIMEOUT_SECONDS`); timeout kills
+the installer process group and retains the old path. Failures back off from
+five minutes to one day per desired pin, recorded under
+`<cache-root>/harness-failures/`. Concurrent upgrades are refused. Repeating a completed
+upgrade does no installation work. Shell settings take precedence over `.env`;
+clear an explicitly exported binary path to use the path recorded by upgrade.
+
+For a trial release, set `OUTERLOOP_CLAUDE_VERSION` or
+`OUTERLOOP_CODEX_VERSION` in `~/.config/outerloop/.env`, then upgrade that harness.
+Each version override requires its matching `OUTERLOOP_CLAUDE_SHA256` or
+`OUTERLOOP_CODEX_SHA256`: the SHA-256 of the platform native executable.
+Codex trials require npm; its cache uses `<cache-root>/npm`, preserving an
+explicit `npm_config_cache`. Missing hashes are refused by status and upgrade. Hermes trials
+require both `OUTERLOOP_HERMES_REF` and `OUTERLOOP_HERMES_SHA`; tag-to-commit
+verification remains mandatory. Remove the override and upgrade to return to
+the kernel pin. The existing installers' platform restrictions still apply.
+
+Compatibility: legacy direct binary paths and source-only Hermes checkouts are
+accepted as inputs; missing runtimes are reported as drift and provisioned in a
+new location. Legacy Codex binaries without a verified hash marker are
+reinstalled in a new location; older kernels ignore the new marker and retry
+state files. The `.env` assignment format and Hermes `<source>.runtime/<sha>`
+layout are unchanged. Running jobs keep their original paths and artifacts;
+run records, PRs, and parked work need no migration. New kernels select a Hermes
+runtime using its installed source SHA, so a failed update keeps the previous
+runtime usable. When rolling back to an older kernel with a different Hermes
+pin, restore its previous `REVIEW_HERMES_REPO` path as well: older kernels select
+runtimes by their own pin. Retained old paths can also be restored manually for
+Claude and Codex. Disable automatic kernel updates while holding a rollback.
+
+`OUTERLOOP_CACHE_ROOT` directs fleet caches away from home (default:
+`<state-root>/cache`). Explicit `XDG_CACHE_HOME`, `WANDB_DIR`, `WANDB_CACHE_DIR`,
+`UV_CACHE_DIR`, and `APPTAINER_CACHEDIR` values take precedence.

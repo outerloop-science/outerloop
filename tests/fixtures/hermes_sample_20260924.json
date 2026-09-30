@@ -1,0 +1,28 @@
+{
+  "conversations": [
+    {
+      "from": "system",
+      "value": "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. You may call one or more functions to assist with the user query. If available tools are not relevant in assisting with user query, just respond in natural conversational language. Don't make assumptions about what values to plug into functions. After calling & executing the functions, you will be provided with function results within <tool_response> </tool_response> XML tags. Here are the available tools:\n<tools>\n[]\n</tools>\nFor each function call return a JSON object, with the following pydantic model json schema for each:\n{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, 'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\nEach function call should be enclosed within <tool_call> </tool_call> XML tags.\nExample:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
+    },
+    {
+      "from": "human",
+      "value": "Inspect the workspace."
+    },
+    {
+      "from": "gpt",
+      "value": "<think>\nRead the file first.\n</think>\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"README.md\"}}\n</tool_call>"
+    },
+    {
+      "from": "tool",
+      "value": "<tool_response>\n{\"tool_call_id\": \"call_1\", \"name\": \"read_file\", \"content\": \"Example project\"}\n</tool_response>"
+    },
+    {
+      "from": "gpt",
+      "value": "<think>\n</think>\nChecked the workspace."
+    }
+  ],
+  "timestamp": "2026-09-24T00:00:00",
+  "model": "open-model",
+  "completed": true,
+  "query": "Inspect the workspace."
+}

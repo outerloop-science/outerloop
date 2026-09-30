@@ -152,3 +152,28 @@ def test_experiments_rows_come_from_the_ledger_including_each_jobs_last_line(
     ]
     assert rows[1]["why"] == "" and rows[1]["array"] == 2 and rows[1]["concurrency"] == 1
     assert len(history(tmp_path)[0]["jobs"]) == 1  # the duplicate ended row was skipped
+
+
+def test_legacy_commit_tolerance_and_retry(tmp_path: Path) -> None:
+    from outerloop.launchlog import experiments_rows
+    from outerloop.orchestrator import _experiments_section
+
+    legacy = Path(__file__).parent / "fixtures" / "launches-before-provenance.jsonl"
+    (tmp_path / LEDGER).write_bytes(legacy.read_bytes())
+    launch = (Launch(name="probe", command="x", minutes=5),)
+    for _ in range(2):
+        rows = experiments_rows(tmp_path)
+        assert rows[0]["commit"] == ""
+        assert "| unknown |" in "\n".join(_experiments_section(rows))
+        # Re-parking a pre-upgrade launch must not invent provenance.
+        append_submitted(tmp_path, sleep=1, launches=launch, job_ids=["1"], at=30, commit="a" * 40)
+        assert (tmp_path / LEDGER).read_bytes() == legacy.read_bytes()
+    # An interrupted append is skipped; retry writes the new launch once.
+    with (tmp_path / LEDGER).open("a") as fh:
+        fh.write('{"event":"submitted"')
+    for _ in range(2):
+        append_submitted(tmp_path, sleep=2, launches=launch, job_ids=["2"], at=40, commit="b" * 40)
+    rows = experiments_rows(tmp_path)
+    assert [r["commit"] for r in rows] == ["", "b" * 40]
+    rendered = "\n".join(_experiments_section(rows))
+    assert "| unknown |" in rendered and "| bbbbbbb |" in rendered

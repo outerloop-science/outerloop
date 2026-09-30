@@ -15,9 +15,11 @@ round cap. Multi-opinion is the lens list: same kind, different backends.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from outerloop.endpoints import resolve_endpoint, split_endpoint
 from outerloop.harness import Harness, backend_id
 from outerloop.review import Finding, PullRequest, build_agent_brief
 from outerloop.role_runner import run_role
@@ -36,7 +38,7 @@ LENS_KINDS = ("verify", "review")
 
 
 def parse_lenses(panel: str, default_backend: str = "claude") -> tuple[tuple[str, str, str], ...]:
-    """Parse a panel spec — comma-separated ``kind[:backend[:model]]`` — into
+    """Parse a panel spec — comma-separated ``kind[:backend[:model[endpoint=profile]]]`` — into
     (kind, backend, model) triples, or raise ValueError. A lens that names no
     backend takes `default_backend`: callers pass the author's backend, so a
     codex deployment gets codex judges by default and a claude deployment
@@ -64,12 +66,13 @@ def parse_lenses(panel: str, default_backend: str = "claude") -> tuple[tuple[str
             raise ValueError(
                 f"panel entry {entry!r}: unknown backend {backend!r} (claude, codex, hermes)"
             )
+        split_endpoint(model)  # Validate syntax without reading deployment credentials.
         entries.append((kind, backend, model))
     return tuple(entries)
 
 
 def resolve_lenses(
-    panel: str, author_backend: str, author_model: str
+    panel: str, author_backend: str, author_model: str, *, environ: Mapping[str, str] | None = None
 ) -> tuple[tuple[str, str, str], ...]:
     """Resolve lenses against their author; other backends require an explicit model.
 
@@ -83,9 +86,18 @@ def resolve_lenses(
     # model nobody chose
     resolved = []
     for kind, backend, model in parsed:
+        served, profile = resolve_endpoint(model, backend, environ=environ)
+        if profile:
+            resolved.append((kind, backend, f"{served}[endpoint={profile.name}]"))
+            continue
         if not model:
             if backend == author_backend:
                 # inherit, even when the author itself runs its CLI's default
+                if split_endpoint(author_model)[1]:
+                    raise ValueError(
+                        f"panel lens {kind}:{backend} must select its own judge endpoint "
+                        "(<model>[endpoint=<profile>]) or an explicit model"
+                    )
                 model = author_model
             else:
                 raise ValueError(

@@ -98,7 +98,7 @@ needs inbound access is a human with the runbook.
 
 ## Task granularity
 
-A task is **one hypothesis, one PR** — but its evaluation scope follows the
+A task is **one idea, one PR** — but its evaluation scope follows the
 target's artifact structure, declared in the contract:
 
 - *Independent solvers* (the pilot): scope = a single benchmark; one PR moves
@@ -114,8 +114,9 @@ Scope checks compare the full candidate tree with its merge-base against the fet
 base tip, so changes made only on the base branch do not count as author edits.
 Missing shared history refuses publication; the separate base-tip ancestry check still applies.
 
-What stays absolute regardless of scope: one hypothesis per PR (attributable
-diffs), full-scope reporting, and **cross-target separation** — separate clones,
+What stays absolute regardless of scope: one idea per PR (an idea may bring
+the few changes it needs, and the report attributes each one), full-scope
+reporting, and **cross-target separation** — separate clones,
 branches, budgets, and report streams per target (`runs/<target>/`,
 `lessons/<target>.md`), never cross-target code reuse. The only global artifact
 is this machinery; the only cross-project channel is process lessons in the

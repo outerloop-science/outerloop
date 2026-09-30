@@ -248,3 +248,122 @@ def test_backends_say_whether_jobs_need_lanes() -> None:
 
     assert SlurmCompute(runner=lambda argv, timeout_s: CommandResult(0, "", "")).has_lanes is True
     assert LocalCompute().has_lanes is False
+
+
+def slurm_number(number: int, *, is_set: bool = True) -> dict[str, int | bool]:
+    return {"set": is_set, "infinite": False, "number": number}
+
+
+@pytest.fixture
+def squeue_2505_jobs():
+    """Synthetic scheduler records; no deployment data."""
+    run = "example-20260101-120000-agent-01"
+
+    def job(job_id, suffix, state, *, parent=0, task=None, tasks="", throttle=0, tres=""):
+        return {
+            "job_id": job_id,
+            "name": f"{run}-{suffix}",
+            "job_state": [state],
+            "array_job_id": slurm_number(parent),
+            "array_task_id": slurm_number(task or 0, is_set=task is not None),
+            "array_task_string": tasks,
+            "array_max_tasks": slurm_number(throttle),
+            "node_count": slurm_number(1),
+            "partition": "gpu-large",
+            "tres_per_node": tres,
+            "tres_per_job": "",
+            "tres_per_task": "cpu=2",
+            "tres_req_str": "cpu=2,mem=4G,node=1" + (",gres/gpu=2" if tres else ""),
+            "tres_alloc_str": "cpu=2,gres/gpu=2" if tres and state == "RUNNING" else "",
+            "gres_detail": ["gpu:a100:2(IDX:0-1)"] if tres and state == "RUNNING" else [],
+        }
+
+    return [
+        job(100, "cpu", "RUNNING"),
+        job(201, "sweep", "RUNNING", parent=200, task=0, throttle=2, tres="gres/gpu:2"),
+        job(202, "sweep", "RUNNING", parent=200, task=1, throttle=2, tres="gres/gpu:2"),
+        job(200, "sweep", "PENDING", parent=200, tasks="3-7%2", throttle=2, tres="gres/gpu:2"),
+        job(300, "typed", "RUNNING", tres="gres/gpu:a100:2"),
+        job(400, "single", "PENDING", tres="gres/gpu:2"),
+    ]
+
+
+@pytest.mark.parametrize("plain", [False, True], ids=["slurm-25.05", "legacy"])
+@pytest.mark.parametrize(
+    "running,throttle,expected",
+    [(2, 2, 4), (1, 2, 4), (0, 2, 4), (1, 0, 12), (2, 1, 4), (1, 10, 12)],
+)
+def test_parse_gpu_jobs_array_remainder(squeue_2505_jobs, plain, running, throttle, expected):
+    import json
+
+    from outerloop.compute import parse_gpu_jobs
+
+    rows = squeue_2505_jobs
+    rows = [rows[0], *rows[1 : 1 + running], *rows[3:]]
+    for row in rows:
+        if row["array_job_id"]["number"]:
+            row["array_max_tasks"] = slurm_number(throttle)
+        if plain:
+            for key, value in row.items():
+                if isinstance(value, dict):
+                    row[key] = value["number"] if value["set"] else 0
+            row["job_state"] = row["job_state"][0]
+    run = "example-20260101-120000-agent-01"
+    assert parse_gpu_jobs(json.dumps({"jobs": rows})) == [
+        (f"{run}-sweep", expected),
+        (f"{run}-typed", 2),
+        (f"{run}-single", 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields,expected",
+    [
+        ({"tres_per_node": "gres/gpu:a100:2", "node_count": slurm_number(3)}, 6),
+        ({"tres_per_node": "gres/gpu:1", "node_count": 3}, 3),
+        ({"tres_per_job": "gres/gpu:a100:2", "node_count": slurm_number(3)}, 2),
+        ({"tres_req_str": "cpu=4,gres/gpu:a100=2"}, 2),
+        ({"tres_req_str": "gres/gpu=2,gres/gpu:a100=2"}, 2),
+        ({"tres_per_node": "cpu:4", "tres_req_str": "gres/gpu=2"}, 2),
+        ({"tres_per_node": "gres/gpu:0", "tres_req_str": "gres/gpu=2"}, 0),
+        ({"tres_alloc_str": "cpu=4"}, 0),
+        ({"array_job_id": slurm_number(999, is_set=False), "tres_req_str": "gres/gpu=1"}, 1),
+    ],
+)
+def test_parse_gpu_jobs_resources(fields, expected):
+    import json
+
+    from outerloop.compute import parse_gpu_jobs
+
+    row = {"job_id": 100, "name": "example-run-launch", "job_state": ["RUNNING"], **fields}
+    assert parse_gpu_jobs(json.dumps({"jobs": [row]})) == (
+        [("example-run-launch", expected)] if expected else []
+    )
+
+
+@pytest.mark.parametrize(
+    "states,expected",
+    [
+        (["RUNNING"], 2),
+        (["PENDING"], 2),
+        (["CONFIGURING"], 2),
+        (["COMPLETING"], 2),
+        (["RUNNING", "COMPLETING"], 2),
+        (["COMPLETED"], 0),
+        (["FAILED"], 0),
+        (["PREEMPTED"], 0),
+        (["SUSPENDED"], 0),
+        (["UNKNOWN"], 0),
+        ([], 0),
+    ],
+)
+def test_parse_gpu_jobs_states(squeue_2505_jobs, states, expected):
+    import json
+
+    from outerloop.compute import parse_gpu_jobs
+
+    row = squeue_2505_jobs[-1]
+    row["job_state"] = states
+    assert parse_gpu_jobs(json.dumps({"jobs": [row]})) == (
+        [(row["name"], expected)] if expected else []
+    )

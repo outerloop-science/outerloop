@@ -552,7 +552,7 @@ def eval_job_spec(
         if given is not None and given < EVAL_MEM_GB_PER_GPU * gpus:
             mem = f"{EVAL_MEM_GB_PER_GPU * gpus}G"
     return JobSpec(
-        job_name=job_name[:60],
+        job_name=job_name,
         account=account,
         qos=qos,
         partition=partition,

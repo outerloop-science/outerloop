@@ -1,0 +1,2 @@
+{"event":"submitted","sleep":1,"name":"probe","why":"test idea","minutes":5,"array":1,"concurrency":0,"job_ids":["1"],"at":10.0}
+{"event":"ended","sleep":1,"name":"probe","exit_code":0,"state":"","elapsed":60,"last_line":"4096","at":20.0}

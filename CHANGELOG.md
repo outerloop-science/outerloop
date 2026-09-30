@@ -6,18 +6,147 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Launch, submit, and stale-submit checkpoint scope violations now refuse every
+  request and resume the author with the offending paths and bounded allowed
+  scope in the kernel inbox. Later refusals say “Refused again:”. Refusals
+  repeat and never end the run; session walltime and contract sleep, launch,
+  and GPU-hour budgets bound the loop. Refusal seals nothing, runs no jobs or
+  measurements, and spends no request budget. The authoritative measurement
+  scope check remains terminal. Abandoning a refused tree ends normally
+  without measurement, a line snapshot, or a push; outage and budget endings
+  also preserve the rejection. Scope admission precedes malformed request
+  and budget refusals.
+- Upgrading: no action or backfill needed. Scope refusals use the existing
+  kernel note payload and refusal keys; old inboxes, ended runs, and in-flight
+  runs remain readable without rewriting delivered messages. The next request
+  uses the new admission behavior. The rejection flag is in-memory only;
+  no run-record fields change; rollback is
+  safe and restores terminal scope admission checks.
+
+- Deployment author overrides select a backend/model per target or agent slot,
+  bind it to each run, and leave panel and CI reviewer inheritance on the fleet
+  author. Per-run board details identify the effective author and overrides.
+- Endpoint profiles accept an absolute `URL_FILE` instead of `URL`, reading bare
+  URLs or JSON addresses on every session. Missing files, failed bounded health
+  checks, and interrupted checks defer sessions without spending wake retries.
+  Init provisions fleet and override backends before validating prerequisites.
+- Upgrading: no action or backfill needed; records without `author_overridden`
+  retain their existing author and panel behavior, including ended runs. New
+  overridden records reuse the saved author route and add this optional flag.
+  Rollback reads the records but loses fleet-only panel inheritance for overrides;
+  finish overridden runs and fresh endpoint capacity parks before rolling back.
+  Fresh endpoint deferrals reuse author-sleep capacity parks without a session ID;
+  older kernels cannot resume those parks.
+
+- Launch ledger submissions require dispatched launch job IDs, preventing stale
+  checkpoints from attributing discarded launches to a commit. Gate capacity
+  waits still record any dispatched sibling launches. Existing ledger rows and
+  run records remain readable and unchanged; no schema change or backfill.
+
+- PR measurement tables identify the base and candidate commits and the shared
+  eval command from the base tree; experiment tables identify launch commits.
+  Verify and review briefs caution against comparing numbers across commits
+  without checking history.
+- Upgrading: no action or backfill needed; the first tick tolerates launch ledger
+  rows without `commit` (shown as unknown), including ended runs and in-flight
+  PRs. New launch records include the sealed commit; existing records and PR
+  bodies are not rewritten. Rollback is safe: older readers ignore the added
+  field.
+
+- Hermes author resumes that exceed the replay budget stay parked with a
+  configuration-blocked status, retaining their session and snapshot without
+  consuming wake retries. Author/judge separation checks effective key paths
+  and credential values before constructing sessions; init rejects incomplete
+  Hermes configuration only for Hermes authors. Endpoint author credentials are
+  shared by attempt and tick preflight, including native panel key comparisons.
+- Upgrading: no action or backfill needed; legacy records without
+  `stage.hermes_resume_required_chars` are unblocked. The first oversized wake
+  records the required budget; raising `OUTERLOOP_HERMES_RESUME_MAX_CHARS` lets
+  the next tick or wake resume. Successful resumes and endings clear the marker,
+  so later normal sleeps are not configuration wakes. Before rollback, resolve
+  blocked runs: older kernels ignore this optional field and may consume retries
+  or abort them.
+
+- Hermes is an author peer: init, native provider/endpoint validation, contained
+  fresh and resumed sessions, absolute syscall commands, and separate author keys.
+  Resume replay preserves the original brief and latest results within
+  `OUTERLOOP_HERMES_RESUME_MAX_CHARS` (default 120000), with explicit omission counts.
+- Upgrading: no backfill; existing records and full saved transcripts remain
+  readable. The first Hermes wake applies the replay bound. Finish Hermes author
+  runs before rollback: older kernels reject unsupported Hermes author wakes
+  (the endpoint-profile predecessor accepts endpoint routes only). Ended records
+  remain readable. See [Hermes setup and compatibility](docs/install.md).
+
+- Endpoint profiles declare compatible APIs and use `model[endpoint=profile]`
+  selectors, preserving native vendor model IDs. Judge credentials enforce file
+  separation; verdicts redact the session key before posting or aggregation.
+- Upgrading: legacy records missing model/route fields retain native routing;
+  missing native model configuration fails closed instead of adopting fleet endpoints.
+
+
+- Named, file-authenticated endpoint profiles work for authors, panel lenses,
+  and standalone reviewers on Claude Code, Codex, and Hermes. Sessions use each
+  backend's native API configuration; keys reach contained sessions through env,
+  never argv. See [endpoint settings and validation](docs/endpoints.md).
+- Hermes is pinned to v2026.9.24 (`f97608f178d1ffeca59860195ab7da295f7c8e5f`).
+  Remove Fire quoting for its new argparse entrypoint, enable
+  `model.reasoning_echo` for endpoint profiles, and sanitize its instruction-file
+  aliases in judge checkouts.
+- Upgrading: existing runs need no backfill; the first tick validates endpoint
+  selections without changing legacy routes. New endpoint authors save
+  `model[endpoint=profile]` selectors; keep those profiles until runs finish, and finish
+  endpoint runs before rolling back. Hermes source/runtime must be upgraded
+  with the harness. See [compatibility and rollback](docs/endpoints.md#upgrade-and-rollback).
+
+### Fixed
+
+- Manual harness upgrades honor `--root`, environment, and `.env` state roots. Retry records are replaced atomically; unreadable or invalid records are logged and ignored. Deploy loads the configured cache root before selecting the uv cache.
+- Harness installers reinstall changed binaries rather than refusing repair; Codex checks its installed binary digest separately from the archive pin, and Hermes runtime reuse checks the interpreter digest.
+
+- Harness upgrades enforce a per-harness deadline, kill timed-out installer process groups, restrict installer environments, and back off failed pins while deleting failed candidates. Overrides require explicit integrity hashes; installed binaries are hash-checked before reuse. Workflow pin resolution fails explicitly on older reviewer refs without a pins reader.
+
+- Tick entrypoints export a state-root uv cache before running Python. Fleet job environments preserve explicit cache paths and default per-user caches below `OUTERLOOP_CACHE_ROOT` (or the state root).
+
+- Run-owned launch, evaluation, and wake job names stay within 128 characters, retaining a stable run key when shortened. Normal names stay unchanged; GPU usage, queue attribution, evaluation deduplication, and flight retention recognize the bounded names.
+- Intake admission counts queued attempts using the existing pending markers, including jobs queued beyond the marker TTL.
+
+- GPU accounting accepts Slurm 25.05 wrapped numeric fields and legacy integers, recognizes typed GPU requests and per-node counts, and limits pending array remainders to available throttle slots.
+- CI Hermes provisioning uses the shared runtime installer with anonymous clone retries and matching workflow pins. A source-specific lock protects checkout and runtime mutations; Python discovery excludes active virtualenvs.
+- Panel preflight checks Hermes runtime readiness and explains installation; full init preserves review model and provider settings with environment precedence.
+
+- Contained Hermes sessions can start with read-only source; sessions no longer reinstall dependencies or attempt an editable project build.
+
 ### Added
 
 - Optional per-target GPU lanes route evals and author launches to deployment-specific partitions, accounts, GPU types, and sbatch flags.
+
+- Packaged `harnesses.toml` owns Claude, Codex, and Hermes pins. `outerloop harness status` reports installed versions, paths, drift, and operator overrides; `harness upgrade [name...]` verifies versioned installations before atomically recording their paths. Successful kernel deploys upgrade only configured backends; failures retain the previous installation.
+
+- Live, tighten-only `<root>/limits.toml` GPU and active-attempt ceilings, with global defaults and per-target sections. Scheduler-reported GPU usage covers pending and running experiments, sweeps, evaluations, and GPU-bearing sessions. Authors receive uncharged launch refusals; evaluations wait for capacity. Lowering a ceiling does not cancel jobs.
+- Read-only `outerloop limits` reports operator ceilings and fleet-owned running/pending GPU usage.
+
+### Changed
+
+- Upgrading: legacy Codex archive-only markers and Hermes runtimes without interpreter digests are reinstalled on upgrade; legacy Hermes runtimes remain launchable. Existing retry records remain readable, and corrupt records are treated as empty. Run state and in-flight PRs are unchanged; rollback leaves the additional digest files unused.
+
+- Upgrading: version overrides now require matching SHA-256 settings; legacy Codex installs without hash markers are reprovisioned. New retry state and hash markers are ignored by older kernels; the first successfully synced tick verifies configured harnesses and records new paths only when needed. Legacy `.env` paths and Hermes runtimes remain readable; old artifacts are retained. See `docs/install.md` for rollback across kernel pins.
+
+- Hermes installs a standalone Python and venv once per pinned commit in a sibling runtime, then launches Python directly. Full `init` provisions configured Hermes judges and records their source path; `--no-install-harness` opts out.
 
 ### Upgrading
 
 - No action needed; OUTERLOOP_GPU_LANES is optional.
 
+- Upgrading: full run-ID names and legacy 60-character queue names remain readable; shortened names use a derived run key without changing run records. Intake adds `@intake-<issue>` files in the existing pending directory; legacy unsuffixed and agent-slot markers remain readable. Drain queued intake jobs from older submitters (which wrote no marker) before relying on attempt ceilings. Upgrade all kernels together; older kernels do not recognize shortened names or intake markers, so drain those jobs before rollback.
+
+- Upgrading: the optional `stage.capacity_wait` flag tolerates missing fields; existing state records need only their target for scheduler attribution. No contract schema change or admission journal. Drain older jobs whose names omit the full run ID (and older local jobs without scheduler metadata), and upgrade all submitters before relying on ceilings. Concurrent admissions may overshoot by one batch for two simultaneous checks; no cross-node admission lock.
+- Upgrading: existing Hermes source-only installs require `bash scripts/install_hermes.sh "$REVIEW_HERMES_REPO"` (or full `outerloop init --force` with Hermes configured) to create the persisted runtime. Run records and resume transcripts are unchanged; rollback leaves the sibling runtime unused.
+
 ## [0.2.1] - 2026-09-25
 
 ### Upgrading
 
+- No action needed; the panel's new `landscape` category is additive, and a reader that does not know it treats it as `other`.
 - No action needed; an author's report-only answer to the panel now updates the PR, and a PR whose panel clears is marked ready for review.
 - No action needed; a PR held only by a base-moved blessing heals on the next tick.
 - No contract change; existing contract files need no edits.
@@ -53,6 +182,9 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A PR is one idea, not one knob: an idea may bring the few changes it needs when the report gives each change's own effect, and a larger idea touching several places is welcome.
+- Authors are told to sweep a hyperparameter or size in one array launch and show the landscape around the chosen value; the panel may block a single-point tuning change that gives no such picture.
+- An idea with a clear mechanism that does not yet beat the best is reported as a success and kept on the author's research line.
 - The sweep rechecks ancestry for PRs held only by a base-moved blessing.
 - Merges performed by the sweep are observed and confirmed in the same tick.
 - Scope checks compare the full candidate tree with its merge-base against the fetched base tip; changes that landed on the base branch never count as the author's, and author edits to the ledger files are refused like any other out-of-scope path.

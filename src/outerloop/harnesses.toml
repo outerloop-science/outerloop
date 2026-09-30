@@ -1,0 +1,14 @@
+# Versions and integrity pins move together.
+[claude]
+version = "2.1.272"
+linux-x64 = "d81396a668eb76fbddb49a2a5841f1b5d7af96b4c1f6500ced92f2c988f5bcd4"
+linux-x64-musl = "e30bb3ac07c4f1c3f63b47312e9a73ba6875256b7768c4cdb784d2b179417489"
+linux-arm64 = "214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b5288c8de"
+
+[codex]
+version = "0.130.0"
+sha256 = "16779e7b7857508a768a36d7d4e084eec336ec23946ed70a9b09489b8f861190"
+
+[hermes]
+ref = "v2026.9.24"
+sha = "f97608f178d1ffeca59860195ab7da295f7c8e5f"

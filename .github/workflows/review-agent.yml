@@ -68,22 +68,40 @@ jobs:
           cache-dependency-glob: .autoresearch/uv.lock
       # Each backend ships as a pinned artifact, same discipline across the
       # three: codex npm pin, claude installer pin, hermes release tag.
+      - name: Resolve harness pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          reader=".autoresearch/src/outerloop/harness_pins.py"
+          # Compatibility fallback for reviewer refs predating packaged pins:
+          # refuse provisioning explicitly rather than use an empty/latest version.
+          [ -f "$reader" ] || { echo "::error::Harness pins reader missing from reviewer ref; select a ref containing harness pins"; exit 1; }
+          CLAUDE_VERSION=$(python3 "$reader" claude version) || { echo "::error::Cannot read Claude pin"; exit 1; }
+          CODEX_VERSION=$(python3 "$reader" codex version) || { echo "::error::Cannot read Codex pin"; exit 1; }
+          HERMES_REF=$(python3 "$reader" hermes ref) || { echo "::error::Cannot read Hermes ref"; exit 1; }
+          HERMES_SHA=$(python3 "$reader" hermes sha) || { echo "::error::Cannot read Hermes SHA"; exit 1; }
+          for key in CLAUDE_VERSION CODEX_VERSION HERMES_REF HERMES_SHA; do
+            [ -n "${!key}" ] || { echo "::error::Empty harness pin: $key"; exit 1; }
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
+          done
       - name: Install the ${{ inputs.backend }} backend
-        env:
-          HERMES_REF: v2026.8.13
         run: |
           set -euo pipefail
           case "$BACKEND" in
             codex)
-              npm install -g @openai/codex@0.130.0
+              npm install -g "@openai/codex@$CODEX_VERSION"
               ;;
             hermes)
-              git clone --depth 1 --branch "$HERMES_REF" \
-                https://github.com/NousResearch/hermes-agent \
-                "$GITHUB_WORKSPACE/hermes-agent"
+              # The kernel checkout supplies the same installer used by local init.
+              # It verifies both pins, retries anonymous clones, and builds the runtime.
+              # advisory: a failed install must not turn CI red; the harness then
+              # reports the missing runtime on the PR
+              bash "$GITHUB_WORKSPACE/.autoresearch/scripts/install_hermes.sh" \
+                "$GITHUB_WORKSPACE/hermes-agent" \
+                || echo "hermes install failed; the review will report it" >&2
               ;;
             *)
-              curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.229
+              curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_VERSION"
               echo "$HOME/.local/bin" >> "$GITHUB_PATH"
               ;;
           esac

@@ -23,6 +23,7 @@ from outerloop.harness import (
     backend_id,
     budget_exhausted,
     outage,
+    redact,
 )
 from outerloop.posting import (
     EXPECTED_FAILURES,
@@ -37,7 +38,7 @@ from outerloop.review import (
     format_review,
     skip_reason,
 )
-from outerloop.role_runner import run_role
+from outerloop.role_runner import redact_role_result, run_role
 from outerloop.roles import review_result_from_role, reviewer_spec
 from outerloop.rolespec import RoleSpec
 
@@ -48,7 +49,19 @@ log = logging.getLogger(__name__)
 # .claude/settings.json hooks that execute commands), so the CLIs rename them
 # before any session starts. Renamed — not deleted — so a judge can still read
 # them as data. Backend-agnostic defense in depth behind claude's --bare.
-INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", ".claude", ".mcp.json")
+INSTRUCTION_FILES = (
+    "CLAUDE.md",
+    "claude.md",
+    "AGENTS.md",
+    "agents.md",
+    "AGENTS.override.md",
+    ".hermes.md",
+    "HERMES.md",
+    ".cursorrules",
+    ".cursor",
+    ".claude",
+    ".mcp.json",
+)
 SANITIZED_SUFFIX = ".pr-data"
 
 
@@ -169,13 +182,16 @@ def run_agent_review(
         from outerloop.syscall import tool_command
 
         brief = build_agent_brief(pr, today, syscall_cmd=tool_command(workspace), lens=lens)
-        role_result = run_role(spec, harness, brief, workspace)
+        role_result = redact_role_result(run_role(spec, harness, brief, workspace), harness)
         review = review_result_from_role(role_result)
         if review is None:
             # No verdict: an errored or refused session, not a clean read. An
             # API outage or a budget-exhausted session (walltime/turns) says so
             # on the thread; other failures are logged, advisory-silent.
-            detail = role_result.error or role_result.session.stop_reason
+            detail = redact(
+                role_result.error or role_result.session.stop_reason,
+                (getattr(harness, "api_key", ""),),
+            )
             log.warning("agent review produced no verdict on %s#%s: %s", repo, number, detail)
             # `detail` is already api-key-redacted by the harness (it owns
             # its own secret), so no secrets are passed here.
@@ -246,7 +262,8 @@ def run_agent_review(
         )
         return round_label
     except EXPECTED_FAILURES as exc:  # advisory: never fail the target repo's CI
-        log.warning("agent review did not complete: %s: %s", type(exc).__name__, exc)
+        detail = redact(f"{type(exc).__name__}: {exc}", (getattr(harness, "api_key", ""),))
+        log.warning("agent review did not complete: %s", detail)
         if emit_path is not None:
             # the invariant holds here too: the workflow backstop would cover
             # a missing file, but with a generic detail — the real failure is
@@ -257,7 +274,7 @@ def run_agent_review(
                     repo,
                     number,
                     kind="skip-stub",
-                    detail=f"{type(exc).__name__}: {exc}",
+                    detail=detail,
                     reviewed_by=backend_id(harness),
                 )
         return None

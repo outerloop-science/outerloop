@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from outerloop.harness import SessionResult
 from outerloop.review import build_agent_brief
 from outerloop.review_agent import run_agent_review
@@ -45,6 +47,8 @@ _DIFF = (
 
 
 class _Harness:
+    api_key: str = ""
+
     def __init__(self, final_text: str, *, is_error: bool = False, detail: str = "") -> None:
         self._text, self._err, self._detail = final_text, is_error, detail
         self.briefs: list[str] = []
@@ -496,3 +500,68 @@ def test_skip_stub_names_its_opinion(tmp_path: Path) -> None:
     )
     (comment,) = client.comments
     assert "advisory review (second opinion — terra)" in comment
+
+
+def test_sanitize_hermes_instruction_aliases(tmp_path):
+    from outerloop.review_agent import sanitize_checkout
+
+    names = (
+        "AGENTS.override.md",
+        "agents.md",
+        "claude.md",
+        ".hermes.md",
+        "HERMES.md",
+        ".cursorrules",
+    )
+    for name in names:
+        (tmp_path / name).write_text("untrusted instructions")
+    (tmp_path / ".cursor" / "rules").mkdir(parents=True)
+    (tmp_path / ".cursor" / "rules" / "rule.mdc").write_text("untrusted instructions")
+    assert sanitize_checkout(tmp_path) == (len(names) + 1, 0)
+    assert sanitize_checkout(tmp_path) == (0, 0)
+    for name in names:
+        assert not (tmp_path / name).exists()
+        assert (tmp_path / (name + ".pr-data")).is_file()
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
+def test_endpoint_verdict_redacted_before_emit_post_and_summarizer(tmp_path, monkeypatch, backend):
+    from outerloop.review import build_summarizer_brief
+    from outerloop.role_runner import build_harness
+    from outerloop.roles import reviewer_spec
+
+    secret = 'endpoint-"secret\\with-escapes'
+    data = json.loads(_FINDINGS)
+    data["notes"] = secret
+    for field in ("summary", "detail"):
+        data["findings"][0][field] = secret
+    for emit in (False, True):
+        writer = _Harness(json.dumps(data))
+        harness = build_harness(
+            secret, reviewer_spec(), backend=backend, model="test-model", hermes_repo=tmp_path
+        )
+        monkeypatch.setattr(
+            type(harness), "run", lambda self, *args, writer=writer: writer.run(*args)
+        )
+        client = _Client()
+        path = tmp_path / "envelope.json"
+        run_agent_review(
+            client,  # type: ignore[arg-type]
+            "owner/repo",
+            1,
+            harness,
+            tmp_path,
+            bot_login="bot",
+            emit_path=path if emit else None,
+        )
+        if emit:
+            envelope = json.loads(path.read_text())
+            assert envelope["data"]["notes"] == "[redacted]"
+            assert envelope["data"]["findings"][0]["summary"] == "[redacted]"
+            assert envelope["data"]["findings"][0]["detail"] == "[redacted]"
+            brief = build_summarizer_brief([envelope], syscall_cmd="tool")
+            assert secret not in brief
+            assert "[redacted]" in brief
+        else:
+            assert secret not in str(client.reviews + client.comments)
+            assert "[redacted]" in str(client.reviews + client.comments)

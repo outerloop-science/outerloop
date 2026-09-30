@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from outerloop import paths
+from outerloop.endpoints import author_model_setting, endpoint_config_key
 from outerloop.harness import HARNESS_INSTALL, default_binary
 
 if TYPE_CHECKING:
@@ -51,12 +52,26 @@ START_KEYS = (
 # local loop has no deploy step, so start exports them once at launch; a test
 # keeps this list identical to tick_deploy.sh's.
 TICK_ENV_KEYS = (
+    "OUTERLOOP_CLAUDE_VERSION",
+    "OUTERLOOP_CODEX_VERSION",
+    "OUTERLOOP_CLAUDE_SHA256",
+    "OUTERLOOP_CODEX_SHA256",
+    "OUTERLOOP_HERMES_REF",
+    "OUTERLOOP_HERMES_SHA",
+    "OUTERLOOP_CACHE_ROOT",
+    "REVIEW_BACKEND",
+    "OUTERLOOP_AUTHOR_ENDPOINT",
+    "REVIEW_ENDPOINT",
+    "REVIEW_MODEL",
     "OUTERLOOP_AUTHOR_BACKEND",
     "OUTERLOOP_AUTHOR_MODEL",
+    "OUTERLOOP_AUTHOR_OVERRIDES",
     "OUTERLOOP_CLAUDE_MODEL",
     "OUTERLOOP_CLAUDE_BIN",
     "OUTERLOOP_CODEX_BIN",
     "OUTERLOOP_CODEX_KEY_FILE",
+    "OUTERLOOP_HERMES_KEY_FILE",
+    "OUTERLOOP_HERMES_RESUME_MAX_CHARS",
     "OUTERLOOP_CLAUDE_KEY_FILE",
     "OUTERLOOP_STEWARD_KEY_FILE",
     "OUTERLOOP_VERTEX_PROJECT",
@@ -113,7 +128,11 @@ def env_file_values(
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if keys is not None and key not in keys:
+        if (
+            keys is not None
+            and key not in keys
+            and not ("OUTERLOOP_AUTHOR_ENDPOINT" in keys and endpoint_config_key(key))
+        ):
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
@@ -387,17 +406,32 @@ def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str])
 
 
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
-    """Check only the configured author's host CLI, using the harness's lookup."""
-    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
-    key = f"OUTERLOOP_{backend.upper()}_BIN"
-    if key not in HARNESS_BIN_KEYS:
-        hint = (
-            f" Hermes is a review backend; install its source with `{HARNESS_INSTALL['hermes']}`."
-            if backend == "hermes"
-            else ""
-        )
-        return f"unsupported author backend {backend!r}; choose claude or codex.{hint}"
+    """Check all configured authors' host CLIs using the harness's lookup."""
+    from outerloop.author_overrides import overrides
+
     env = {**values, **environ}
+    backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
+    backends = dict.fromkeys([backend, *(value.backend for value in overrides(env).values())])
+    for selected in backends:
+        problem = _missing_author_binary(selected, env)
+        if problem:
+            return problem
+    return ""
+
+
+def _missing_author_binary(backend: str, env: Mapping[str, str]) -> str:
+    key = f"OUTERLOOP_{backend.upper()}_BIN"
+    if backend == "hermes":
+        from outerloop.hermes_install import hermes_ready
+
+        repo = env.get("REVIEW_HERMES_REPO", "")
+        return (
+            ""
+            if repo and hermes_ready(Path(repo).expanduser())
+            else "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
+        )
+    if key not in HARNESS_BIN_KEYS:
+        return f"unsupported author backend {backend!r}; choose claude, codex or hermes."
     recorded = env.get(key, "")
     binary = default_binary(backend, env)
     if (not recorded and not os.path.isabs(binary)) or not (
@@ -437,7 +471,11 @@ def missing_panel_model(values: dict[str, str], environ: Mapping[str, str]) -> s
     from outerloop.panel import resolve_lenses
 
     try:
-        resolve_lenses(panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ))
+        env = {**values, **environ}
+        model = author_model_setting(
+            backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ), env
+        )
+        resolve_lenses(panel, backend, model, environ=env)
     except ValueError as exc:
         return str(exc)
     return ""
@@ -454,7 +492,11 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
         return ""
     roles: list[str] = []
     backend = _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, environ).lower() or "claude"
-    if backend == "claude" and not _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ):
+    if (
+        backend == "claude"
+        and not _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+        and not _setting_of("OUTERLOOP_AUTHOR_ENDPOINT", values, environ)
+    ):
         roles.append("the claude author (no OUTERLOOP_AUTHOR_MODEL)")
     panel = _configured("OUTERLOOP_PANEL", values, environ)
     panel = DEFAULT_PANEL if panel is None else panel.strip()
@@ -463,7 +505,10 @@ def missing_claude_model(values: Mapping[str, str], environ: Mapping[str, str]) 
 
         try:
             lenses = resolve_lenses(
-                panel, backend, _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ)
+                panel,
+                backend,
+                _setting_of("OUTERLOOP_AUTHOR_MODEL", values, environ),
+                environ={**values, **environ},
             )
         except ValueError:
             lenses = ()  # missing_panel_model reports invalid panel configuration
@@ -550,7 +595,23 @@ def permissions(args: argparse.Namespace) -> int:
 def start(args: argparse.Namespace) -> int:
     try:
         values = env_file_values(ENV_FILE, START_KEYS + TICK_ENV_KEYS)  # one read for everything
+        from outerloop.author_overrides import validate_overrides
+
+        try:
+            validate_overrides(
+                {**values, **os.environ}, _setting_of("OUTERLOOP_IMAGE", values, os.environ)
+            )
+        except ValueError as exc:
+            raise StartError(str(exc)) from exc
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
+        try:
+            author_model_setting(
+                _setting_of("OUTERLOOP_AUTHOR_BACKEND", values, os.environ) or "claude",
+                _setting_of("OUTERLOOP_AUTHOR_MODEL", values, os.environ),
+                {**values, **os.environ},
+            )
+        except ValueError as exc:
+            raise StartError(str(exc)) from exc
         # the model check holds for --dry-run too: it is configuration, not a host lookup
         problem = problem or missing_claude_model(values, os.environ)
         problem = problem or missing_panel_model(values, os.environ)
@@ -624,7 +685,7 @@ def start(args: argparse.Namespace) -> int:
         # export from .env each tick are exported here once; the shell wins
         env = {**os.environ, **path_env}
         for key, value in values.items():
-            if key in TICK_ENV_KEYS:
+            if key in TICK_ENV_KEYS or endpoint_config_key(key):
                 env.setdefault(key, value)
         env["OUTERLOOP_COMPUTE"] = "local" if plan.mode == "local" else "slurm"
         env.pop("OUTERLOOP_TICK_HOST", None)  # the plan decided; nothing inherited
@@ -823,7 +884,12 @@ def main(argv: list[str] | None = None) -> int:
         "--pre", action="store_true", help="include pre-releases even once a stable exists"
     )
     up.add_argument("--dry-run", action="store_true", help="print the command and exit")
+    sub.add_parser("harness", help="inspect or upgrade harness installations", add_help=False)
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["harness"]:
+        from outerloop.harness_cli import main as harness_main
+
+        return harness_main(argv[1:])
     if argv[:1] == ["tick"]:
         # the tick entry owns its own parser; hand it the rest untouched
         from outerloop import tick
@@ -835,6 +901,8 @@ def main(argv: list[str] | None = None) -> int:
         from outerloop import init
 
         return init.main(argv[1:])
+    p = sub.add_parser("limits", help="show live operator ceilings and fleet GPU usage")
+    p.add_argument("--root", help="state root (defaults to OUTERLOOP_ROOT or ~/.outerloop)")
     p = sub.add_parser("permissions", help="check and update the App's required permissions")
     p.add_argument("--open", action="store_true", help="open the next permission settings page")
     p = sub.add_parser("migrate-ledger", help="seed research-log from a pinned main ledger")
@@ -847,6 +915,23 @@ def main(argv: list[str] | None = None) -> int:
         from outerloop.ledger_migrate import migrate
 
         return migrate(args)
+    if args.command == "limits":
+        from outerloop.compute import compute_from_env
+        from outerloop.operator_limits import CapacityError, report
+
+        values = env_file_values(keys=None)
+        root = Path(
+            args.root
+            or os.environ.get("OUTERLOOP_ROOT")
+            or values.get("OUTERLOOP_ROOT")
+            or DEFAULT_LOCAL_ROOT
+        ).expanduser()
+        try:
+            print(report(root, compute_from_env()))
+        except CapacityError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "permissions":
         return permissions(args)
     if args.command == "upgrade":

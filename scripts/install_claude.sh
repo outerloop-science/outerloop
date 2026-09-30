@@ -12,36 +12,50 @@
 #                (default: $OUTERLOOP_CLAUDE_BIN, else ~/.local/bin/claude)
 set -euo pipefail
 
-# Pinned release and per-platform SHA256. To bump WANT, hash the new binaries
-# and update the pins together; downloaded bytes are verified before execution.
-WANT="2.1.272"
+# A checkout needs no installed kernel; wheels use the same packaged reader.
+pin() {
+    local reader
+    reader="$(dirname "${BASH_SOURCE[0]}")/../src/outerloop/harness_pins.py"
+    if [ -f "$reader" ]; then
+        python3 "$reader" "$@"
+    else
+        python3 -m outerloop.harness_pins "$@"
+    fi
+}
+WANT="$(pin claude version)"
 TARGET="${1:-${OUTERLOOP_CLAUDE_BIN:-$HOME/.local/bin/claude}}"
 
-have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-if [ "$have" = "$WANT" ]; then
-    echo "install_claude: claude $WANT already at $TARGET"
-    exit 0
-fi
+have="$("$TARGET" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][[:alnum:].-]+)?' | head -1 || true)"
+
 
 platform="$(uname -s)-$(uname -m)"
 case "$platform" in
     Linux-x86_64)
         platform="linux-x64"
-        WANT_SHA256="d81396a668eb76fbddb49a2a5841f1b5d7af96b4c1f6500ced92f2c988f5bcd4"
+        WANT_SHA256="$(pin claude linux-x64)"
         if compgen -G '/lib/libc.musl-*' > /dev/null; then
             platform="linux-x64-musl"
-            WANT_SHA256="e30bb3ac07c4f1c3f63b47312e9a73ba6875256b7768c4cdb784d2b179417489"
+            WANT_SHA256="$(pin claude linux-x64-musl)"
         fi
         ;;
     Linux-aarch64|Linux-arm64)
         platform="linux-arm64"
-        WANT_SHA256="214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b5288c8de"
+        WANT_SHA256="$(pin claude linux-arm64)"
         ;;
     *)
         echo "install_claude: unsupported platform $platform (no sha256 pin)" >&2
         exit 1
         ;;
 esac
+if [ "$have" = "$WANT" ]; then
+    actual=$(sha256sum "$TARGET" | cut -d' ' -f1)
+    if [ "$actual" = "$WANT_SHA256" ]; then
+        echo "install_claude: claude $WANT already at $TARGET"
+        exit 0
+    fi
+    echo "install_claude: installed sha256 mismatch — reinstalling" >&2
+fi
+
 for tool in curl sha256sum; do
     command -v "$tool" >/dev/null || {
         echo "install_claude: required tool $tool is missing" >&2
@@ -72,7 +86,7 @@ mkdir -p "$(dirname "$TARGET")"
 install -m 0755 "$tmp/claude" "$staged"
 # secondary sanity (integrity is already the sha256 gate above, so this runs
 # VERIFIED bytes): the staged binary reports the pinned version before the mv
-got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+got="$("$staged" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][[:alnum:].-]+)?' | head -1 || true)"
 if [ "$got" != "$WANT" ]; then
     echo "install_claude: downloaded claude reports '$got', wanted '$WANT' — not installing" >&2
     exit 1

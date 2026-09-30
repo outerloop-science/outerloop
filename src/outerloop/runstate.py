@@ -133,10 +133,11 @@ class RunRecord:
     # The author this run was STARTED with ("" backend = legacy/claude). A wake or
     # follow-up reproduces the run's OWN author from these, not the current fleet
     # default, so a fleet backend flip never resumes a run on the wrong backend,
-    # model, or key. backend and model are a PAIR — a claude backend needs a
-    # claude model and vice versa — so both are persisted together.
+    # model, or key. Endpoint-backed models retain their [endpoint=profile] selector;
+    # the harness strips it only when constructing the backend session.
     author_backend: str = ""
     author_model: str = ""
+    author_overridden: bool = False  # judges inherit the fleet author for this run
     # The resolved author key FILE PATH (not the key) this run used, so a wake or
     # follow-up reproduces the exact key — an explicit --key-file survives, and an
     # in-flight run is immune to a later env change. "" = resolve per backend
@@ -255,11 +256,17 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
         raise ValueError("waiting run with an experiment needs a deadline")
     directory = run_dir(root, record.run_id)
     directory.mkdir(parents=True, exist_ok=True)
+    if record.state == ENDED:
+        stage = dict(record.stage)
+        stage.pop("hermes_resume_required_chars", None)
+        record = replace(record, stage=stage)
     stamped = replace(record, updated=now, created=record.created or now)
     # unique tmp name: two concurrent writers must not interleave into the
     # same tmp file before the atomic replace
     tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     payload = asdict(stamped)
+    if not stamped.author_overridden:
+        payload.pop("author_overridden")  # No-setting records retain their exact wire shape.
     path = directory / RECORD_NAME
     if path.exists():
         old = json.loads(path.read_text())

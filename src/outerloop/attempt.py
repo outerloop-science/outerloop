@@ -12,7 +12,6 @@ has ended; the session sees only its own capped API key inside its container.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import fcntl
 import json
 import logging
@@ -21,7 +20,7 @@ import re
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from functools import partial
@@ -46,6 +45,13 @@ from outerloop.dispatch import (
     should_dispatch,
     snapshot_tree,
 )
+from outerloop.endpoints import (
+    EndpointUnavailable,
+    author_model_setting,
+    model_key,
+    resolve_endpoint,
+    split_endpoint,
+)
 from outerloop.evalcache import seed_dir
 from outerloop.github import (
     GitError,
@@ -59,6 +65,7 @@ from outerloop.github import (
 from outerloop.harness import (
     ClaudeModelUnset,
     Harness,
+    ResumeContextBlocked,
     SessionResult,
     default_binary,
     default_claude_model,
@@ -66,6 +73,7 @@ from outerloop.harness import (
 )
 from outerloop.hypothesis import report_hypothesis
 from outerloop.inbox import Message, append, panel_payload, thread_for
+from outerloop.job_names import run_job_name
 from outerloop.launchlog import append_ended, append_submitted, experiments_rows
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.ledger_branch import LedgerWriteError, progress_link
@@ -162,25 +170,83 @@ def resolve_author_key_file(backend: str, explicit: str = "") -> str:
     always ~-expanded, so every caller gets a real path (an env value like
     "~/.config/..." must not reach the token provider verbatim)."""
     if not explicit:
-        if backend == "codex":
-            explicit = os.environ.get("OUTERLOOP_CODEX_KEY_FILE") or CODEX_KEY_DEFAULT
-        else:
-            explicit = os.environ.get("OUTERLOOP_CLAUDE_KEY_FILE") or CLAUDE_KEY_DEFAULT
+        defaults = {"claude": CLAUDE_KEY_DEFAULT, "codex": CODEX_KEY_DEFAULT}
+        explicit = os.environ.get(f"OUTERLOOP_{backend.upper()}_KEY_FILE") or defaults.get(
+            backend, str(CONFIG_DIR / f"{backend}_key")
+        )
     return os.path.expanduser(explicit)
 
 
-def codex_author_config_error(backend: str, model: str, image: str) -> str:
-    """Why a codex author would die at startup ("" when it won't). Validates the
-    EFFECTIVE (backend, model) — the fresh climb passes args; a wake
-    passes the PARKED RUN's persisted pair — so backend and model are checked as
-    a unit and never a fleet backend against a run's model. codex writes+executes,
-    so it must be contained (--image) and needs a non-claude model."""
-    if backend not in ("claude", "codex"):
-        # a typo'd OUTERLOOP_AUTHOR_BACKEND passes the env DEFAULT silently
-        # (argparse validates the flag, not its default) and the climb rejects it
-        # at build_harness — catch it on the tick host so a claimed intake
-        # issue never strands on it
-        return f"unknown author backend {backend!r} (expected 'claude' or 'codex')"
+@dataclass(frozen=True)
+class AuthorCredential:
+    key_file: Path
+    backend: str
+    model: str
+
+    def key(self) -> str:
+        """Read after structural panel checks, preserving their diagnostics."""
+        return model_key(self.key_file, self.backend, self.model)
+
+
+def effective_author_credential(backend: str, model: str, explicit: str = "") -> AuthorCredential:
+    """Resolve the actual author credential, including endpoint profiles."""
+    _, profile = resolve_endpoint(model, backend)
+    path = profile.key_file if profile else Path(resolve_author_key_file(backend, explicit))
+    return AuthorCredential(path, backend, model)
+
+
+def _clear_resume_block(run_root: Path, run_id: str, now: float) -> None:
+    record = load_record(run_root, run_id)
+    if "hermes_resume_required_chars" in record.stage:
+        stage = dict(record.stage)
+        stage.pop("hermes_resume_required_chars")
+        save_record(run_root, dc_replace(record, stage=stage), now)
+
+
+def author_config_error(
+    backend: str,
+    model: str,
+    image: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Validate the effective author configuration before claiming or waking a run."""
+    env = os.environ if environ is None else environ
+    if backend not in ("claude", "codex", "hermes"):
+        return f"unknown author backend {backend!r} (expected 'claude', 'codex' or 'hermes')"
+    if backend == "hermes":
+        from outerloop.harness import hermes_resume_max_chars
+        from outerloop.hermes_install import hermes_ready
+
+        repo = env.get("REVIEW_HERMES_REPO", "")
+        if not repo or not hermes_ready(Path(repo).expanduser()):
+            return "hermes author needs REVIEW_HERMES_REPO with pinned source and runtime"
+        if not image:
+            return "author-backend hermes requires --image (it runs contained)"
+        try:
+            hermes_resume_max_chars(env)
+        except ValueError as exc:
+            return str(exc)
+    try:
+        _, profile = resolve_endpoint(model, backend, environ=env)
+    except ValueError as exc:
+        return str(exc)
+    if profile:
+        if backend != "claude" and not image:
+            return f"author-backend {backend} requires --image (it runs contained)"
+        return ""
+    if backend == "hermes":
+        from outerloop.role_runner import HERMES_PROVIDERS
+
+        if not model:
+            return "hermes author needs OUTERLOOP_AUTHOR_MODEL"
+        provider = env.get("REVIEW_HERMES_PROVIDER", "")
+        if provider not in HERMES_PROVIDERS:
+            return (
+                "hermes author needs REVIEW_HERMES_PROVIDER (openai or openrouter) "
+                "or an endpoint profile"
+            )
+        return ""
     if backend == "claude":
         # symmetric to the codex check: a claude harness 404s on a non-claude
         # model (e.g. OUTERLOOP_AUTHOR_MODEL left on a codex id while the
@@ -198,15 +264,40 @@ def codex_author_config_error(backend: str, model: str, image: str) -> str:
     return ""
 
 
+# Compatibility for callers of the former backend-specific validator.
+codex_author_config_error = author_config_error
+
+
 def fleet_author_model(backend: str) -> str:
     """The fleet author's model from the environment: OUTERLOOP_AUTHOR_MODEL, else
     the deployment's Claude model for a claude author (ClaudeModelUnset when that
     is missing too). Another backend without OUTERLOOP_AUTHOR_MODEL gets "", and
-    codex_author_config_error names the fix."""
-    model = os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")
+    author_config_error names the fix."""
+    model = author_model_setting(backend, os.environ.get("OUTERLOOP_AUTHOR_MODEL", ""))
     if not model and backend == "claude":
         return default_claude_model()
     return model
+
+
+def defer_endpoint_wake(root: Path, record: RunRecord) -> bool:
+    """Keep the existing park and refund this delivery when its server is down."""
+    _, profile = resolve_endpoint(record.author_model, record.author_backend or "claude")
+    try:
+        if profile:
+            _ = profile.url
+    except EndpointUnavailable as exc:
+        _defer_endpoint(root, record, exc)
+        return True
+    return False
+
+
+def _defer_endpoint(root: Path, record: RunRecord, exc: EndpointUnavailable) -> None:
+    save_record(
+        root,
+        dc_replace(record, state=PARKED, wake_attempts=max(0, record.wake_attempts - 1)),
+        time.time(),
+    )
+    log.warning("run %s: %s", record.run_id, exc)
 
 
 def resume_author(
@@ -224,14 +315,18 @@ def resume_author(
     else the fleet model when the fleet runs the same backend (so the
     configured author model applies to legacy claude records too); a claude
     record under a codex fleet falls back to the claude default, and a codex
-    record to the fleet model only as a last resort (codex records always
-    carry their model).
+    record to the native fleet model only as a last resort. Endpoint fleet
+    selectors are never inherited by a record missing its route; a missing
+    native Codex model fails preflight rather than changing providers.
     The key file is the exact resolved path the run used (so an explicit
     --key-file survives), falling back to the per-backend resolution for legacy
     records that never recorded it."""
     backend = getattr(record, "author_backend", "") or "claude"
     model = getattr(record, "author_model", "")
     if not model:
+        # A missing route cannot opt into an endpoint via fleet defaults.
+        if fleet_model and split_endpoint(fleet_model)[1]:
+            fleet_model = ""
         if explicit_model:
             model = explicit_model
         elif backend == "claude":
@@ -587,6 +682,7 @@ def _park_run(
     stage: dict[str, object] = {
         **{k: latest.stage[k] for k in STAGE_RETAINED_KEYS if k in latest.stage},
         "phase": parked.phase,
+        "capacity_wait": parked.capacity_wait,
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
         "candidate_ref": candidate_ref,
@@ -654,20 +750,25 @@ def _park_run(
                 launch_ids = list(job_ids)
             else:
                 launch_ids = []
-            ledger_launches = tuple(
-                dc_replace(launch, why=redact(launch.why, secrets))
-                for launch in parked.syscall.launches
-            )
-            _best_effort(
-                "launch ledger",
-                lambda: append_submitted(
-                    run_dir_of(run_root, record.run_id),
-                    sleep=parked.sleeps_used,
-                    launches=ledger_launches,
-                    job_ids=launch_ids,
-                    at=now,
-                ),
-            )
+            # Capacity waits defer gate evals, not author launches: the launcher
+            # returns job ids or refuses the batch. Checkpoints may carry
+            # discarded descriptors; gate ids cannot stand in for launch ids.
+            if launch_ids:
+                ledger_launches = tuple(
+                    dc_replace(launch, why=redact(launch.why, secrets))
+                    for launch in parked.syscall.launches
+                )
+                _best_effort(
+                    "launch ledger",
+                    lambda: append_submitted(
+                        run_dir_of(run_root, record.run_id),
+                        sleep=parked.sleeps_used,
+                        launches=ledger_launches,
+                        job_ids=launch_ids,
+                        at=now,
+                        commit=parked.candidate_sha,
+                    ),
+                )
         # (the session id the wake resumes is the record's own
         # resume_session_id, set below for every park — no stage duplicate)
         stage["launches_used"] = parked.launches_used
@@ -713,7 +814,9 @@ def _park_run(
         and parked.syscall is not None
         and not parked.syscall.launches
     )
-    if checkpoint_sleep:
+    if parked.capacity_wait and not job_ids:
+        deadline = now + 60
+    elif checkpoint_sleep:
         # a CHECKPOINT SLEEP has nothing in any queue, so the 12h queue slack
         # (sized to protect queued Slurm jobs from cancel-on-pending) does not
         # apply — the deadline needs only to reach the sweep's next pass.
@@ -737,7 +840,9 @@ def _park_run(
             # no-progress re-park — results still pending, or a blind re-park
             # (squeue unreachable, nothing new dispatched) — must KEEP the
             # counter (`keep_wake_attempts`), or the loop never reaches the cap.
-            "wake_attempts": record.wake_attempts if keep_wake_attempts else 0,
+            "wake_attempts": (
+                record.wake_attempts if keep_wake_attempts and not parked.capacity_wait else 0
+            ),
             "terminal_seen": 0.0,
         }
     )
@@ -853,51 +958,48 @@ def _make_launcher(
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from outerloop.dispatch import eval_job_spec, write_eval_job
+        from outerloop.operator_limits import run_target, state_root, submit_batch
         from outerloop.syscall import array_spec
 
-        ids: list[str] = []
-        try:
-            for launch in request.launches:
-                # a sweep is ONE Slurm job array (`--array=0-N%K`): the queue
-                # holds one entry, Slurm runs at most K tasks at once, each task
-                # derives its job dir and SWEEP_INDEX from its array index, and
-                # one afterany on the array id covers every task
-                script = write_eval_job(
-                    run_dir,
-                    f"launch-{launch.name}",
-                    repo_root=workspace,
-                    snapshot_sha=sha,
-                    command=launch.command,
-                    image=dispatch.image,
-                    artifacts=launch.artifacts,
-                    artifact_max_bytes=MAX_ARTIFACT_BYTES,
-                    gpus=gpus,
-                    array=launch.array,
-                    seed_cache=dispatch.seed_cache,
-                )
-                spec = eval_job_spec(
-                    script,
-                    job_name=f"{run_id}-launch-{launch.name}",
-                    account=account,
-                    qos=dispatch.qos,
-                    partition=partition,
-                    eval_minutes=launch.minutes,
-                    gpus=gpus,
-                    gpu_type=lane.gpu_type,
-                    extra=lane.extra,
-                    nice=LAUNCH_NICE,
-                    array=array_spec(launch),
-                )
-                ids.append(dispatch.compute.submit(spec))
-        except Exception:
-            # a partial batch must not orphan: no park record was written yet,
-            # so nothing would ever wake or cancel the jobs that DID submit —
-            # reap them here, then let the caller end the run as the error it
-            # is (same stance as the failed-_park_run cancel).
-            for job_id in ids:
-                with contextlib.suppress(Exception):
-                    dispatch.compute.cancel(job_id)
-            raise
+        specs = []
+        for launch in request.launches:
+            # a sweep is ONE Slurm job array (`--array=0-N%K`): the queue
+            # holds one entry, Slurm runs at most K tasks at once, each task
+            # derives its job dir and SWEEP_INDEX from its array index, and
+            # one afterany on the array id covers every task
+            script = write_eval_job(
+                run_dir,
+                f"launch-{launch.name}",
+                repo_root=workspace,
+                snapshot_sha=sha,
+                command=launch.command,
+                image=dispatch.image,
+                artifacts=launch.artifacts,
+                artifact_max_bytes=MAX_ARTIFACT_BYTES,
+                gpus=gpus,
+                array=launch.array,
+                seed_cache=dispatch.seed_cache,
+            )
+            spec = eval_job_spec(
+                script,
+                job_name=run_job_name(run_id, suffix=f"-launch-{launch.name}"),
+                account=account,
+                qos=dispatch.qos,
+                partition=partition,
+                eval_minutes=launch.minutes,
+                gpus=gpus,
+                gpu_type=lane.gpu_type,
+                extra=lane.extra,
+                nice=LAUNCH_NICE,
+                array=array_spec(launch),
+            )
+            specs.append(spec)
+        ids = submit_batch(
+            state_root(run_dir),
+            run_target(run_dir),
+            dispatch.compute,
+            specs,
+        )
         # a checkpoint sleep (no launches) parks with no dependency and wakes
         # on the sweep's deadline floor — slow but correct; a fast requeue wake
         # is a follow-up.
@@ -1260,6 +1362,8 @@ def run_author_leg(
 
         kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
+    if not record.resume_session_id:
+        kwargs.setdefault("task_hypothesis", str(record.stage.get("hypothesis") or ""))
     result = attempt_once(
         config,
         contract_text,
@@ -1434,14 +1538,15 @@ def _wake_author_sleep(
                 drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
-    # The wake NEEDS the author harness (it resumes the session). Fail as a
+    # A capacity park before the first session starts with a fresh brief.
+    # Other wakes NEED the author harness and saved session. Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
     # help without the harness, so leaving it PARKED would just hit the stuck
     # cap slowly.
     if (
         harness is None
         or spec is None
-        or not record.resume_session_id
+        or (not record.resume_session_id and not record.stage.get("capacity_wait"))
         or not getattr(harness, "supports_resume", True)
     ):
         return _end(
@@ -1645,7 +1750,9 @@ def _wake_author_sleep(
             else None,
             judged=judged or _stage_judged(record),
         )
+        _clear_resume_block(run_root, run_id, now)
     except RunParked as p:
+        _clear_resume_block(run_root, run_id, now)
         # slept again, or the gate dispatched its measures (a candidate park the
         # existing wake path decides). Keep the NEW park's snapshot ref; the OLD
         # sleep ref is superseded once the new park persists.
@@ -1670,6 +1777,24 @@ def _wake_author_sleep(
         if sleep_ref:
             drop_snapshot(ws, Snapshot(commit="", tree="", ref=sleep_ref))
         return AttemptOutcome(run_id=run_id, outcome="parked")
+    except EndpointUnavailable as exc:
+        latest = load_record(run_root, run_id)
+        _defer_endpoint(run_root, latest, exc)
+        return AttemptOutcome(run_id=run_id, outcome="parked", pr_url=latest.pr_url)
+    except ResumeContextBlocked as exc:
+        latest = load_record(run_root, run_id)
+        save_record(
+            run_root,
+            dc_replace(
+                latest,
+                state=PARKED,
+                stage={**latest.stage, "hermes_resume_required_chars": exc.required_chars},
+                wake_attempts=max(0, latest.wake_attempts - 1),
+            ),
+            now,
+        )
+        log.warning("run %s: %s", run_id, exc)
+        return AttemptOutcome(run_id=run_id, outcome="parked", pr_url=latest.pr_url)
     except ScopeHistoryError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
     finally:
@@ -2966,7 +3091,7 @@ def resume_run(
         result = dc_replace(result, submit_report=str(stage.get("report") or "no report was given"))
         report_path = run_dir / "report.md"
         report_path.write_text(result.report(config, redact_secrets=secrets))
-        if not snapshot_attempted:
+        if not snapshot_attempted and not result.tree_rejected:
             _push_line_snapshot(
                 ws,
                 _line_ref_for(bench, config.agent_id),
@@ -3116,18 +3241,19 @@ def _judge_lens_key(
             "(role separation: the judge's own key, never the author's)"
         )
     path = Path(raw).expanduser()
-    author_path = Path(resolve_author_key_file(author_backend)).expanduser()
-    if path.resolve() == author_path.resolve():
-        raise ValueError(
-            f"{backend} panel key file {path} is the {author_backend} author key "
-            "(role separation: the judge needs its own key)"
-        )
+    for author in dict.fromkeys((author_backend, "claude", "codex", "hermes")):
+        author_path = Path(resolve_author_key_file(author)).expanduser()
+        if path.resolve() == author_path.resolve():
+            raise ValueError(
+                f"{backend} panel key file {path} is the {author} author key "
+                "(role separation: the judge needs its own key)"
+            )
     if path.resolve() == claude_panel_path.resolve():
         raise ValueError(
             f"{backend} panel key file {path} is the claude panel key file "
             "(an anthropic key must never reach another provider's login)"
         )
-    return role_key(raw, author_backend)
+    return role_key(raw, backend)
 
 
 def _panel_lenses_from_args(
@@ -3153,23 +3279,45 @@ def _panel_lenses_from_args(
         author_backend = getattr(args, "author_backend", "") or "claude"
     if author_model is None:
         author_model = getattr(args, "model", "") or ""
-    parsed = resolve_lenses(args.panel, author_backend, author_model)
+    panel_backend, panel_model = author_backend, author_model
+    if getattr(args, "author_overridden", False):
+        panel_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+        panel_model = fleet_author_model(panel_backend)
+    parsed = resolve_lenses(args.panel, panel_backend, panel_model)
+    author_credential = effective_author_credential(
+        author_backend, author_model, getattr(args, "key_file", "")
+    )
+    author_path = author_credential.key_file
+    prepared = []
     # the anthropic panel key is read only when a claude lens will use it —
     # a codex-only panel must not demand an unrelated credential
-    panel_key = role_key(args.panel_key_file) if any(b == "claude" for _, b, _ in parsed) else ""
+    panel_key = (
+        role_key(args.panel_key_file)
+        if any(b == "claude" and not split_endpoint(m)[1] for _, b, m in parsed)
+        else ""
+    )
     lenses = []
     secrets: list[str] = [panel_key] if panel_key else []
+    hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
     for kind, backend, model in parsed:
-        hermes_repo_env = os.environ.get("REVIEW_HERMES_REPO", "").strip()
         # per-backend judge keys coexist — a codex lens is never handed the
         # anthropic panel key, and role separation forbids defaulting to the
         # AUTHOR's codex key: the judge key is its own, named explicitly
         claude_panel_path = Path(args.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
-        if backend == "codex":
+        _, endpoint = resolve_endpoint(model, backend)
+        if endpoint:
+            if not args.image:
+                raise ValueError(f"a {backend} endpoint panel lens requires --image")
+            from outerloop.endpoints import validate_judge_key_file
+
+            validate_judge_key_file(endpoint, author_path, claude_panel_path)
+            lens_key = endpoint.key()
+            secrets.append(lens_key)
+        elif backend == "codex":
             lens_key = _judge_lens_key(
                 backend="codex",
                 key_file_env="OUTERLOOP_PANEL_CODEX_KEY_FILE",
-                author_backend="codex",
+                author_backend=author_backend,
                 claude_panel_path=claude_panel_path,
                 image=args.image,
             )
@@ -3178,12 +3326,11 @@ def _panel_lenses_from_args(
         elif backend == "hermes":
             # hermes reads its key from its provider's env var, but the FILE
             # is resolved and separated exactly like codex's (the key still
-            # lands next to the session). The author's OpenAI key coexists, so
-            # separate against the codex author key.
+            # lands next to the session). Separate against the active author.
             lens_key = _judge_lens_key(
                 backend="hermes",
                 key_file_env="OUTERLOOP_PANEL_HERMES_KEY_FILE",
-                author_backend="codex",
+                author_backend=author_backend,
                 claude_panel_path=claude_panel_path,
                 image=args.image,
             )
@@ -3191,6 +3338,22 @@ def _panel_lenses_from_args(
                 secrets.append(lens_key)
         else:
             lens_key = panel_key
+        lens_path = (
+            endpoint.key_file
+            if endpoint
+            else Path(os.environ[f"OUTERLOOP_PANEL_{backend.upper()}_KEY_FILE"]).expanduser()
+            if backend in ("codex", "hermes")
+            else claude_panel_path
+        )
+        if lens_path.resolve() == author_path.expanduser().resolve() or (
+            lens_key and lens_key == author_credential.key()
+        ):
+            raise ValueError(
+                "a panel judge key is the effective author key "
+                "(role separation: the judge needs its own key)"
+            )
+        prepared.append((kind, backend, model, lens_key))
+    for kind, backend, model, lens_key in prepared:
         try:
             if not args.image:
                 log.warning(
@@ -3222,14 +3385,16 @@ def _panel_claim_body(
     benchmark: str, baseline: float, candidate: float, report: str, *, lines: bool
 ) -> str:
     """The synthetic claim the panel judges. On a research-lines target the
-    one-contribution mandate is part of the claim itself: the panel is the
+    one-idea mandate is part of the claim itself: the panel is the
     backstop against a line's accumulated tweaks reaching main as one PR
     (docs/design/research-lines.md)."""
     mandate = (
-        "\n\nThis target runs research lines: a PR to main must be ONE "
-        "clean contribution, extracted onto the base branch. A diff that "
-        "bundles unrelated or unablated changes is a BLOCKING finding — "
-        "name the pieces that should be separated."
+        "\n\nThis target runs research lines: a PR to main is ONE idea, "
+        "extracted onto the base branch. An idea may bring the few changes "
+        "it needs, such as the hyperparameters it shifts, when the report "
+        "documents each change's own effect. Independent ideas bundled "
+        "together, or a win the report does not attribute, is a BLOCKING "
+        "finding: name the pieces that should be separated."
         if lines
         else ""
     )
@@ -3399,7 +3564,7 @@ def _finish_attempt(
         )
     report_path = run_dir / "report.md"
     report_path.write_text(result.report(config, redact_secrets=secrets))
-    if not snapshot_attempted:
+    if not snapshot_attempted and not result.tree_rejected:
         _push_line_snapshot(
             ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
         )
@@ -3936,6 +4101,7 @@ def publish(
                 redact_secrets=secrets,
                 display_digits=bench.display_digits,
                 experiments=experiments_rows(run_dir),
+                base_sha=base_sha,
             )
             body += f"\n\n{progress_link(config.target)}\n"
             if issue_number:
@@ -4143,6 +4309,7 @@ def live_attempt(
     author_backend: str = "claude",
     author_model: str = "",
     author_key_file: str = "",
+    author_overridden: bool = False,
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -4172,8 +4339,10 @@ def live_attempt(
         issue_number=issue_number,
         author_backend=author_backend,
         author_model=author_model,
+        author_overridden=author_overridden,
         author_key_file=author_key_file,
         run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
+        stage={"hypothesis": redact(task_hypothesis, secrets)} if task_hypothesis else {},
     )
     try:
         save_record(run_root, record, now)
@@ -4511,6 +4680,32 @@ def live_attempt(
                 ),
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
             )
+        except EndpointUnavailable as exc:
+            # Reuse a jobless capacity park; its first wake starts the author.
+            sha = snapshot()
+            kept_ref = snapshots[-1].ref
+            p = RunParked(
+                phase="author-sleep",
+                afterany="",
+                base_sha=pre_session_sha,
+                seed=0,
+                suite_seed=0,
+                candidate_sha=sha,
+                capacity_wait=True,
+            )
+            _park_run(
+                run_root,
+                record,
+                p,
+                kept_ref,
+                eval_minutes,
+                time.time(),
+                secrets,
+                base_branch=base_branch,
+            )
+            parked = p
+            log.warning("run %s: %s", run_id, exc)
+            return AttemptOutcome(run_id=run_id, outcome="parked")
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
             # re-entry stage as a PARKED record (not an error), keep the
@@ -4819,10 +5014,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--author-backend",
-        choices=("claude", "codex"),
+        choices=("claude", "codex", "hermes"),
         default=os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
         help="agent backend for the author/editor role (config-driven: default "
-        "from OUTERLOOP_AUTHOR_BACKEND). codex runs contained (apptainer + "
+        "from OUTERLOOP_AUTHOR_BACKEND). codex and hermes run contained (apptainer + "
         "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
         "--model (e.g. gpt-5.6-terra).",
     )
@@ -4868,7 +5063,7 @@ def main() -> int:
         "--key-file",
         default="",
         help="author key file; default resolves per backend (config-driven): "
-        "OUTERLOOP_CLAUDE_KEY_FILE for claude, OUTERLOOP_CODEX_KEY_FILE for codex",
+        "OUTERLOOP_<BACKEND>_KEY_FILE for native backends",
     )
     parser.add_argument("--issue", type=int, default=0)
     parser.add_argument(
@@ -4880,11 +5075,19 @@ def main() -> int:
     parser.add_argument(
         "--hypothesis-b64", default="", help="base64 task hypothesis (issue text, fenced)"
     )
+    parser.add_argument("--author-bound", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--author-overridden", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    from outerloop.author_overrides import select_override
     from outerloop.gpu_lanes import gpu_lanes_from_env
 
     try:
         args.gpu_lanes = gpu_lanes_from_env()
+        if not args.resume and not args.author_bound:
+            selected = select_override(args.target, args.agent_id)
+            if selected:
+                args.author_backend, args.model = selected.backend, selected.resolved_model()
+                args.author_overridden = True
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -4893,7 +5096,7 @@ def main() -> int:
         # OUTERLOOP_CLAUDE_MODEL fails here with the fix named, not with a traceback
         try:
             args.model = fleet_author_model(args.author_backend)
-        except ClaudeModelUnset as exc:
+        except (ClaudeModelUnset, ValueError) as exc:
             parser.error(str(exc))
     if args.resume:
         _attach_run_log(run_dir_of(args.run_root, args.resume))
@@ -4944,7 +5147,8 @@ def main() -> int:
         try:
             explicit_model = args.model  # what the operator typed, before any env fill-in
             if not getattr(_wake_record, "author_model", "") and not args.model:
-                args.model = fleet_author_model(args.author_backend)
+                native_model = os.environ.get("OUTERLOOP_AUTHOR_MODEL", "")
+                args.model = "" if split_endpoint(native_model)[1] else native_model
             wake_backend, wake_model, wake_key_file = resume_author(
                 _wake_record, args.model, args.author_backend, explicit_model
             )
@@ -4956,13 +5160,25 @@ def main() -> int:
         # an explicit --key-file still overrides (a manual re-run pinning a key)
         if args.key_file:
             wake_key_file = os.path.expanduser(args.key_file)
-        _err = codex_author_config_error(wake_backend, wake_model, args.image)
+        _err = author_config_error(wake_backend, wake_model, args.image)
         if _err:
             # this wake job HOLDS the run's lease (transferred on dispatch); release
             # it before exiting so a misconfig doesn't strand the run until the TTL
             # reap (the resume_run finally below only runs once we reach it)
             _release_own_lease(args.run_root, args.resume)
             parser.error(f"parked run {args.resume}: {_err}")
+        try:
+            deferred = isinstance(_wake_record, RunRecord) and defer_endpoint_wake(
+                args.run_root, _wake_record
+            )
+        except ValueError as exc:
+            _release_own_lease(args.run_root, args.resume)
+            parser.error(f"parked run {args.resume}: {exc}")
+        if deferred:
+            _release_own_lease(args.run_root, args.resume)
+            return 0
+        args.author_overridden = bool(getattr(_wake_record, "author_overridden", False))
+        args.key_file = wake_key_file
         # the wake runs the SAME verification panel as a fresh climb, so a
         # dispatched improvement is not published unverified.
         try:
@@ -4993,7 +5209,9 @@ def main() -> int:
             or _wake_stage.get("submitted")
             or getattr(_wake_record, "pr_url", "")
         ):
-            wake_api_key = role_key(wake_key_file, wake_backend)
+            wake_api_key = effective_author_credential(
+                wake_backend, wake_model, wake_key_file
+            ).key()
             if wake_api_key and wake_api_key in wake_panel_secrets:
                 args.panel_skip = "a panel judge key is this run's author key (role separation)"
                 wake_lenses = ()
@@ -5013,6 +5231,10 @@ def main() -> int:
                 model=wake_model,
                 container_image=args.image,
                 codex_extra_args=codex_extra,
+                hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", ""),
+                hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
+                if wake_backend == "hermes"
+                else None,
             )
         wake_secrets = tuple(k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k)
         try:
@@ -5059,17 +5281,23 @@ def main() -> int:
     if not (args.target and args.benchmark):
         parser.error("--target and --benchmark are required for a fresh climb")
 
-    # a fresh climb authors on the FLEET's configured backend; validate it (codex
-    # writes+executes, so --image + a non-claude model) before any spend.
-    _err = codex_author_config_error(args.author_backend, args.model, args.image)
+    # Validate the selected author before spending; an override's endpoint
+    # selector is independent of the fleet endpoint.
+    try:
+        if not args.author_overridden and not args.author_bound:
+            args.model = author_model_setting(args.author_backend, args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
+    _err = author_config_error(args.author_backend, args.model, args.image)
     if _err:
         parser.error(_err)
-    # config-driven: the author key defaults per backend (claude vs codex) so the
+    # The author key defaults per backend so the
     # tick never threads it — see resolve_author_key_file (result is ~-expanded).
-    args.key_file = resolve_author_key_file(args.author_backend, args.key_file)
+    author_credential = effective_author_credential(args.author_backend, args.model, args.key_file)
+    args.key_file = str(author_credential.key_file)
     # same 0600 discipline as the PAT: this key spends real money. A missing
     # file is tolerated only when Vertex (ADC) covers the claude backend.
-    api_key = role_key(args.key_file, args.author_backend)
+    api_key = author_credential.key()
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     # the agent id keeps concurrent same-benchmark slots (the width dial's
     # portfolio case) from minting one run directory in the same second
@@ -5139,6 +5367,10 @@ def main() -> int:
                     model=args.model,
                     container_image=args.image,
                     codex_extra_args=codex_extra,
+                    hermes_provider=os.environ.get("REVIEW_HERMES_PROVIDER", ""),
+                    hermes_repo=Path(os.environ["REVIEW_HERMES_REPO"])
+                    if args.author_backend == "hermes"
+                    else None,
                 ),
                 spec=spec,
                 panel_lenses=panel_lenses,
@@ -5162,6 +5394,7 @@ def main() -> int:
                 issue_number=args.issue,
                 author_backend=args.author_backend,
                 author_model=args.model,
+                author_overridden=args.author_overridden,
                 author_key_file=args.key_file,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()

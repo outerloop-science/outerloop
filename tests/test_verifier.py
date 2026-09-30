@@ -91,6 +91,8 @@ def test_prompt_carries_contract_claim_and_change() -> None:
     assert "## The contract" in prompt and "name: tsp" in prompt
     assert "## The claim" in prompt and "Research report" in prompt
     assert "## The change" in prompt and "+x=1" in prompt
+    assert "Numbers measured on different commits are not directly comparable" in prompt
+    assert "check the commits in the checkout history before attributing a gap" in prompt
 
 
 def test_verify_tags_findings_with_category_and_sanitizes() -> None:
@@ -252,10 +254,12 @@ def test_gather_thread_gates_by_standing_and_orders_chronologically() -> None:
 
 
 def test_aggregation_is_a_first_class_verify_category() -> None:
-    # the code owner's standard from yolo-jepa#16: a mixture must not clear
-    # the floor by aggregation — the judge's taste names it, the syscall
+    # the code owner's standard: a mixture must not clear the floor by
+    # aggregation — the judge's taste names it, the syscall
     # clamp keeps it (a taxonomy miss would silently demote it to 'other')
     from outerloop.verifier import CATEGORIES, VERIFY_SYSTEM_PROMPT
 
     assert "aggregation" in CATEGORIES
-    assert "clears the floor ON ITS OWN" in VERIFY_SYSTEM_PROMPT
+    assert "documents each change's own effect" in VERIFY_SYSTEM_PROMPT
+    assert "landscape" in CATEGORIES
+    assert "picture of the landscape" in VERIFY_SYSTEM_PROMPT

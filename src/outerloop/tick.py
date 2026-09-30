@@ -44,9 +44,15 @@ from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
+from outerloop.job_names import run_job_name
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.limits import EffectiveLimits, effective_limits
 from outerloop.markers import has_marker, marker
+from outerloop.operator_limits import (
+    attempt_width,
+    read_limits,
+    submit,
+)
 from outerloop.runstate import (
     ABORTED,
     ENDED,
@@ -1672,6 +1678,27 @@ def _sweep_one(
     ):
         return
 
+    from outerloop.harness import resume_config_block
+
+    blocked = resume_config_block(record.stage)
+    if blocked:
+        log.warning("run %s: %s", record.run_id, blocked)
+        deferred.append(record.run_id)
+        return
+
+    from outerloop.endpoints import EndpointUnavailable, resolve_endpoint
+
+    try:
+        _, profile = resolve_endpoint(record.author_model, record.author_backend or "claude")
+        if profile:
+            _ = profile.url
+    except EndpointUnavailable as exc:
+        log.warning("run %s: %s", record.run_id, exc)
+        deferred.append(record.run_id)
+        return
+    except ValueError:
+        pass  # Existing configuration validation reports permanent errors.
+
     # Layer 5: too many failed attempts is a terminal, reported state.
     if record.wake_attempts >= MAX_WAKE_ATTEMPTS:
         if not dry_run:
@@ -1687,6 +1714,12 @@ def _sweep_one(
                 bot_login=bot_login,
             )
         stuck.append(record.run_id)
+        return
+
+    # Only a positive pending requirement represents a configuration wake.
+    # A successful resume removes it before any subsequent normal sleep.
+    if int(str(record.stage.get("hermes_resume_required_chars", 0))) > 0:
+        wake(record, "resume configuration unblocked", "configuration")
         return
 
     job_ids = _poll_targets(record)
@@ -1833,6 +1866,7 @@ def tick(
     # coalesce guard reads the last COMPLETED tick's marker (not the heartbeat).
     prior_worked = _last_worked_ts(root)
     write_heartbeat(root, now)
+    read_limits(root)
     legacy = 0
     for path in (root / "runs").glob("*/state.json"):
         try:
@@ -2005,7 +2039,15 @@ def tick(
             log.warning("research-log service failed: %s", exc)
         intake_job = (
             service_intake(
-                root, github, compute, spec, now, contract, limits, dry_run=service_dry_run
+                root,
+                github,
+                compute,
+                spec,
+                now,
+                contract,
+                limits,
+                dry_run=service_dry_run,
+                records=tick_records,
             )
             if launch_ok and contract is not None
             else None
@@ -2293,7 +2335,7 @@ def read_tombstones(root: Path, target: str, contract: Any, now: float) -> dict[
     return out
 
 
-# WIDTH slots are the only suffixed marker names; the pattern also fences
+# WIDTH slots and intake issue IDs use suffixed marker names; the pattern also fences
 # list_pendings against a longer target that shares this one's file-name
 # prefix (org/foo vs org/foobar — "/" encodes as "__", so glob alone is
 # ambiguous)
@@ -2313,7 +2355,7 @@ def _pending_path(root: Path, target: str, agent: str = "") -> Path:
 
 def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
     """(agent, marker) for every live pending marker of `target` — one per
-    WIDTH slot, plus the legacy un-suffixed marker from a pre-width deploy
+    WIDTH slot or intake issue, plus the legacy un-suffixed marker from a pre-width deploy
     (attributed to agent-01)."""
     out: list[tuple[str, dict[str, Any]]] = []
     stem = target.replace("/", "__")
@@ -2324,7 +2366,9 @@ def list_pendings(root: Path, target: str) -> list[tuple[str, dict[str, Any]]]:
         name = path.stem
         if name == stem:
             agent = ""
-        elif name.startswith(stem + "@") and _SLOT_AGENT_RE.fullmatch(name[len(stem) + 1 :]):
+        elif name.startswith(stem + "@") and re.fullmatch(
+            r"(?:agent|intake)-\d+", name[len(stem) + 1 :]
+        ):
             agent = name[len(stem) + 1 :]
         else:
             continue  # a longer target sharing this prefix (org/foo vs org/foobar)
@@ -2355,6 +2399,19 @@ def clear_pending(root: Path, target: str, agent: str = "") -> None:
     _pending_path(root, target, agent).unlink(missing_ok=True)
 
 
+def _pending_landed(pending: dict[str, Any], records: list[RunRecord], target: str) -> bool:
+    agent = str(pending.get("agent_id", ""))
+    job_id = str(pending.get("job_id", ""))
+    if agent.startswith("intake-"):
+        return any(r.target == target and r.run_job_id == job_id for r in records)
+    return any(
+        r.target == target
+        and r.created >= float(pending["submitted_at"]) - 60
+        and (not agent or r.agent_id == agent)
+        for r in records
+    )
+
+
 def _attempt_width(contract: Any) -> int:
     width = getattr(getattr(contract, "budgets", None), "max_active_attempts", None)
     return int(width) if width else MAX_ACTIVE_RUNS_PER_TARGET
@@ -2378,23 +2435,54 @@ def _climb_panel_argv(spec: ServiceSpec) -> list[str]:
     return argv
 
 
-def _author_config_error(spec: ServiceSpec) -> str:
-    """Why the config-driven author would die at the climb's startup ("" when it
-    won't), checked on the tick host BEFORE a claim/submit so a codex misconfig
-    (e.g. OUTERLOOP_AUTHOR_BACKEND=codex with no non-claude model) never
-    strands a claimed intake issue. Reads the fleet author config from env — the
-    same source the climb defaults from — and the image the tick already knows."""
-    from outerloop.attempt import codex_author_config_error, fleet_author_model
+def _selected_author(spec: ServiceSpec, agent_id: str = "agent-01") -> tuple[str, str]:
+    from outerloop.attempt import fleet_author_model
+    from outerloop.author_overrides import select_override
 
+    selected = select_override(spec.target, agent_id)
+    if selected:
+        return selected.backend, selected.resolved_model()
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+    return backend, fleet_author_model(backend)
+
+
+def _climb_author_argv(spec: ServiceSpec, agent_id: str = "agent-01") -> list[str]:
+    from outerloop.attempt import effective_author_credential
+    from outerloop.author_overrides import overrides, select_override
+
+    if not overrides():
+        return []
+    backend, model = _selected_author(spec, agent_id)
+    credential = effective_author_credential(backend, model)
+    return [
+        "--author-bound",
+        "--author-backend",
+        backend,
+        "--model",
+        model,
+        "--key-file",
+        str(credential.key_file),
+        *(["--author-overridden"] if select_override(spec.target, agent_id) else []),
+    ]
+
+
+def _author_config_error(spec: ServiceSpec, agent_id: str = "agent-01") -> str:
+    from outerloop.attempt import author_config_error
+    from outerloop.endpoints import EndpointUnavailable, resolve_endpoint
+
     try:
-        model = fleet_author_model(backend)
-    except ClaudeModelUnset as exc:
+        backend, model = _selected_author(spec, agent_id)
+        _, profile = resolve_endpoint(model, backend)
+        if profile:
+            _ = profile.url  # Readiness before claim: a missing address never spends an attempt.
+        return author_config_error(backend, model, spec.image)
+    except (ClaudeModelUnset, ValueError, EndpointUnavailable) as exc:
         return str(exc)
-    return codex_author_config_error(backend, model, spec.image)
 
 
-def _panel_preflight_error(spec: ServiceSpec) -> str:
+def _panel_preflight_error(
+    spec: ServiceSpec, agent_id: str = "agent-01", *, record: RunRecord | None = None
+) -> str:
     """Why the climb would die at startup on this panel config ("" when it
     won't): the lens spec, then the key file — each checked with the climb's
     OWN rules (resolve_lenses for grammar and author/model inheritance;
@@ -2408,7 +2496,12 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
     if not spec.panel.strip():
         return ""
     try:
-        from outerloop.attempt import PANEL_KEY_DEFAULT, resolve_author_key_file
+        from outerloop.attempt import (
+            PANEL_KEY_DEFAULT,
+            effective_author_credential,
+            resolve_author_key_file,
+        )
+        from outerloop.endpoints import author_model_setting
         from outerloop.github import FileTokenProvider
         from outerloop.panel import resolve_lenses
 
@@ -2416,10 +2509,56 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
             lenses = resolve_lenses(
                 spec.panel,
                 os.environ.get("OUTERLOOP_AUTHOR_BACKEND", "").strip() or "claude",
-                os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
+                author_model_setting(
+                    os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
+                    os.environ.get("OUTERLOOP_AUTHOR_MODEL", "").strip(),
+                ),
             )
         except ValueError as exc:
             return str(exc)
+        from outerloop.endpoints import resolve_endpoint
+        from outerloop.harness import hermes_resume_max_chars
+
+        if any(backend == "hermes" for _, backend, _ in lenses):
+            hermes_resume_max_chars()
+        author_key_file = ""
+        if record is None:
+            author_backend, author_model = _selected_author(spec, agent_id)
+        else:
+            from outerloop.attempt import fleet_author_model, resume_author
+
+            fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
+            author_backend, author_model, author_key_file = resume_author(
+                record, fleet_author_model(fleet_backend), fleet_backend
+            )
+        author_credential = effective_author_credential(
+            author_backend, author_model, author_key_file
+        )
+        author_path = author_credential.key_file
+        traditional = []
+        for kind, backend, model in lenses:
+            _, profile = resolve_endpoint(model, backend)
+            if profile is None:
+                traditional.append((kind, backend, model))
+                continue
+            if not spec.image or not Path(spec.image).is_file():
+                return f"a {backend} endpoint panel lens requires a real container image"
+            from outerloop.endpoints import validate_judge_key_file
+
+            validate_judge_key_file(
+                profile,
+                author_path,
+                spec.panel_key_file or PANEL_KEY_DEFAULT,
+            )
+            if profile.key() == author_credential.key():
+                return "a panel judge key is the author key (role separation)"
+            if backend == "hermes":
+                from outerloop.hermes_install import hermes_ready
+
+                repo = os.environ.get("REVIEW_HERMES_REPO", "")
+                if not repo or not hermes_ready(Path(repo).expanduser()):
+                    return "hermes panel needs REVIEW_HERMES_REPO with pinned source and runtime"
+        lenses = tuple(traditional)
         # non-claude (shelled) lenses: mirror the climb's rules exactly, per
         # backend — image required, the judge's OWN key (set + absolute +
         # neither the author's nor the claude panel key + readable), and for
@@ -2447,12 +2586,14 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                 return (
                     f"{lens_backend} panel key path {key_path} is relative; only absolute paths fly"
                 )
-            author = Path(resolve_author_key_file("codex")).expanduser()
-            if key_path.resolve() == author.resolve():
-                return (
-                    f"{lens_backend} panel key file {key_path} is the codex author "
-                    "key (role separation: the judge needs its own key)"
-                )
+            for author_backend_name in dict.fromkeys((author_backend, "claude", "codex", "hermes")):
+                author = Path(resolve_author_key_file(author_backend_name)).expanduser()
+                if key_path.resolve() == author.resolve():
+                    return (
+                        f"{lens_backend} panel key file {key_path} is the "
+                        f"{author_backend_name} author "
+                        "key (role separation: the judge needs its own key)"
+                    )
             claude_panel = Path(spec.panel_key_file or PANEL_KEY_DEFAULT).expanduser()
             if key_path.resolve() == claude_panel.resolve():
                 return (
@@ -2460,24 +2601,28 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
                     "key file (an anthropic key must never reach another "
                     "provider's login)"
                 )
-            FileTokenProvider(key_path).token()
+            key = FileTokenProvider(key_path).token()
+            if key_path.resolve() == author_path.resolve() or (
+                key and key == author_credential.key()
+            ):
+                return "a panel judge key is the author key (role separation)"
             if lens_backend == "hermes":
                 repo = os.environ.get("REVIEW_HERMES_REPO", "").strip()
-                # a REAL clone, not merely a directory: the harness executes
-                # run_agent.py from it with the panel key, so an arbitrary or
-                # empty path must fail here, never after a run is claimed
-                if not repo or not (Path(repo).expanduser() / "run_agent.py").is_file():
+                from outerloop.hermes_install import hermes_ready
+
+                if not repo or not hermes_ready(Path(repo).expanduser()):
                     return (
-                        f"a hermes panel lens needs REVIEW_HERMES_REPO pointing at "
-                        f"the pinned clone (run_agent.py not found under {repo!r})"
+                        "a hermes panel lens needs the pinned source and runtime; "
+                        "run bash scripts/install_hermes.sh "
+                        f"{repo or '$REVIEW_HERMES_REPO'}"
                     )
-                from outerloop.role_runner import _HERMES_PROVIDERS
+                from outerloop.role_runner import HERMES_PROVIDERS
 
                 provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
-                if provider not in _HERMES_PROVIDERS:
+                if provider not in HERMES_PROVIDERS:
                     return (
                         f"unknown REVIEW_HERMES_PROVIDER {provider!r} "
-                        f"(have: {sorted(_HERMES_PROVIDERS)})"
+                        f"(have: {sorted(HERMES_PROVIDERS)})"
                     )
         if not any(backend == "claude" for _, backend, _ in lenses):
             return ""  # codex-only panel: the claude key checks below don't apply
@@ -2496,8 +2641,7 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         # (claude vs codex keys coexist), config-driven like the climb itself — so
         # the role-separation check compares the panel key against the RIGHT author
         # key, and a codex run is never judged by a stray Claude key.
-        fleet_backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
-        author = Path(resolve_author_key_file(fleet_backend))
+        author = author_path
         if not author.is_absolute():
             # same rule as the panel key: the climb resolves paths from a
             # flight directory, so a relative author path both misconfigures
@@ -2513,7 +2657,9 @@ def _panel_preflight_error(spec: ServiceSpec) -> str:
         # time, so the preflight and the climb agree.
         from outerloop.role_runner import role_key
 
-        role_key(path)
+        key = role_key(path)
+        if key and key == author_credential.key():
+            return "a panel judge key is the author key (role separation)"
         return ""
     except Exception as exc:
         # never raises: an unexpected failure (partial deploy, ELOOP, unset
@@ -2616,7 +2762,7 @@ def service_self_initiated(
     try:
         if records is None:
             records = list_runs(root)
-        width = _attempt_width(contract)
+        width = attempt_width(root, spec.target, _attempt_width(contract))
         # WIDTH: every live pending marker occupies a slot; landed ones
         # clear; dead ones become per-benchmark tombstones and free theirs.
         occupied: set[str] = set()
@@ -2629,12 +2775,7 @@ def service_self_initiated(
             # matching on target+time alone would let a sibling slot's
             # record clear a still-live marker (terra #173). A legacy
             # marker names no slot, so it keeps the lax match.
-            landed = any(
-                r.target == spec.target
-                and r.created >= submitted_at - 60
-                and (not marker_agent or r.agent_id == marker_agent)
-                for r in records
-            )
+            landed = _pending_landed(pending, records, spec.target)
             expired = now - submitted_at > PENDING_TTL_S
             if landed:
                 clear_pending(root, spec.target, marker_agent)
@@ -2647,7 +2788,7 @@ def service_self_initiated(
                 # breaks ties when Slurm can't say.
                 occupied.add(agent)
                 live_pendings.append((str(pending.get("benchmark", "")), submitted_at))
-                if not marker_agent:
+                if not _SLOT_AGENT_RE.fullmatch(marker_agent):
                     # a live un-slotted marker is another lane's submit
                     # (steward/intake, or a pre-width deploy): serial
                     nonslot_busy = True
@@ -2695,7 +2836,7 @@ def service_self_initiated(
         if lane_error := _gpu_lane_error(contract, benchmark, spec):
             log.error("attempt on %s not launched: %s", benchmark, lane_error)
             return None
-        author_error = _author_config_error(spec)
+        author_error = _author_config_error(spec, slot_agent)
         if author_error:
             log.error(
                 "climb on %s not launched: author misconfigured — %s "
@@ -2704,7 +2845,7 @@ def service_self_initiated(
                 author_error,
             )
             return None
-        panel_error = _panel_preflight_error(spec)
+        panel_error = _panel_preflight_error(spec, slot_agent)
         if panel_error:
             log.error(
                 "climb on %s not launched: panel misconfigured — %s "
@@ -2731,13 +2872,16 @@ def service_self_initiated(
             slot_agent,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *_climb_author_argv(spec, slot_agent),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        # config-driven author: climb resolves the author backend/model/key from
-        # OUTERLOOP_AUTHOR_* env (inherited by the job), so the tick threads
-        # neither the backend nor its key — a new backend needs zero tick change.
-        job_id = compute.submit(
+        # With overrides configured the launch args bind the effective author;
+        # otherwise preserve the existing fleet-driven job command.
+        job_id = submit(
+            root,
+            spec.target,
+            compute,
             JobSpec(
                 job_name=f"climb-{benchmark}-{slot_agent}"[:60],
                 account=spec.account,
@@ -2749,7 +2893,7 @@ def service_self_initiated(
                 ),
                 cpus=4,
                 mem="8G",
-            )
+            ),
         )
         write_pending(root, spec.target, benchmark, job_id, now, agent=slot_agent)
         log.info("self-initiated climb on %s: job %s", benchmark, job_id)
@@ -2779,6 +2923,8 @@ def service_steward(
     target = spec.target
     if not target or not spec.steward_key_file:
         return None
+    if attempt_width(root, target, _attempt_width(contract)) == 0:
+        return None
     if getattr(contract, "steward", None) is None:
         return None
     try:
@@ -2805,15 +2951,9 @@ def service_steward(
         # record yet must block a stewardship the same way an active run
         # does. Liveness first, TTL only breaks unknown ties (queue wait
         # can outlive the TTL).
-        for slot, pending in list_pendings(root, target):
-            marker_agent = "" if not pending.get("agent_id") else slot
+        for _, pending in list_pendings(root, target):
             submitted_at = float(pending.get("submitted_at", 0.0))
-            landed = any(
-                r.target == target
-                and r.created >= submitted_at - 60
-                and (not marker_agent or r.agent_id == marker_agent)
-                for r in records
-            )
+            landed = _pending_landed(pending, records, target)
             expired = now - submitted_at > PENDING_TTL_S
             alive = _holder_alive(compute, str(pending.get("job_id", "")))
             if not landed and (alive is True or (not expired and alive is not False)):
@@ -2874,7 +3014,10 @@ def service_steward(
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
         try:
-            job_id = compute.submit(
+            job_id = submit(
+                root,
+                target,
+                compute,
                 JobSpec(
                     job_name=f"steward-issue-{task.number}",
                     account=spec.account,
@@ -2884,7 +3027,7 @@ def service_steward(
                     command=_flight_command(spec.home, f"steward-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
-                )
+                ),
             )
         except Exception:
             # release the claim: a claim with no job behind it would orphan
@@ -2916,6 +3059,7 @@ def service_intake(
     contract: Any = None,
     limits: EffectiveLimits | None = None,
     dry_run: bool = False,
+    records: list[RunRecord] | None = None,
 ) -> tuple[str, str] | None:
     """The requested lane: claim at most ONE qualifying issue per tick and
     submit a climb job for it. The claim comment (posted by the climb job
@@ -2938,6 +3082,20 @@ def service_intake(
             if contract_raw is None:
                 return None
             contract = load_contract(contract_raw, target)
+        operator_width = read_limits(root).value(target, "max_active_attempts")
+        if operator_width is not None:
+            if records is None:
+                records = list_runs(root)
+            active_attempts = sum(r.target == target and r.state != ENDED for r in records)
+            for _, pending in list_pendings(root, target):
+                if _pending_landed(pending, records, target):
+                    continue
+                alive = _holder_alive(compute, str(pending.get("job_id", "")))
+                expired = now - float(pending["submitted_at"]) > PENDING_TTL_S
+                if alive is True or (not expired and alive is not False):
+                    active_attempts += 1
+            if active_attempts >= min(operator_width, _attempt_width(contract)):
+                return None
         limits = limits if limits is not None else effective_limits(contract.budgets)
         task = pick_issue(github, target, contract, spec.bot_login)
         if task is None:
@@ -2977,6 +3135,7 @@ def service_intake(
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
         job_minutes = _attempt_job_minutes(spec, limits)
+        author_argv = _climb_author_argv(spec)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from outerloop.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
@@ -3007,13 +3166,16 @@ def service_intake(
             hypothesis_b64,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
+            *author_argv,
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
-        # config-driven author: climb resolves the author key from the
-        # OUTERLOOP_AUTHOR_* env by backend; the tick does not thread it.
+        # The selected author was bound before claiming the issue.
         try:
-            job_id = compute.submit(
+            job_id = submit(
+                root,
+                target,
+                compute,
                 JobSpec(
                     job_name=f"climb-issue-{task.number}",
                     account=spec.account,
@@ -3023,7 +3185,7 @@ def service_intake(
                     command=_flight_command(spec.home, f"climb-issue-{task.number}", now, argv),
                     cpus=4,
                     mem="8G",
-                )
+                ),
             )
         except Exception:
             # the claim is already posted and pick_issue skips claimed
@@ -3039,6 +3201,7 @@ def service_intake(
                     f"it for a human).",
                 )
             raise
+        write_pending(root, target, task.benchmark, job_id, now, agent=f"intake-{task.number}")
         log.info("issue #%s claimed for climb job %s", task.number, job_id)
         return (f"issue-{task.number}", job_id)
     except Exception as exc:  # intake must not break the tick
@@ -3097,7 +3260,9 @@ class JobWakeDispatcher:
             "--max-turns",
             str(self.spec.max_turns),
         ]
-        panel_skip = _panel_preflight_error(self.spec) if self.spec.panel.strip() else ""
+        panel_skip = (
+            _panel_preflight_error(self.spec, record=record) if self.spec.panel.strip() else ""
+        )
         if panel_skip:
             argv += ["--panel-skip", panel_skip]
         # An AUTHOR-SLEEP wake resumes a FULL author session (not the short
@@ -3125,9 +3290,12 @@ class JobWakeDispatcher:
         # config-driven author: `climb --resume` resolves the author key from the
         # PARKED RUN's backend (persisted on its record) inside climb.main — the
         # tick does not thread the key, so a fleet flip picks the right one.
-        name = f"wake-{record.run_id}"[:60]
+        name = run_job_name(record.run_id, prefix="wake-")
         afterany = str(record.stage.get("afterany", ""))
-        return self.compute.submit(
+        return submit(
+            self.spec.run_root,
+            record.target,
+            self.compute,
             JobSpec(
                 job_name=name,
                 account=self.spec.account,
@@ -3138,7 +3306,7 @@ class JobWakeDispatcher:
                 dependency=afterany,
                 cpus=2,
                 mem="4G",
-            )
+            ),
         )
 
 
@@ -3307,7 +3475,7 @@ def _service_spec_from_env(
             log.warning(
                 "local mode: no container image at %s; sessions run under the harness "
                 "sandbox and evaluations run bare on this machine; the panel is %s; a "
-                "codex author needs the image (docs/install.md, local mode)",
+                "codex or hermes author needs the image (docs/install.md, local mode)",
                 image,
                 "on by OUTERLOOP_PANEL_UNCONTAINED=1"
                 if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") == "1"
@@ -3415,8 +3583,11 @@ def main() -> int:
         "OUTERLOOP_CADENCE_MIN via the chain's own parser (default 30)",
     )
     args = parser.parse_args()
+    from outerloop.author_overrides import validate_overrides
+
     try:
         gpu_lanes = gpu_lanes_from_env()
+        validate_overrides(os.environ, os.environ.get("OUTERLOOP_IMAGE", ""))
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

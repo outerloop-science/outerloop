@@ -1202,3 +1202,49 @@ def test_legacy_panel_wake_flag_loads_renders_and_retries(tmp_path, monkeypatch,
     assert len(pending(directory, 0)) == 2
     assert path.read_text() == original
     assert append(directory, Message(**fixture["message"])).seq == 1
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_refusal_note_survives_read_and_interrupted_append(tmp_path, monkeypatch, version):
+    import json
+    from dataclasses import asdict
+
+    import outerloop.inbox as inbox
+
+    # The existing refusal payload, before scope admission could refuse.
+    old = replace(
+        message("note", key="refusal:s1:0"),
+        seq=1,
+        payload={
+            "text": "Your syscall request was REFUSED and nothing was launched.",
+            "quoted_text": "launch budget exhausted",
+        },
+    )
+    raw = asdict(old)
+    if version == 1:
+        for field in ("message_id", "context_id", "to", "in_reply_to"):
+            raw.pop(field)
+    else:
+        raw["v"] = 2
+    directory = tmp_path / "inbox"
+    directory.mkdir()
+    path = directory / "000001.json"
+    original = json.dumps(raw)
+    path.write_text(original)
+    for _ in range(2):
+        rendered = render_inbox(pending(tmp_path, 0), budgets="budget")
+        assert old.payload["text"] in rendered
+        assert old.payload["quoted_text"] in rendered
+        assert path.read_text() == original
+    new = message("note", key="refusal:s1:1", text="Your syscall request was REFUSED.")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            inbox.os, "replace", lambda *a, **kw: (_ for _ in ()).throw(OSError("interrupted"))
+        )
+        with pytest.raises(OSError, match="interrupted"):
+            append(tmp_path, new)
+    append(tmp_path, new)
+    append(tmp_path, new)
+    assert len(pending(tmp_path, 0)) == 2
+    assert render_inbox(pending(tmp_path, 0)[:1], budgets="budget") == rendered
+    assert path.read_text() == original

@@ -33,6 +33,7 @@ from typing import Any
 
 from outerloop.cli import ENV_FILE, StartError, env_file_values
 from outerloop.harness import HARNESS_INSTALL, default_binary
+from outerloop.hermes_install import hermes_ready
 from outerloop.image import ensure_image
 from outerloop.paths import write_private
 
@@ -42,7 +43,7 @@ CONFIG_DIR = ENV_FILE.parent
 DEFAULT_PAT_FILE = CONFIG_DIR / "bot_pat"
 API = "https://api.github.com"
 # The climbing author's harnesses (attempt.py's --author-backend choices).
-AUTHOR_BACKENDS = ("claude", "codex")
+AUTHOR_BACKENDS = ("claude", "codex", "hermes")
 
 
 @dataclass
@@ -58,7 +59,7 @@ class InitAnswers:
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
-    author_bin: str = ""  # the author harness binary (claude/codex), absolute, when found
+    author_bin: str = ""  # absolute binary or Hermes source path, when ready
 
     # Existing deployment values untouched by a focused GitHub App update.
     preserved_env: dict[str, str] = field(default_factory=dict)
@@ -142,9 +143,12 @@ def _existing_env() -> str:
 
 
 def author_bin_env(backend: str) -> str:
-    """The `.env` key naming `backend`'s harness binary (`OUTERLOOP_CLAUDE_BIN`,
-    `OUTERLOOP_CODEX_BIN`), the same names `attempt` reads."""
-    return f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
+    """The `.env` key naming the backend's binary or pinned source directory."""
+    return (
+        "REVIEW_HERMES_REPO"
+        if backend == "hermes"
+        else f"OUTERLOOP_{(backend or AUTHOR_BACKENDS[0]).upper()}_BIN"
+    )
 
 
 def locate_harness(backend: str) -> str:
@@ -153,6 +157,13 @@ def locate_harness(backend: str) -> str:
     with no login PATH, would not find it); "" when absent. Recorded in .env so
     every job spawns the same binary the operator installed."""
     name = backend or AUTHOR_BACKENDS[0]
+    if name == "hermes":
+        repo = (
+            Path(os.environ.get("REVIEW_HERMES_REPO") or Path.home() / "hermes-agent")
+            .expanduser()
+            .resolve()
+        )
+        return str(repo) if hermes_ready(repo) else ""
     recorded = os.environ.get(author_bin_env(name), "")
     if recorded:
         # an operator's explicit path is kept when it works and reported when it does not
@@ -171,10 +182,15 @@ def cli_install_wanted(author_bin: str, args: argparse.Namespace) -> bool:
     return not author_bin and not args.no_install_harness and not args.github_app
 
 
-def install_harness(backend: str) -> str:
-    """Install a missing author CLI and return its executable host path."""
+def install_harness(backend: str, target: Path | None = None) -> str:
+    """Install a missing harness and return its binary or Hermes source path."""
     name = backend or AUTHOR_BACKENDS[0]
-    target = Path(os.environ.get(author_bin_env(name)) or Path.home() / ".local/bin" / name)
+    if target is None:
+        target = (
+            Path(os.environ.get("REVIEW_HERMES_REPO") or Path.home() / "hermes-agent")
+            if name == "hermes"
+            else Path(os.environ.get(author_bin_env(name)) or Path.home() / ".local/bin" / name)
+        )
     target = target.expanduser().absolute()
     command = shlex.split(HARNESS_INSTALL[name])
     script = Path(__file__).resolve().parents[2] / command[1]
@@ -183,8 +199,13 @@ def install_harness(backend: str) -> str:
     argv = [command[0], str(script), str(target)]
     try:
         subprocess.run(argv, check=True)
-        if not target.is_file() or not os.access(target, os.X_OK):
-            raise OSError(f"installer did not produce an executable at {target}")
+        ready = (
+            hermes_ready(target)
+            if name == "hermes"
+            else target.is_file() and os.access(target, os.X_OK)
+        )
+        if not ready:
+            raise OSError(f"installer did not produce a complete harness at {target}")
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ValueError(
             f"{name} installation failed: {exc}. Run manually: {shlex.join(argv)}"
@@ -514,7 +535,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
     # (that one is about auth). When asked, offer the fixed set, not a blank.
     ask_author = interactive and not args.github_app
     backend = args.author_backend or (
-        _ask("Author backend (claude or codex)", "claude") if ask_author else ""
+        _ask("Author backend (claude, codex or hermes)", "claude") if ask_author else ""
     )
     model = args.author_model or (
         _ask("Author model (blank = the backend's default)") if ask_author else ""
@@ -794,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-install-harness",
         action="store_true",
-        help="skip installing a missing author CLI",
+        help="skip installing a missing author CLI or Hermes judge runtime",
     )
     parser.add_argument("--author-model", dest="author_model", help="climbing author's model")
     parser.add_argument(
@@ -834,6 +855,27 @@ def main(argv: list[str] | None = None) -> int:
     except StartError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
+    from outerloop.author_overrides import overrides, validate_overrides
+
+    try:
+        effective_overrides = {
+            **env_file_values(CONFIG_DIR / ENV_FILE.name, keys=None),
+            **answers.preserved_env,
+            **os.environ,
+        }
+        selected_authors = overrides(effective_overrides)
+    except (ValueError, StartError) as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
+
+    if answers.author_backend == "hermes":
+        from outerloop.harness import hermes_resume_max_chars
+
+        try:
+            hermes_resume_max_chars()
+        except ValueError as exc:
+            print(f"outerloop init: {exc}", file=sys.stderr)
+            return 2
     if not answers.target:
         print("outerloop init: a target repo is required (--target owner/repo)", file=sys.stderr)
         return 2
@@ -907,14 +949,112 @@ def main(argv: list[str] | None = None) -> int:
             print(f"outerloop init: {exc}", file=sys.stderr)
             return 1
 
-    # The image, only now: every check that could still end the run has passed
-    # and the overwrite question is answered, so a download is never wasted.
+    if not args.github_app:
+        settings = env_file_values(env_path, keys=None)
+        judge_keys = (
+            "OUTERLOOP_PANEL",
+            "OUTERLOOP_AUTHOR_OVERRIDES",
+            "REVIEW_BACKEND",
+            "REVIEW_MODEL",
+            "REVIEW_HERMES_PROVIDER",
+            "REVIEW_HERMES_REPO",
+        )
+        from outerloop.endpoints import endpoint_config_key
+
+        deployment_env = effective_overrides
+        override_keys = {
+            key
+            for selected in selected_authors.values()
+            for key in (
+                f"OUTERLOOP_{selected.backend.upper()}_KEY_FILE",
+                f"OUTERLOOP_{selected.backend.upper()}_BIN",
+            )
+        }
+        if selected_authors:
+            override_keys.update(key for key in deployment_env if endpoint_config_key(key))
+        for key in (*judge_keys, *sorted(override_keys)):
+            if key in os.environ:
+                settings[key] = os.environ[key]
+            if key in settings:
+                answers.preserved_env[key] = settings[key]
+        from outerloop.panel import parse_lenses
+
+        try:
+            panel = settings.get("OUTERLOOP_PANEL", "")
+            lenses = parse_lenses(panel, answers.author_backend) if panel.strip() else ()
+            for backend in sorted({a.backend for a in selected_authors.values()}):
+                if backend in (answers.author_backend or AUTHOR_BACKENDS[0], "hermes"):
+                    continue
+                binary = locate_harness(backend)
+                if cli_install_wanted(binary, args):
+                    binary = install_harness(backend)
+                if binary:
+                    answers.preserved_env[author_bin_env(backend)] = binary
+            needs_hermes = (
+                answers.author_backend == "hermes"
+                or any(a.backend == "hermes" for a in selected_authors.values())
+                or settings.get("REVIEW_BACKEND", "").lower() == "hermes"
+            ) or any(backend == "hermes" for _, backend, _ in lenses)
+            if needs_hermes:
+                repo = Path(
+                    (answers.author_bin if answers.author_backend == "hermes" else "")
+                    or settings.get("REVIEW_HERMES_REPO")
+                    or Path.home() / "hermes-agent"
+                )
+                repo = repo.expanduser().resolve()
+                if cli_install_wanted(str(repo) if hermes_ready(repo) else "", args):
+                    install_harness("hermes", target=repo)
+                answers.preserved_env["REVIEW_HERMES_REPO"] = str(repo)
+        except ValueError as exc:
+            print(f"outerloop init: {exc}", file=sys.stderr)
+            return 1
+
+    # Provision the image before checking backend prerequisites; the override
+    # syntax and overwrite checks have already passed.
     # An existing image is used, else the published one is fetched on a machine
     # that can run it (asked first when interactive); --no-image opts out.
     if not answers.image and not args.no_image:
         # the container probe is for local mode: on Slurm the image runs on
         # compute nodes, which the login node cannot speak for
         answers.image = ensure_image(interactive=interactive, probe=(answers.compute == "local"))
+
+    try:
+        validate_overrides(
+            {**effective_overrides, **answers.preserved_env},
+            answers.image or effective_overrides.get("OUTERLOOP_IMAGE", ""),
+        )
+    except ValueError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
+
+    if answers.author_backend == "hermes":
+        from outerloop.attempt import author_config_error
+        from outerloop.endpoints import author_model_setting
+
+        effective = dict(os.environ)
+        effective.update(
+            (key, value)
+            for key, value in (line.split("=", 1) for line in render_env(answers, "").splitlines())
+        )
+        image = effective.get("OUTERLOOP_IMAGE", "")
+        if image and not Path(image).expanduser().is_file():
+            print(f"outerloop init: Hermes container image {image} is not a file", file=sys.stderr)
+            return 2
+        try:
+            model = author_model_setting(
+                "hermes", effective.get("OUTERLOOP_AUTHOR_MODEL", ""), effective
+            )
+            error = author_config_error(
+                "hermes",
+                model,
+                effective.get("OUTERLOOP_IMAGE", ""),
+                environ=effective,
+            )
+        except ValueError as exc:
+            error = str(exc)
+        if error:
+            print(f"outerloop init: {error}; configure Hermes and rerun init", file=sys.stderr)
+            return 2
 
     # The App is the recommended credential (scoped, revocable, no plaintext
     # token); the PAT is the fallback. Offer it first when interactive.
