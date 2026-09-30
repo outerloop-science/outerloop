@@ -614,10 +614,14 @@ def start(args: argparse.Namespace) -> int:
         try:
             from outerloop.tick import _default_image
 
-            # the image the tick will run with: an unset setting means the default image
+            # the image the launched tick will run with: absent means the default image, an
+            # explicit empty value means no image (as tick.startup_image treats it)
+            image_set = "OUTERLOOP_IMAGE" in os.environ or "OUTERLOOP_IMAGE" in values
             validate_overrides(
                 {**values, **os.environ},
-                _setting_of("OUTERLOOP_IMAGE", values, os.environ) or _default_image(),
+                _setting_of("OUTERLOOP_IMAGE", values, os.environ)
+                if image_set
+                else _default_image(),
             )
         except ValueError as exc:
             raise StartError(str(exc)) from exc

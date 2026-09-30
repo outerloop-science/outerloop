@@ -468,3 +468,32 @@ def test_tick_startup_validates_with_startup_image():
 
     src = inspect.getsource(tick.main)
     assert "validate_overrides(os.environ, startup_image())" in src
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"), [(None, "DEFAULT"), ("", ""), ("/img.sif", "/img.sif")]
+)
+def test_start_validates_with_the_tick_image(monkeypatch, tmp_path, env_value, expected):
+    # outerloop start must validate overrides with exactly the image the launched tick uses:
+    # absent -> the default image, explicit empty -> no image, set -> that image.
+    import contextlib
+
+    from outerloop import cli, tick
+
+    seen = []
+    monkeypatch.setattr(
+        "outerloop.author_overrides.validate_overrides", lambda env, image: seen.append(image)
+    )
+    monkeypatch.setattr(tick, "_default_image", lambda: "DEFAULT")
+    if env_value is None:
+        monkeypatch.delenv("OUTERLOOP_IMAGE", raising=False)
+    else:
+        monkeypatch.setenv("OUTERLOOP_IMAGE", env_value)
+    env_file = tmp_path / "settings.env"
+    env_file.write_text("")
+    env_file.chmod(0o600)
+    monkeypatch.setattr(cli, "ENV_FILE", env_file)
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(env_file))
+    with contextlib.suppress(SystemExit):
+        cli.main(["start", "--dry-run", "--root", str(tmp_path / "state")])
+    assert seen and seen[0] == expected
