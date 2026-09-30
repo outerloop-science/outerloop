@@ -1018,7 +1018,7 @@ def test_resident_tick_takes_no_root_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
     monkeypatch.delenv("OUTERLOOP_TICK_HOST", raising=False)
     monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path)])
-    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root: (None, None))
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda root, **kwargs: (None, None))
     monkeypatch.setattr(mod, "tick", lambda *a, **k: mod.TickReport())
     assert mod.main() == 0
     assert not (tmp_path / "TICK").exists()

@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from outerloop.dispatch import (
     read_eval_result,
     write_eval_job,
 )
+from outerloop.gpu_lanes import GpuLane
 from outerloop.job_names import run_job_name
 from outerloop.orchestrator import EvalError
 
@@ -284,6 +285,9 @@ class DispatchedMeasurer:
     seed_cache: Path | None = None
     qos: str = ""
 
+    gpu_type: str = ""
+    gpu_extra: tuple[str, ...] = ()
+
     def _placement(self, m: Measure) -> tuple[str, str]:
         if m.gpus <= 0 or not self.compute.has_lanes:
             return self.account, self.partition
@@ -403,6 +407,8 @@ class DispatchedMeasurer:
             partition=partition,
             eval_minutes=self.eval_minutes,
             gpus=m.gpus,
+            gpu_type=self.gpu_type if m.gpus and self.compute.has_lanes else "",
+            extra=self.gpu_extra if m.gpus and self.compute.has_lanes else (),
         )
         from outerloop.operator_limits import run_target, state_root, submit_batch
 
@@ -549,7 +555,23 @@ class DispatchSettings:
     seed_cache: Path | None = None
     qos: str = ""
 
+    gpu_lanes: dict[str, GpuLane] = field(default_factory=dict)
+    target: str = ""
+
+    def lane(self, gpus: int) -> GpuLane:
+        if gpus <= 0 or not self.compute.has_lanes:
+            return GpuLane(self.partition, self.account)
+        lane = self.gpu_lanes.get(self.target)
+        if lane is not None:
+            return GpuLane(lane.partition, lane.account or self.account, lane.gpu_type, lane.extra)
+        account, partition = self._fleet_placement(gpus)
+        return GpuLane(partition, account)
+
     def placement(self, gpus: int) -> tuple[str, str]:
+        lane = self.lane(gpus)
+        return lane.account, lane.partition
+
+    def _fleet_placement(self, gpus: int) -> tuple[str, str]:
         """(account, partition) for a job needing `gpus` GPUs. Raises when a
         GPU job has no lane — a queue that can never run is worse than a
         loud refusal. A backend without lanes (local compute) runs every job,
@@ -571,6 +593,11 @@ class DispatchSettings:
         out; `eval_minutes` is the benchmark's contract hint (clamped in the
         job spec). GPUs are per MEASURE (Measure.gpus): the measurer carries
         the lane and places each measure when it dispatches it."""
+        lane = (
+            self.lane(1)
+            if self.target in self.gpu_lanes
+            else GpuLane(self.gpu_partition, self.gpu_account)
+        )
         return DispatchedMeasurer(
             compute=self.compute,
             run_dir=run_dir,
@@ -581,8 +608,10 @@ class DispatchSettings:
             partition=self.partition,
             eval_minutes=eval_minutes,
             run_tag=run_tag,
-            gpu_partition=self.gpu_partition,
-            gpu_account=self.gpu_account,
+            gpu_partition=lane.partition,
+            gpu_account=lane.account,
+            gpu_type=lane.gpu_type,
+            gpu_extra=lane.extra,
             # target-wide, beside the run dirs: every attempt on one base
             # shares its cached baseline measurement (Benchmark.baseline)
             baseline_cache=run_dir.parent / "baselines",

@@ -914,6 +914,8 @@ def _dispatch_settings(args: argparse.Namespace) -> DispatchSettings:
         gpu_partition=getattr(args, "gpu_partition", ""),
         gpu_account=getattr(args, "gpu_account", ""),
         seed_cache=seed_dir(Path(args.run_root), target) if target else None,
+        target=target,
+        gpu_lanes=getattr(args, "gpu_lanes", {}),
     )
 
 
@@ -931,6 +933,8 @@ def with_seed(dispatch: DispatchSettings, run_root: Path, target: str) -> Dispat
     """These settings with the target's seed cache filled in from the record's
     target when the CLI gave none (wake and follow-up jobs carry the run id,
     not the target)."""
+    if isinstance(dispatch, DispatchSettings):
+        dispatch = dc_replace(dispatch, target=target)
     # tolerant of any settings object: a backend that knows no seed (or a
     # test double) is left exactly as it is
     if not target or getattr(dispatch, "seed_cache", "unknown") is not None:
@@ -949,7 +953,8 @@ def _make_launcher(
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
     partially-submitted batch is reaped rather than orphaned. `gpus` is the
     benchmark's: an author's experiments run on the same lane as its evals."""
-    account, partition = dispatch.placement(gpus)
+    lane = dispatch.lane(gpus)
+    account, partition = lane.account, lane.partition
 
     def launcher(sha: str, request: SyscallRequest) -> str:
         from outerloop.dispatch import eval_job_spec, write_eval_job
@@ -983,6 +988,8 @@ def _make_launcher(
                 partition=partition,
                 eval_minutes=launch.minutes,
                 gpus=gpus,
+                gpu_type=lane.gpu_type,
+                extra=lane.extra,
                 nice=LAUNCH_NICE,
                 array=array_spec(launch),
             )
@@ -5072,8 +5079,10 @@ def main() -> int:
     parser.add_argument("--author-overridden", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     from outerloop.author_overrides import select_override
+    from outerloop.gpu_lanes import gpu_lanes_from_env
 
     try:
+        args.gpu_lanes = gpu_lanes_from_env()
         if not args.resume and not args.author_bound:
             selected = select_override(args.target, args.agent_id)
             if selected:
