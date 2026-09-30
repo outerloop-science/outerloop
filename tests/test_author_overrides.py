@@ -471,22 +471,23 @@ def test_tick_startup_validates_with_startup_image():
 
 
 @pytest.mark.parametrize(
-    ("env_value", "file_value", "expected"),
+    ("mode", "env_value", "file_value", "expected"),
     [
-        (None, None, "DEFAULT"),
-        ("", None, ""),
-        ("/img.sif", None, "/img.sif"),
-        ("/inherited.sif", "", ""),  # the settings file wins, as in the deploy step
-        ("/inherited.sif", "/file.sif", "/file.sif"),
+        ("local", None, None, "DEFAULT"),
+        ("local", "", None, ""),
+        ("local", "/img.sif", None, "/img.sif"),
+        ("local", "/inherited.sif", "", "/inherited.sif"),  # a local loop keeps the shell's value
+        ("local", None, "/file.sif", "/file.sif"),
+        ("slurm", None, None, "DEFAULT"),
+        ("slurm", "/inherited.sif", "", ""),  # the deploy step lets the settings file win
+        ("slurm", "/inherited.sif", "/file.sif", "/file.sif"),
+        ("slurm", "/inherited.sif", None, "/inherited.sif"),
     ],
 )
-def test_start_validates_with_the_tick_image(
-    monkeypatch, tmp_path, env_value, file_value, expected
+def test_start_validates_with_the_launched_tick_image(
+    monkeypatch, tmp_path, mode, env_value, file_value, expected
 ):
-    # outerloop start must validate overrides with exactly the image the launched tick uses:
-    # absent -> the default image, explicit empty -> no image, set -> that image.
-    import contextlib
-
+    # outerloop start must validate overrides with exactly the image the tick it launches uses.
     from outerloop import cli, tick
 
     seen = []
@@ -503,6 +504,20 @@ def test_start_validates_with_the_tick_image(
     env_file.chmod(0o600)
     monkeypatch.setattr(cli, "ENV_FILE", env_file)
     monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(env_file))
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_TICK_HOST", raising=False)
+    real_which = cli.shutil.which
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name, *a, **k: (
+            ("/usr/bin/sbatch" if mode == "slurm" else None)
+            if name == "sbatch"
+            else real_which(name, *a, **k)
+        ),
+    )
+    import contextlib
+
     with contextlib.suppress(SystemExit):
         cli.main(["start", "--dry-run", "--root", str(tmp_path / "state")])
     assert seen and seen[0] == expected

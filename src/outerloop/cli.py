@@ -417,6 +417,21 @@ def _setting_of(key: str, values: Mapping[str, str], environ: Mapping[str, str])
     return (environ[key] if key in environ else values.get(key, "")).strip()
 
 
+def _tick_image(values: Mapping[str, str], environ: Mapping[str, str], mode: str) -> str:
+    """The image the launched tick runs with, resolved the way its launch mode passes
+    settings on: the resident chain's deploy step lets a settings-file line win (even
+    empty, meaning no image); a local or login loop keeps the shell's value and fills
+    only what is missing from the file. Absent everywhere: the default image."""
+    from outerloop.tick import _default_image
+
+    key = "OUTERLOOP_IMAGE"
+    first, second = (values, environ) if mode == "slurm" else (environ, values)
+    for source in (first, second):
+        if key in source:
+            return source[key].strip()
+    return _default_image()
+
+
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
     """Check all configured authors' host CLIs using the harness's lookup."""
     from outerloop.author_overrides import override_entries
@@ -609,23 +624,6 @@ def start(args: argparse.Namespace) -> int:
         values = env_file_values(
             operator_env_file(ENV_FILE), START_KEYS + TICK_ENV_KEYS
         )  # one read for everything
-        from outerloop.author_overrides import validate_overrides
-
-        try:
-            from outerloop.tick import _default_image
-
-            # the image the launched tick will run with, in the deploy step's order: a line in
-            # the settings file wins (even empty, which means no image), then the inherited
-            # environment, then the default image (as tick.startup_image falls back)
-            if "OUTERLOOP_IMAGE" in values:
-                image = values["OUTERLOOP_IMAGE"].strip()
-            elif "OUTERLOOP_IMAGE" in os.environ:
-                image = os.environ["OUTERLOOP_IMAGE"].strip()
-            else:
-                image = _default_image()
-            validate_overrides({**values, **os.environ}, image)
-        except ValueError as exc:
-            raise StartError(str(exc)) from exc
         problem = "" if args.dry_run else missing_harness_binary(values, os.environ)
         try:
             author_model_setting(
@@ -652,6 +650,13 @@ def start(args: argparse.Namespace) -> int:
             sbatch_on_path=shutil.which("sbatch") is not None,
             cwd=Path.cwd(),
         )
+        from outerloop.author_overrides import validate_overrides
+
+        try:
+            # validate with the image the tick this start launches will actually run with
+            validate_overrides({**values, **os.environ}, _tick_image(values, os.environ, plan.mode))
+        except ValueError as exc:
+            raise StartError(str(exc)) from exc
     except (StartError, ValueError, OSError) as e:
         print(f"outerloop start: {e}", file=sys.stderr)
         return 2
