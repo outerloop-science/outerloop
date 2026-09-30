@@ -433,3 +433,91 @@ def test_a_target_may_list_overrides_for_different_slots(monkeypatch):
 def test_listed_overrides_are_validated(entries):
     with pytest.raises(ValueError, match=r"^OUTERLOOP_AUTHOR_OVERRIDES:"):
         parse_overrides(json.dumps({"owner/repo": entries}))
+
+
+def test_startup_validation_uses_the_image_the_tick_runs(monkeypatch):
+    # A deployment that leaves OUTERLOOP_IMAGE unset runs codex sessions on the default
+    # image; startup validation of a codex override must use that same image, or the
+    # tick refuses to start at all.
+    import os
+
+    from outerloop import tick
+    from outerloop.author_overrides import validate_overrides
+
+    monkeypatch.delenv("OUTERLOOP_IMAGE", raising=False)
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps(
+            {"owner/repo": {"backend": "codex", "model": "some-codex-model", "slots": ["agent-03"]}}
+        ),
+    )
+    assert tick.startup_image() == tick._default_image()
+    with pytest.raises(ValueError, match="requires --image"):
+        validate_overrides(os.environ, "")  # the old startup behaviour
+    try:
+        validate_overrides(os.environ, tick.startup_image())
+    except ValueError as exc:
+        assert "requires --image" not in str(exc)
+
+
+def test_tick_startup_validates_with_startup_image():
+    # The tick's entry point must validate overrides with the image sessions run with.
+    import inspect
+
+    from outerloop import tick
+
+    src = inspect.getsource(tick.main)
+    assert "validate_overrides(os.environ, startup_image())" in src
+
+
+@pytest.mark.parametrize(
+    ("mode", "env_value", "file_value", "expected"),
+    [
+        ("local", None, None, "DEFAULT"),
+        ("local", "", None, ""),
+        ("local", "/img.sif", None, "/img.sif"),
+        ("local", "/inherited.sif", "", "/inherited.sif"),  # a local loop keeps the shell's value
+        ("local", None, "/file.sif", "/file.sif"),
+        ("slurm", None, None, "DEFAULT"),
+        ("slurm", "/inherited.sif", "", ""),  # the deploy step lets the settings file win
+        ("slurm", "/inherited.sif", "/file.sif", "/file.sif"),
+        ("slurm", "/inherited.sif", None, "/inherited.sif"),
+    ],
+)
+def test_start_validates_with_the_launched_tick_image(
+    monkeypatch, tmp_path, mode, env_value, file_value, expected
+):
+    # outerloop start must validate overrides with exactly the image the tick it launches uses.
+    from outerloop import cli, tick
+
+    seen = []
+    monkeypatch.setattr(
+        "outerloop.author_overrides.validate_overrides", lambda env, image: seen.append(image)
+    )
+    monkeypatch.setattr(tick, "_default_image", lambda: "DEFAULT")
+    if env_value is None:
+        monkeypatch.delenv("OUTERLOOP_IMAGE", raising=False)
+    else:
+        monkeypatch.setenv("OUTERLOOP_IMAGE", env_value)
+    env_file = tmp_path / "settings.env"
+    env_file.write_text("" if file_value is None else f"OUTERLOOP_IMAGE={file_value}\n")
+    env_file.chmod(0o600)
+    monkeypatch.setattr(cli, "ENV_FILE", env_file)
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(env_file))
+    monkeypatch.delenv("OUTERLOOP_COMPUTE", raising=False)
+    monkeypatch.delenv("OUTERLOOP_TICK_HOST", raising=False)
+    real_which = cli.shutil.which
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name, *a, **k: (
+            ("/usr/bin/sbatch" if mode == "slurm" else None)
+            if name == "sbatch"
+            else real_which(name, *a, **k)
+        ),
+    )
+    import contextlib
+
+    with contextlib.suppress(SystemExit):
+        cli.main(["start", "--dry-run", "--root", str(tmp_path / "state")])
+    assert seen and seen[0] == expected
