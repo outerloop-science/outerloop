@@ -97,8 +97,10 @@ from outerloop.orchestrator import (
     attempt_once,
     benchmark_floor,
     clears_min_delta,
+    out_of_scope,
     pr_body,
     resume_attempt,
+    steward_out_of_scope,
 )
 from outerloop.panel import PanelLens, PanelVerdict, run_panel
 from outerloop.paths import CONFIG_DIR
@@ -1358,8 +1360,6 @@ def run_author_leg(
             lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
         )
     if record.agent_id.startswith("steward"):
-        from outerloop.orchestrator import steward_out_of_scope
-
         kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
     if not record.resume_session_id:
@@ -2205,7 +2205,7 @@ def _is_ancestor(ws: Workspace, older: str, newer: str) -> bool:
         return False
 
 
-def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
+def _line_head(ws: Workspace, line_ref: str, branch: str, *, session_commits: bool = True) -> str:
     """The commit the seal parents on: the line's head as the kernel knows it,
     not wherever the session left the checked-out branch (#368). The kernel's
     record (`LINE_HEAD_REF`, written at checkout and after each push) is the
@@ -2223,6 +2223,8 @@ def _line_head(ws: Workspace, line_ref: str, branch: str) -> str:
         log.info("line %s: the kernel's record is off the line; using the remote head", line_ref)
         record = ""
     head = record or remote or branch
+    if not session_commits:
+        return head
     if head == branch:
         return branch
     if _is_ancestor(ws, head, branch):
@@ -2251,6 +2253,29 @@ def _log_line_snapshot(
     log.log(level, "%s", redact(message, secrets).replace("\n", " ").replace("\r", " "))
 
 
+def _out_of_scope_working_tree(
+    ws: Workspace, contract: Contract, revision: str, line_ref: str
+) -> list[str]:
+    """Find changes against a trusted revision without resetting the index."""
+    scope_validator = (
+        steward_out_of_scope if line_ref.startswith("agents/steward") else out_of_scope
+    )
+    ensure_regular_git_dir(ws.root)
+    paths = set(ws.git("diff", "--no-renames", "--name-only", "-z", revision).split("\0"))
+    paths.update(ws.git("ls-files", "--others", "--exclude-standard", "-z").split("\0"))
+    return scope_validator(
+        sorted(p for p in paths if p and not (line_ref and _is_line_memory(p))), contract
+    )
+
+
+def _admit_working_tree(ws: Workspace, contract: Contract, base_branch: str, line_ref: str) -> None:
+    """Apply the orchestrator's scope admission before a capacity park."""
+    common = _scope_revision(ws, f"refs/remotes/origin/{base_branch}", "HEAD")
+    violations = _out_of_scope_working_tree(ws, contract, common, line_ref)
+    if violations:
+        raise ValueError(f"snapshot skipped: scope admission refused: {', '.join(violations)}")
+
+
 def _push_line_snapshot(
     ws: Workspace,
     line_ref: str,
@@ -2258,6 +2283,8 @@ def _push_line_snapshot(
     outcome: str,
     secrets: tuple[str, ...] = (),
     bot_login: str = "",
+    *,
+    contract: Contract,
 ) -> None:
     """Publish the session's final tree to the agent's line as a sealed
     snapshot commit — every terminal path, any outcome
@@ -2283,11 +2310,24 @@ def _push_line_snapshot(
             "snapshot skipped: no GitHub auth" if ws.auth is None else "snapshot skipped: dry run"
         )
         return
+    dropped: set[str] = set()
     try:
         branch = ws.git("rev-parse", f"refs/heads/{line_ref}").strip()
         seen = ws.git("rev-parse", "HEAD").strip()
         # Track untouched files against each reconciled head across retries.
         fork = _line_head(ws, line_ref, branch)
+        trusted = _line_head(ws, line_ref, branch, session_commits=False)
+        if fork != trusted:
+            # Do not publish forbidden changes through session commit ancestry,
+            # even if a subsequent commit reverted them. Seal on the known line.
+            committed = ws.git(
+                "log", "-m", "--format=", "--name-only", "--no-renames", "-z", f"{trusted}..{fork}"
+            ).split("\0")
+            validator = (
+                steward_out_of_scope if line_ref.startswith("agents/steward") else out_of_scope
+            )
+            if validator(sorted(p for p in committed if p and not _is_line_memory(p)), contract):
+                fork = trusted
         for attempt in range(3):
             parent = fork
             operation = "fetch"
@@ -2302,8 +2342,15 @@ def _push_line_snapshot(
                 fork = parent = remote
             operation = "seal"
             _restore_line_memory(ws, parent, seen=seen)
+            # Filter against the actual parent, including on a moved-line retry.
+            # Only the snapshot's private index is sanitized: later measurement
+            # and publication steps still see the session's original files/index.
+            violations = _out_of_scope_working_tree(ws, contract, parent, line_ref)
+            dropped.update(violations)
             memory = tuple(p for p in LINE_MEMORY_PATHS if (Path(ws.root) / p).exists())
-            snap = snapshot_tree(ws, parent, force=memory, author=bot_login)
+            snap = snapshot_tree(
+                ws, parent, force=memory, author=bot_login, restore_from_base=tuple(violations)
+            )
             try:
                 # seal only when the tree moved past the parent; the push runs
                 # either way, since a session that committed its work advanced
@@ -2343,6 +2390,10 @@ def _push_line_snapshot(
                     raise
     except Exception as exc:
         report(f"failed: {type(exc).__name__}: {exc}")
+    finally:
+        if dropped:
+            paths = ", ".join(repr(p) for p in sorted(dropped)[:20])[:1000]
+            report(f"snapshot dropped {len(dropped)} out-of-scope paths: {paths}")
 
 
 def _reconcile_with_remote(ws: Workspace, old: str, new: str) -> None:
@@ -2974,6 +3025,7 @@ def resume_run(
             result.outcome,
             secrets,
             bot_login=config.bot_login,
+            contract=contract,
         )
         ws.git("checkout", "-f", "--detach", candidate_sha)
         ws.git("clean", "-fd")
@@ -3099,6 +3151,7 @@ def resume_run(
                 NEGATIVE_RESULT,
                 secrets,
                 bot_login=config.bot_login,
+                contract=contract,
             )
         finish_run(
             run_root,
@@ -3566,7 +3619,13 @@ def _finish_attempt(
     report_path.write_text(result.report(config, redact_secrets=secrets))
     if not snapshot_attempted and not result.tree_rejected:
         _push_line_snapshot(
-            ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
+            ws,
+            line_ref,
+            run_id,
+            result.outcome,
+            secrets,
+            bot_login=config.bot_login,
+            contract=contract,
         )
     if record.pr_url:
         final = dc_replace(_clear_stage(record, run_root), state=PARKED)
@@ -3714,7 +3773,13 @@ def publish(
     # publish-error snapshot at the tail.
     if not snapshot_attempted:
         _push_line_snapshot(
-            ws, line_ref, run_id, result.outcome, secrets, bot_login=config.bot_login
+            ws,
+            line_ref,
+            run_id,
+            result.outcome,
+            secrets,
+            bot_login=config.bot_login,
+            contract=contract,
         )
 
     record = dc_replace(
@@ -4284,7 +4349,15 @@ def publish(
         # the publish failed after the gate credited the tree: the improved
         # snapshot above stands (the measurement was real); a second seal
         # records how the run ended
-        _push_line_snapshot(ws, line_ref, run_id, outcome_name, secrets, bot_login=config.bot_login)
+        _push_line_snapshot(
+            ws,
+            line_ref,
+            run_id,
+            outcome_name,
+            secrets,
+            bot_login=config.bot_login,
+            contract=contract,
+        )
     log.info("run %s: %s %s", run_id, outcome_name, pr_url)
     return AttemptOutcome(
         run_id=run_id,
@@ -4450,7 +4523,7 @@ def live_attempt(
         line_memory = ""
         line_divergence = ""
         if line_ref:
-            salvage.update(ws=ws, line_ref=line_ref)
+            salvage.update(ws=ws, line_ref=line_ref, contract=contract)
             try:
                 # the line's own memory index, rendered into the brief
                 # (data-fenced there); topic files are read on demand from
@@ -4682,6 +4755,7 @@ def live_attempt(
             )
         except EndpointUnavailable as exc:
             # Reuse a jobless capacity park; its first wake starts the author.
+            _admit_working_tree(ws, contract, base_branch, line_ref)
             sha = snapshot()
             kept_ref = snapshots[-1].ref
             p = RunParked(
@@ -4767,6 +4841,7 @@ def live_attempt(
                 "attempt-error",
                 secrets,
                 bot_login=config.bot_login,
+                contract=cast(Contract, salvage["contract"]),
             )
         failed = RunRecord(
             **{
@@ -5549,12 +5624,22 @@ def finish_run(
     if not snapshot_attempted and ws is not None and ws.root.is_dir():
         line_ref = f"agents/{record.agent_id}"
         try:
+            base_branch = str(record.stage.get("base_branch") or "main")
             contract = load_contract(
-                contract_at(ws, str(record.stage.get("base_sha") or "HEAD")), record.target
+                contract_at(ws, str(record.stage.get("base_sha") or f"origin/{base_branch}")),
+                record.target,
             )
             bench = _benchmark(contract, record.benchmark)
             line_ref = _line_ref_for(bench, record.agent_id)
-            _push_line_snapshot(ws, line_ref, record.run_id, ending, secrets, bot_login=bot_login)
+            _push_line_snapshot(
+                ws,
+                line_ref,
+                record.run_id,
+                ending,
+                secrets,
+                bot_login=bot_login,
+                contract=contract,
+            )
         except Exception as exc:
             _log_line_snapshot(
                 "prepare",

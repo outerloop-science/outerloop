@@ -6,6 +6,13 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Research-line salvage and terminal snapshots now recheck scope admission
+  against the trusted contract before sealing. Out-of-scope changes are
+  dropped from the seal (tracked paths retain their parent content), while
+  admitted work and line memory survive normal endings and crashes after
+  scope refusals. Filtering leaves working files and the real index untouched
+  and logs a bounded list of dropped paths. No persisted-state format changes.
+
 - Support separate instances on one cluster account: process-only absolute
   `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
   and stable settings-path suffixes for resident and per-cadence scheduler jobs.
