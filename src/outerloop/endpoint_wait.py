@@ -92,8 +92,10 @@ def recovered(root: Path, run_id: str, name: str, now: float) -> None:
     """A successful session probe ends the shared outage; only this run resumes."""
     name = name.lower()
     path = root / "endpoint-waits" / f"{name}.json"
-    if not path.exists():
-        # A crash can persist the run stage before the shared journal rename.
+    if not path.parent.exists():
+        # No outage was ever journaled here. A crash can still persist the run
+        # stage before the journal rename; once the folder exists, recovery
+        # always takes the journal lock so a concurrent outage write is not lost.
         if waiting(root, run_id).get("endpoint") == name:
             _set_wait(root, run_id, name, now, clear=True)
         return  # Healthy/legacy runs need no journal or record writes.
