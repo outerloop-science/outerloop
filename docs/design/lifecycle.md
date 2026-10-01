@@ -44,7 +44,7 @@ through `attempt.run_author_leg`, including the steward's review work.
 `followup.py` and its job are gone. GitHub collection positions live beside
 the inbox, while the run record carries the delivered sequence. Replies are
 posted by the author leg; only a submit invokes the gate and one publish.
-The six endings and reports remain. Old state names and collection positions
+The endings and reports remain. Old state names and collection positions
 migrate on read. Each tick logs `legacy follow-up records: N` from raw live
 records; operators must confirm zero across every fleet before deployment.
 
@@ -55,14 +55,14 @@ records; operators must confirm zero across every fleet before deployment.
 | State | Meaning | Leaves it |
 | --- | --- | --- |
 | `running` | a session is live in a job | the session ends: it slept (park), or it stopped (end) |
-| `parked` | no session; the run waits for jobs it launched, for messages, or both | a wake (the same session resumes), or a human ends the PR |
+| `parked` | no session; the run waits for jobs it launched, for messages, or both | a wake (the same session resumes), or a PR or operator ending |
 | `ended` | terminal, with a report | never |
 
 A PR being open is a fact about a run, recorded in `pr_url`, not a state. A
 parked run with a PR is what `in-review` was. `implementing` is `running`;
-`waiting` and `in-review` are `parked`; `concluding` is deleted. The six
-endings stay as they are: merged, rejected, negative result, budget exhausted,
-aborted, stuck. They are how a human reads the board, and every one still
+`waiting` and `in-review` are `parked`; `concluding` is deleted. The endings
+are merged, rejected, negative result, budget exhausted, aborted, stuck, and
+operator. They are how a human reads the board, and every one still
 produces a report.
 
 ### One engine: park and wake
@@ -213,14 +213,22 @@ nothing. A run that has spent everything can still reply and end.
 ### Endings
 
 A run ends when the author ends it, when its PR is merged or closed,
-when the meter runs out, or when the kernel cannot continue: a crash, a
-tampered workspace, or a kernel action that made no progress
-`MAX_WAKE_ATTEMPTS` times, a failed publish retry included. A merge or close
+when an operator requests it with `outerloop end <run-id>`, when the meter
+runs out, or when the kernel cannot continue: a crash, a tampered workspace,
+or a kernel action that made no progress
+`MAX_WAKE_ATTEMPTS` times, a failed publish retry included. The operator command
+atomically records the request time and optional note in the run directory; it
+does not end the run itself. The tick records the ending as `operator` and keeps
+the note as the ending note. A merge or close
 ends the run at the next tick whatever it is doing: pending jobs are
 cancelled, a session in flight finishes its leg and its publish is refused.
+An operator request waits for the run's lease instead: a session in flight
+finishes its leg, and its publish is refused unless it had already started, a queued wake exits without a leg,
+and the next tick that holds the lease ends the run. If that leg ends the run
+itself (a negative result, budget exhausted, stuck), its own ending stands.
 Every ending writes the report, seals the line notebook, releases the issue
-claim when no PR exists, and cancels the run's live launches. No other path
-ends a run. A gate verdict never ends a run by itself, and a reviewer's
+claim when no PR exists, and cancels the run's live launches. These are the only
+paths that end a run. A gate verdict never ends a run by itself, and a reviewer's
 comment never does.
 
 ## What stays rigid

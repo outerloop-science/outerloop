@@ -3753,7 +3753,7 @@ def publish(
 ) -> AttemptOutcome:
     """Publish a credited sealed tree: open a PR or fast-forward its head."""
     latest = load_record(run_root, run_id)
-    if latest.state == ENDED:
+    if latest.state == ENDED or end_requested(run_root, run_id):
         return AttemptOutcome(run_id=run_id, outcome="publish-refused", pr_url=latest.pr_url)
     meter = {
         k: v
@@ -5267,6 +5267,11 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
+        if end_requested(Path(args.run_root), args.resume):
+            # an operator ending is pending: no new leg; the tick ends the run
+            # once this wake's lease is free
+            _release_own_lease(args.run_root, args.resume)
+            return 0
         wake_limits = bound_limits(getattr(_wake_record, "author_limits", None))
         if wake_limits is not None:
             if args.job_minutes:
@@ -5366,6 +5371,10 @@ def main() -> int:
                 else None,
             )
         wake_secrets = tuple(k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k)
+        if end_requested(Path(args.run_root), args.resume):
+            # requested during setup: still no new leg
+            _release_own_lease(args.run_root, args.resume)
+            return 0
         try:
             resumed = resume_run(
                 args.run_root,
@@ -5575,6 +5584,39 @@ def withdraw_pr(
     return ""
 
 
+def end_requested(run_root: Path, run_id: str) -> bool:
+    from outerloop.runstate import END_REQUEST_NAME
+
+    return (run_dir_of(run_root, run_id) / END_REQUEST_NAME).is_file()
+
+
+def end_on_request(
+    run_root: Path, record: RunRecord, github: GitHubClient | None, now: float
+) -> str:
+    """End a run an operator asked to end. The caller holds the run's lease, so
+    no session leg (and no publish) is in flight."""
+    from outerloop.runstate import OPERATOR
+
+    record = load_record(run_root, record.run_id)
+    if record.state == ENDED or not end_requested(run_root, record.run_id):
+        return ""
+    if record.issue_number and github is None:
+        return ""  # the issue comment needs GitHub; a later tick ends it
+    finish_run(run_root, record, OPERATOR, requested_note(run_root, record.run_id), now, github)
+    return OPERATOR
+
+
+def requested_note(run_root: Path, run_id: str) -> str:
+    from outerloop.runstate import END_REQUEST_NAME
+
+    try:
+        request = run_dir_of(run_root, run_id) / END_REQUEST_NAME
+        note = json.loads(request.read_text()).get("note", "")
+        return note if isinstance(note, str) else ""
+    except (OSError, ValueError, AttributeError):
+        return ""  # the request still stands; a damaged note never blocks the ending
+
+
 def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
     """Finish a withdrawal intent, then route the PR ending through the run terminal."""
     from outerloop.github import GitHubError
@@ -5733,6 +5775,10 @@ def _ending_comment(record: RunRecord, ending: str) -> str:
     """
     from outerloop.steward import MAX_STEWARD_ATTEMPTS, RELEASE_MARKER
 
+    if ending == "operator":
+        # As for any ending without a PR, nothing else will resolve the issue.
+        release = "" if record.pr_url else f"{RELEASE_MARKER}\n"
+        return f"{release}Run `{record.run_id}` was ended by an operator."
     if ending == "merged":
         return (
             f"Pull request {record.pr_url} was merged; run `{record.run_id}` is "
