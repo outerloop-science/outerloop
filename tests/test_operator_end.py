@@ -227,9 +227,12 @@ def test_dead_session_of_a_requested_run_ends_as_operator(tmp_path, run, monkeyp
     compute.status.return_value = "FAILED"
     monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: compute)
     dispatcher = RecordingDispatcher()
+    sweep(tmp_path, compute, dispatcher, 10, grace_s=1)  # stamps the kill
+    # Without GitHub the issue cannot be told, so the dead run waits.
+    assert "r1" not in sweep(tmp_path, compute, dispatcher, 20, grace_s=1).running_ended
+    assert load_record(tmp_path, "r1").state == RUNNING
     github = Mock()
-    sweep(tmp_path, compute, dispatcher, 10, grace_s=1, github=github)  # stamps the kill
-    report = sweep(tmp_path, compute, dispatcher, 20, grace_s=1, github=github)
+    report = sweep(tmp_path, compute, dispatcher, 30, grace_s=1, github=github)
     assert "r1" in report.running_ended
     final = load_record(tmp_path, "r1")
     assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "retired")

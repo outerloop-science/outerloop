@@ -1589,6 +1589,8 @@ def _sweep_running(
 
             # A pending operator request names the ending: its session died first.
             requested = end_requested(root, fresh.run_id)
+            if requested and fresh.issue_number and github is None:
+                continue  # the operator ending must tell its issue; a later tick ends it
             if requested:
                 ending, note = OPERATOR, requested_note(root, fresh.run_id)
             else:
