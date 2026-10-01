@@ -46,7 +46,7 @@ from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claud
 from outerloop.housekeeping import shed_ended_workspaces
 from outerloop.job_names import run_job_name
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
-from outerloop.limits import EffectiveLimits, effective_limits
+from outerloop.limits import EffectiveLimits, bound_limits, capped_limits, effective_limits
 from outerloop.markers import has_marker, marker
 from outerloop.operator_limits import (
     attempt_width,
@@ -2446,7 +2446,26 @@ def _selected_author(spec: ServiceSpec, agent_id: str = "agent-01") -> tuple[str
     return backend, fleet_author_model(backend)
 
 
-def _climb_author_argv(spec: ServiceSpec, agent_id: str = "agent-01") -> list[str]:
+def _selected_author_limits(
+    spec: ServiceSpec, agent_id: str = "agent-01", budgets: Any = None
+) -> EffectiveLimits | None:
+    from outerloop.author_overrides import select_override
+
+    selected = select_override(spec.target, agent_id)
+    if selected is None or (
+        selected.session_minutes is None and selected.session_max_turns is None
+    ):
+        return None
+    return effective_limits(
+        budgets,
+        session_minutes=selected.session_minutes,
+        session_max_turns=selected.session_max_turns,
+    )
+
+
+def _climb_author_argv(
+    spec: ServiceSpec, agent_id: str = "agent-01", limits: EffectiveLimits | None = None
+) -> list[str]:
     from outerloop.attempt import effective_author_credential
     from outerloop.author_overrides import overrides, select_override
 
@@ -2454,7 +2473,15 @@ def _climb_author_argv(spec: ServiceSpec, agent_id: str = "agent-01") -> list[st
         return []
     backend, model = _selected_author(spec, agent_id)
     credential = effective_author_credential(backend, model)
+    selected_limits = _selected_author_limits(spec, agent_id)
+    limit_argv = []
+    if selected_limits is not None:
+        from dataclasses import asdict
+
+        bound = capped_limits(limits or selected_limits, spec.max_job_minutes)
+        limit_argv = ["--author-limits", json.dumps(asdict(bound))]
     return [
+        *limit_argv,
         "--author-bound",
         "--author-backend",
         backend,
@@ -2725,14 +2752,12 @@ def _climb_limit_argv(limits: EffectiveLimits, job_minutes: int) -> list[str]:
     CAPPED job with the same rule limits.effective_limits applies to
     contract values — better a short session that ends cleanly than a full
     one the self-deadline kills mid-flight."""
-    from outerloop.limits import ATTEMPT_OVERHEAD_MINUTES, SESSION_MINUTES_FLOOR
-
-    session = min(limits.session_minutes, job_minutes - ATTEMPT_OVERHEAD_MINUTES)
+    session = capped_limits(limits, job_minutes).session_minutes
     return [
         "--max-turns",
         str(limits.session_max_turns),
         "--session-minutes",
-        str(max(SESSION_MINUTES_FLOOR, session)),
+        str(session),
         "--job-minutes",
         str(job_minutes),
     ]
@@ -2857,6 +2882,7 @@ def service_self_initiated(
             return None
         if dry_run:
             return (benchmark, "dry-run")
+        limits = _selected_author_limits(spec, slot_agent, contract.budgets) or limits
         job_minutes = _attempt_job_minutes(spec, limits)
         argv = [
             *_interpreter(spec.home),
@@ -2873,7 +2899,7 @@ def service_self_initiated(
             slot_agent,
             *_climb_limit_argv(limits, job_minutes),
             *_climb_panel_argv(spec),
-            *_climb_author_argv(spec, slot_agent),
+            *_climb_author_argv(spec, slot_agent, limits),
         ]
         if spec.pat_file:
             argv += ["--pat-file", spec.pat_file]
@@ -3135,8 +3161,9 @@ def service_intake(
             return None
         if dry_run:
             return (f"issue-{task.number}", "dry-run")
+        limits = _selected_author_limits(spec, budgets=contract.budgets) or limits
         job_minutes = _attempt_job_minutes(spec, limits)
-        author_argv = _climb_author_argv(spec)
+        author_argv = _climb_author_argv(spec, limits=limits)
         # claim BEFORE submit: Slurm queueing can take minutes, and the next
         # tick must not re-claim the same issue in that window
         from outerloop.intake import CLAIM_MARKER, MAX_INTAKE_ATTEMPTS, RELEASE_MARKER
@@ -3258,8 +3285,11 @@ class JobWakeDispatcher:
             *_climb_panel_argv(self.spec),
             # session budget for the depth-axis REVISION (a blocking panel
             # finding wakes the author to revise).
-            "--max-turns",
-            str(self.spec.max_turns),
+            *(
+                ["--max-turns", str(self.spec.max_turns)]
+                if bound_limits(record.author_limits) is None
+                else []
+            ),
         ]
         panel_skip = (
             _panel_preflight_error(self.spec, record=record) if self.spec.panel.strip() else ""
@@ -3276,7 +3306,19 @@ class JobWakeDispatcher:
         from outerloop.limits import ATTEMPT_OVERHEAD_MINUTES
         from outerloop.roles import author_spec
 
-        if record.pr_url:
+        if (limits := bound_limits(record.author_limits)) is not None:
+            if record.pr_url or record.stage.get("phase") == "author-sleep":
+                job_minutes = _attempt_job_minutes(self.spec, limits)
+            else:
+                from outerloop.panel import panel_read_minutes
+
+                allowance = panel_read_minutes(self.spec.panel)
+                job_minutes = min(
+                    self.wake_minutes + allowance + limits.session_minutes,
+                    self.spec.max_job_minutes,
+                )
+            argv += _climb_limit_argv(limits, job_minutes)
+        elif record.pr_url:
             job_minutes = min(self.spec.time_minutes, self.spec.max_job_minutes)
             session_minutes = max(1, job_minutes - ATTEMPT_OVERHEAD_MINUTES)
             argv += ["--session-minutes", str(session_minutes)]

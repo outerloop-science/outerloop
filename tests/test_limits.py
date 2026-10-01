@@ -69,3 +69,85 @@ def test_contract_rejects_nonpositive_knobs() -> None:
     # pydantic surfaces schema violations as ValueError subclasses
     with pytest.raises(ValueError):
         load_contract(BASE % ", session_minutes: 0", "org/pilot")
+
+
+def test_operator_session_limits_and_contract_clamp():
+    from types import SimpleNamespace
+
+    assert effective_limits(session_minutes=240, session_max_turns=300) == EffectiveLimits(
+        300, 240, 260, 90
+    )
+    for requested, minutes, turns in [
+        (None, 180, 250),
+        (150, 150, 150),
+        (999, 180, 250),
+        (1, 10, 10),
+    ]:
+        limits = effective_limits(
+            SimpleNamespace(session_minutes=requested, session_max_turns=requested),
+            session_minutes=180,
+            session_max_turns=250,
+        )
+        assert limits == EffectiveLimits(turns, minutes, minutes + 20, 90)
+    assert effective_limits(session_max_turns=300) == EffectiveLimits(300, 90, 120, 90)
+    assert effective_limits(session_minutes=180) == EffectiveLimits(120, 180, 200, 90)
+
+
+def test_contract_job_budget_still_lowers_an_overridden_session():
+    from types import SimpleNamespace
+
+    limits = effective_limits(SimpleNamespace(attempt_job_minutes=60), session_minutes=180)
+    assert limits.session_minutes == 40
+    assert limits.attempt_job_minutes == 60
+    for requested, expected in [(150, 150), (999, 200)]:
+        limits = effective_limits(
+            SimpleNamespace(attempt_job_minutes=requested), session_minutes=180
+        )
+        assert limits.attempt_job_minutes == expected
+        assert limits.session_minutes == expected - 20
+
+
+def test_contract_discovered_after_binding_cannot_raise_limits():
+    from types import SimpleNamespace
+
+    from outerloop.limits import clamp_bound_limits
+
+    for bound in [effective_limits(session_max_turns=300), effective_limits(session_minutes=180)]:
+        assert clamp_bound_limits(bound, None) == bound
+        assert (
+            clamp_bound_limits(bound, SimpleNamespace(session_minutes=999, session_max_turns=999))
+            == bound
+        )
+    bound = effective_limits(session_minutes=180, session_max_turns=250)
+    assert clamp_bound_limits(
+        bound, SimpleNamespace(session_minutes=60, session_max_turns=30)
+    ) == EffectiveLimits(30, 60, 80, 90)
+    assert clamp_bound_limits(bound, SimpleNamespace(attempt_job_minutes=60)) == EffectiveLimits(
+        250, 40, 60, 90
+    )
+
+
+def test_bound_limits_tolerates_damaged_records():
+    from outerloop.limits import bound_limits, effective_limits
+
+    assert bound_limits(None) is None
+    assert bound_limits({"session_minutes": 180}) is None
+    assert bound_limits("180") is None
+    full = {**effective_limits().__dict__, "session_minutes": 180, "future_knob": 1}
+    kept, floored = bound_limits(full), bound_limits({**full, "session_max_turns": 0})
+    assert kept is not None and kept.session_minutes == 180
+    assert floored is not None and floored.session_max_turns == 10
+
+
+def test_bound_limits_caps_at_the_override_ceilings():
+    from outerloop.limits import bound_limits, effective_limits
+
+    huge = {**effective_limits().__dict__, "session_minutes": 10**9, "session_max_turns": 10**9}
+    huge["attempt_job_minutes"] = 10**9
+    capped = bound_limits(huge)
+    assert capped is not None
+    assert (capped.session_minutes, capped.session_max_turns, capped.attempt_job_minutes) == (
+        240,
+        300,
+        260,
+    )

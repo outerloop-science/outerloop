@@ -607,6 +607,20 @@ appear twice:
 OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":[{"backend":"claude","model":"served-model[endpoint=onprem]","slots":["agent-04"]},{"backend":"codex","model":"served-model[endpoint=onprem]","slots":["agent-03"]}]}'
 ```
 
+Either form also accepts optional integer `session_minutes` (10–240) and
+`session_max_turns` (10–300) on each entry, for authors that need longer sessions.
+For example, add `"session_minutes":180,"session_max_turns":250` to an entry.
+Values outside these ranges fail startup validation. Only operator settings can
+raise these limits; a contract's explicit session budget can still lower them.
+The session uses the smaller of the contract value and the override, subject to
+the existing floors. An overridden session duration gets a job budget of that
+duration plus 20 minutes of overhead; an explicit contract job budget can lower
+it. Panel work keeps its additional allowance. `OUTERLOOP_MAX_JOB_MINUTES` still
+caps the job and shortens the session when needed to leave overhead; at the cap,
+the panel allowance is what gets cut. A run keeps the limits it was claimed
+with, so its wake and review-reply jobs are sized the same way and are longer
+than a default run's.
+
 This is deployment configuration, not a contract setting. The setting is
 parsed and validated at startup. Endpoint overrides select their own profile in
 `model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
@@ -614,9 +628,11 @@ the selected backend's author credential. Normal author/judge credential
 separation still applies to the effective override credential.
 
 Queued climbs bind the selection when submitted (before an intake claim is
-launched); direct climbs bind at startup. Backend, model and key path are saved
-in the run record. Changing overrides cannot switch an existing run, even at a
-resume or wake. Panel inheritance and CI reviewers still use the fleet author,
+launched); direct climbs bind at startup. Backend, model, key path and resolved
+override limits are saved in the run record. Bound limits also apply to author-sleep wakes, resumed legs
+and author replies to reviews; judge budgets are unchanged. Entries without the
+new fields and older records retain their existing limits. Changing overrides
+cannot switch an existing run, even at a resume or wake. Panel inheritance and CI reviewers still use the fleet author,
 exactly as for a run without an override. Per-run board details show the author
 backend/model and mark overrides. Remove the setting (or use `{}`) to stop
 selecting overrides for new work.

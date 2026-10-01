@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from types import MappingProxyType
 
+from outerloop.limits import (
+    OVERRIDE_SESSION_MINUTES_CEILING,
+    OVERRIDE_SESSION_TURNS_CEILING,
+    SESSION_MINUTES_FLOOR,
+)
+
 SETTING = "OUTERLOOP_AUTHOR_OVERRIDES"
 
 
@@ -18,6 +24,9 @@ class AuthorOverride:
     backend: str
     model: str
     slots: tuple[str, ...] | None = None
+
+    session_minutes: int | None = None
+    session_max_turns: int | None = None
 
     def resolved_model(self) -> str:
         """Bind profile model defaults without inheriting the fleet endpoint."""
@@ -58,8 +67,17 @@ def parse_overrides(raw: str) -> Mapping[str, tuple[AuthorOverride, ...]]:
 
 
 def _parse_one(target: str, value: object, listed: bool) -> AuthorOverride:
-    if not isinstance(value, dict) or set(value) - {"backend", "model", "slots"}:
-        raise ValueError(f"{target}: expected backend, model and optional slots")
+    if not isinstance(value, dict) or set(value) - {
+        "backend",
+        "model",
+        "slots",
+        "session_minutes",
+        "session_max_turns",
+    }:
+        raise ValueError(
+            f"{target}: expected backend, model and optional slots, "
+            "session_minutes, session_max_turns"
+        )
     backend, model, slots = value.get("backend"), value.get("model"), value.get("slots")
     if backend not in ("claude", "codex", "hermes"):
         raise ValueError(f"{target}: backend must be claude, codex or hermes")
@@ -88,7 +106,19 @@ def _parse_one(target: str, value: object, listed: bool) -> AuthorOverride:
         raise ValueError(f"{target}: slots must be distinct agent identities (agent-01, ...)")
     if listed and slots is None:
         raise ValueError(f"{target}: each override in a list must name its slots")
-    return AuthorOverride(backend, model, None if slots is None else tuple(slots))
+    for name, floor, ceiling in (
+        ("session_minutes", SESSION_MINUTES_FLOOR, OVERRIDE_SESSION_MINUTES_CEILING),
+        ("session_max_turns", 10, OVERRIDE_SESSION_TURNS_CEILING),
+    ):
+        if name in value and (type(value[name]) is not int or not floor <= value[name] <= ceiling):
+            raise ValueError(f"{target}: {name} must be an integer between {floor} and {ceiling}")
+    return AuthorOverride(
+        backend,
+        model,
+        None if slots is None else tuple(slots),
+        value.get("session_minutes"),
+        value.get("session_max_turns"),
+    )
 
 
 def overrides(

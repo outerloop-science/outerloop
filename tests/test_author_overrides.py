@@ -10,6 +10,7 @@ import pytest
 
 from outerloop import attempt
 from outerloop.author_overrides import parse_overrides, select_override
+from outerloop.compute import Compute
 from outerloop.runstate import RunRecord, load_record, save_record
 from outerloop.tick import ServiceSpec, _climb_author_argv, _panel_preflight_error
 
@@ -127,7 +128,20 @@ def panel_args(spec, **kwargs):
     )
 
 
-def test_panel_independence(deployment):
+def test_panel_independence(deployment, monkeypatch):
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps(
+            {
+                "owner/repo": {
+                    "backend": "codex",
+                    "model": "served-model[endpoint=onprem]",
+                    "session_minutes": 240,
+                    "session_max_turns": 300,
+                }
+            }
+        ),
+    )
     ordinary, secrets = attempt._panel_lenses_from_args(
         panel_args(deployment, author_backend="claude", model="claude-fleet")
     )
@@ -137,6 +151,8 @@ def test_panel_independence(deployment):
             author_backend="codex",
             model="served-model[endpoint=onprem]",
             author_overridden=True,
+            session_minutes=240,
+            max_turns=300,
         )
     )
     assert [(x.kind, x.harness) for x in ordinary] == [(x.kind, x.harness) for x in overridden]
@@ -166,7 +182,8 @@ def test_override_credential_separation(deployment, same_path):
 
 @pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
 @pytest.mark.parametrize("queued", [False, True])
-def test_binding_survives_setting_change(deployment, monkeypatch, backend, queued):
+@pytest.mark.parametrize("long_session", [False, True])
+def test_binding_survives_setting_change(deployment, monkeypatch, backend, queued, long_session):
     monkeypatch.setenv(
         "OUTERLOOP_AUTHOR_OVERRIDES",
         json.dumps(
@@ -175,6 +192,7 @@ def test_binding_survives_setting_change(deployment, monkeypatch, backend, queue
                     "backend": backend,
                     "model": "served-model[endpoint=onprem]",
                     "slots": ["agent-05"],
+                    **({"session_minutes": 180, "session_max_turns": 250} if long_session else {}),
                 }
             }
         ),
@@ -186,12 +204,16 @@ def test_binding_survives_setting_change(deployment, monkeypatch, backend, queue
         monkeypatch.setenv(
             "OUTERLOOP_AUTHOR_OVERRIDES", '{"owner/repo":{"backend":"claude","model":"claude-new"}}'
         )
-    seen = {}
+    seen: dict[str, Any] = {}
     monkeypatch.setattr(
         attempt, "resolve_bot_auth", lambda *a: SimpleNamespace(token=lambda: "bot")
     )
     monkeypatch.setattr(attempt, "_dispatch_settings", lambda *a: None)
-    monkeypatch.setattr(attempt, "build_harness", lambda *a, **kw: seen.update(kw) or object())
+    monkeypatch.setattr(
+        attempt,
+        "build_harness",
+        lambda *a, **kw: seen.update(kw, spec=a[1]) or object(),
+    )
 
     real_launch = attempt.live_attempt
 
@@ -236,6 +258,12 @@ def test_binding_survives_setting_change(deployment, monkeypatch, backend, queue
     assert (seen["backend"], seen["model"]) == (backend, "served-model[endpoint=onprem]")
     record = load_record(deployment.run_root, seen["record"].run_id)
     assert record.author_overridden
+    if long_session:
+        assert record.author_limits is not None
+        assert record.author_limits["session_minutes"] == 180
+        assert record.author_limits["session_max_turns"] == 250
+    else:
+        assert record.author_limits is None
     assert attempt.resume_author(record, "claude-new", "claude")[:2] == (
         backend,
         "served-model[endpoint=onprem]",
@@ -266,6 +294,10 @@ def test_binding_survives_setting_change(deployment, monkeypatch, backend, queue
     assert attempt.main() == 0
     assert (seen["backend"], seen["model"]) == (backend, "served-model[endpoint=onprem]")
 
+    if long_session:
+        assert seen["spec"].budget.walltime_s == 180 * 60
+        assert seen["spec"].budget.max_turns == 250
+
 
 def test_no_setting_keeps_launch_bytes(deployment, monkeypatch):
     monkeypatch.delenv("OUTERLOOP_AUTHOR_OVERRIDES")
@@ -285,6 +317,7 @@ def test_legacy_record_tolerated_idempotently(tmp_path, state):
     (directory / "state.json").write_text(json.dumps(data))
     for _ in range(3):  # first read, idempotent pass, interrupted writer retry
         record = load_record(tmp_path, data["run_id"])
+        assert record.author_limits is None
         assert not record.author_overridden
         assert attempt.resume_author(record, "other", "claude") == (
             "codex",
@@ -521,3 +554,115 @@ def test_start_validates_with_the_launched_tick_image(
     with contextlib.suppress(SystemExit):
         cli.main(["start", "--dry-run", "--root", str(tmp_path / "state")])
     assert seen and seen[0] == expected
+
+
+@pytest.mark.parametrize("listed", [False, True])
+@pytest.mark.parametrize("name,ceiling", [("session_minutes", 240), ("session_max_turns", 300)])
+@pytest.mark.parametrize("value", [None, True, "120", 120.5, 9, 0, -1, 301])
+def test_invalid_session_limits_at_startup(listed, name, ceiling, value):
+    from outerloop.author_overrides import validate_overrides
+
+    entry = {"backend": "claude", "model": "served-model", "slots": ["agent-01"], name: value}
+    raw = json.dumps({"owner/repo": [entry] if listed else entry})
+    with pytest.raises(ValueError, match=f"{name} must be an integer between 10 and {ceiling}"):
+        validate_overrides({"OUTERLOOP_AUTHOR_OVERRIDES": raw}, "image.sif")
+
+
+@pytest.mark.parametrize("listed", [False, True])
+@pytest.mark.parametrize("minutes,turns", [(10, 10), (240, 300)])
+def test_session_limit_boundaries(listed, minutes, turns, monkeypatch):
+    from outerloop.author_overrides import validate_overrides
+
+    entry = {
+        "backend": "claude",
+        "model": "served-model",
+        "slots": ["agent-01"],
+        "session_minutes": minutes,
+        "session_max_turns": turns,
+    }
+    raw = json.dumps({"owner/repo": [entry] if listed else entry})
+    monkeypatch.setattr(attempt, "author_config_error", lambda *a, **kw: "")
+    validate_overrides({"OUTERLOOP_AUTHOR_OVERRIDES": raw}, "image.sif")
+    selected = parse_overrides(raw)["owner/repo"][0]
+    assert (selected.session_minutes, selected.session_max_turns) == (minutes, turns)
+
+
+@pytest.mark.parametrize("phase", ["author-sleep", "candidate", "reply"])
+@pytest.mark.parametrize("cap", [360, 100])
+def test_bound_wake_limits(deployment, monkeypatch, phase, cap):
+    from dataclasses import asdict
+
+    from outerloop.limits import effective_limits
+    from outerloop.tick import JobWakeDispatcher
+
+    jobs = []
+
+    def submit(job):
+        jobs.append(job)
+        return "123"
+
+    compute = cast(Compute, SimpleNamespace(submit=submit))
+    spec = replace(deployment, panel="", max_job_minutes=cap)
+    record = RunRecord(
+        run_id="long-session",
+        target=spec.target,
+        task_title="trial",
+        state="parked",
+        stage={"phase": phase},
+        pr_url="https://github.com/owner/repo/pull/1" if phase == "reply" else "",
+        author_limits=asdict(effective_limits(session_minutes=180, session_max_turns=250)),
+    )
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", "{}")
+    JobWakeDispatcher(compute, spec, 1).dispatch(record, "ready")
+    job = jobs[0]
+    assert job.time_minutes == min(200, cap)
+    assert f"--session-minutes {min(180, cap - 20)}" in job.command
+    assert "--max-turns 250" in job.command
+    assert f"--job-minutes {job.time_minutes}" in job.command
+
+
+@pytest.mark.parametrize("cap", [360, 100])
+def test_fresh_climb_uses_slot_limits(deployment, monkeypatch, cap):
+    from outerloop.contract import load_contract
+    from outerloop.tick import service_self_initiated
+
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps(
+            {
+                "owner/repo": {
+                    "backend": "claude",
+                    "model": "served-model[endpoint=onprem]",
+                    "slots": ["agent-01"],
+                    "session_minutes": 180,
+                    "session_max_turns": 250,
+                }
+            }
+        ),
+    )
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: bench, command: c, metric: m, direction: min}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "owner/repo",
+    )
+    jobs = []
+
+    def submit(job):
+        jobs.append(job)
+        return "123"
+
+    compute = cast(Compute, SimpleNamespace(submit=submit))
+    spec = replace(deployment, panel="", max_job_minutes=cap)
+    assert service_self_initiated(spec.run_root, compute, spec, contract, 1_000_000) == (
+        "bench",
+        "123",
+    )
+    assert jobs[0].time_minutes == min(200, cap)
+    assert f"--session-minutes {min(180, cap - 20)}" in jobs[0].command
+    assert "--max-turns 250" in jobs[0].command
+    assert "--author-limits" in jobs[0].command

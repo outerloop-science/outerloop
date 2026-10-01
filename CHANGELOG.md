@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Author overrides accept operator-only `session_minutes` (10–240) and
+  `session_max_turns` (10–300). Limits bind with the author selection and survive
+  settings changes across wakes and review replies. Contracts can still lower
+  budgets; job walltime follows session duration and the operator job cap.
+  Judge budgets are unchanged.
+- Upgrading: the new override fields are optional; existing settings and legacy
+  run records need no migration. Finish runs using extended limits before
+  rolling back to a version without bound author limits.
+
 - Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
   image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
   codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.
