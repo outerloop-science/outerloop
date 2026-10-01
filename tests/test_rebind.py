@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -232,6 +233,23 @@ def test_measure_provenance_survives_rebind(tmp_path, parked, selection):
     after = measure("second", "new-sha")
     assert before["author"]["model"] == parked.author_model
     assert after["author"]["model"] == rebound.author_model
+    # A reused eval directory measuring a new commit records that commit's author.
+    reused = measure("first", "new-sha")
+    assert (reused["commit"], reused["author"]["model"]) == ("new-sha", rebound.author_model)
+
+
+def test_launch_rows_credit_the_launched_commit(tmp_path, parked, selection):
+    from outerloop.launchlog import append_submitted
+
+    parked = replace(parked, stage={"candidate_sha": "old-sha"})
+    save_record(tmp_path, parked, 11)
+    request(tmp_path, "one")
+    apply(tmp_path, parked, "")
+    directory = tmp_path / "runs/one"
+    launch = SimpleNamespace(name="probe", why="", minutes=10, array=1, concurrency=1, jobs=None)
+    append_submitted(directory, sleep=1, launches=[launch], job_ids=["5"], at=12, commit="old-sha")
+    rows = [json.loads(line) for line in (directory / "launches.jsonl").read_text().splitlines()]
+    assert rows[-1]["author"]["model"] == parked.author_model
 
 
 def test_pending_candidate_credit(tmp_path, parked, selection):

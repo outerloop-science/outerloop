@@ -296,6 +296,13 @@ def _git_env(extra: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _provenance_commit(path: Path) -> str:
+    try:
+        return str(json.loads(path.read_text()).get("commit", ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def write_eval_job(
     run_dir: Path,
     name: str,
@@ -354,7 +361,8 @@ def write_eval_job(
     from outerloop.provenance import producing_author
 
     provenance = ev / "provenance.json"
-    if not provenance.exists():
+    # A reused eval directory measures a new commit: rewrite its provenance.
+    if not provenance.exists() or _provenance_commit(provenance) != snapshot_sha:
         temporary = ev / ".provenance.tmp"
         temporary.write_text(
             json.dumps(

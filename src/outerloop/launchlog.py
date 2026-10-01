@@ -74,7 +74,7 @@ def append_submitted(
             {
                 "event": "submitted",
                 "commit": commit,
-                "author": producing_author(run_dir),
+                "author": producing_author(run_dir, commit),
                 "sleep": sleep,
                 "name": launch.name,
                 "why": launch.why,
