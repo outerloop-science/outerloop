@@ -558,10 +558,12 @@ def test_start_validates_with_the_launched_tick_image(
 
 @pytest.mark.parametrize("listed", [False, True])
 @pytest.mark.parametrize("name,ceiling", [("session_minutes", 240), ("session_max_turns", 300)])
-@pytest.mark.parametrize("value", [None, True, "120", 120.5, 9, 0, -1, 301])
+@pytest.mark.parametrize("value", [None, True, "120", 120.5, 9, 0, -1, "ceiling+1"])
 def test_invalid_session_limits_at_startup(listed, name, ceiling, value):
     from outerloop.author_overrides import validate_overrides
 
+    if value == "ceiling+1":
+        value = ceiling + 1
     entry = {"backend": "claude", "model": "served-model", "slots": ["agent-01"], name: value}
     raw = json.dumps({"owner/repo": [entry] if listed else entry})
     with pytest.raises(ValueError, match=f"{name} must be an integer between 10 and {ceiling}"):

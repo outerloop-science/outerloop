@@ -134,10 +134,12 @@ def bound_limits(value: Any) -> EffectiveLimits | None:
     """A run's persisted limits, or None (today's defaults) when absent or unreadable."""
     if not isinstance(value, dict):
         return None
-    try:
-        values = {name: int(value[name]) for name in _BOUNDS}
-    except (KeyError, TypeError, ValueError):
-        return None
+    values: dict[str, int] = {}
+    for name in _BOUNDS:
+        stored = value.get(name)
+        if not isinstance(stored, int) or isinstance(stored, bool):
+            return None  # missing, bool, float or string: never coerced
+        values[name] = stored
     ceilings = {
         **{name: ceiling for name, (_, _, ceiling) in _BOUNDS.items()},
         "session_minutes": OVERRIDE_SESSION_MINUTES_CEILING,

@@ -618,8 +618,9 @@ duration plus 20 minutes of overhead; an explicit contract job budget can lower
 it. Panel work keeps its additional allowance. `OUTERLOOP_MAX_JOB_MINUTES` still
 caps the job and shortens the session when needed to leave overhead; at the cap,
 the panel allowance is what gets cut. A run keeps the limits it was claimed
-with, so its wake and review-reply jobs are sized the same way and are longer
-than a default run's.
+with, and its wake and review-reply jobs are sized from those limits too.
+Codex has no turn cap, so `session_max_turns` applies to Claude Code and Hermes
+authors only; Codex sessions are bounded by `session_minutes`.
 
 This is deployment configuration, not a contract setting. The setting is
 parsed and validated at startup. Endpoint overrides select their own profile in

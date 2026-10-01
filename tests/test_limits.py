@@ -133,6 +133,9 @@ def test_bound_limits_tolerates_damaged_records():
     assert bound_limits(None) is None
     assert bound_limits({"session_minutes": 180}) is None
     assert bound_limits("180") is None
+    base = effective_limits().__dict__
+    for bad in ("250", 180.9, 1e10000, True):
+        assert bound_limits({**base, "session_minutes": bad}) is None
     full = {**effective_limits().__dict__, "session_minutes": 180, "future_knob": 1}
     kept, floored = bound_limits(full), bound_limits({**full, "session_max_turns": 0})
     assert kept is not None and kept.session_minutes == 180
