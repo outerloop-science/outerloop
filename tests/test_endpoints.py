@@ -426,7 +426,9 @@ def test_native_model_ids_are_unchanged(model):
 def test_api_compatibility(profile, backend, api):
     profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = api
     assert endpoint_profile("local", backend, environ=profile).apis == (api,)
-    profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = "chat" if api != "chat" else "responses"
+    profile["OUTERLOOP_ENDPOINT_LOCAL_API"] = (
+        "anthropic" if backend == "codex" else ("chat" if api != "chat" else "responses")
+    )
     with pytest.raises(ValueError, match="requires API"):
         endpoint_profile("local", backend, environ=profile)
     del profile["OUTERLOOP_ENDPOINT_LOCAL_API"]
@@ -743,3 +745,105 @@ def test_session_probe_propagates_without_starting_model(
             "GET", "/v1/models", headers={"Authorization": "Bearer endpoint-secret"}
         )
         connection.close.assert_called_once()
+
+
+@pytest.mark.parametrize("runtime_state", ["missing", "stale", "ready"])
+@pytest.mark.parametrize(
+    "backend,apis,endpoint",
+    [
+        ("codex", "chat", True),
+        ("codex", "responses", True),
+        ("codex", "responses,chat", True),
+        ("codex", "chat", False),
+        ("claude", "anthropic,chat", True),
+        ("hermes", "chat", True),
+    ],
+)
+def test_role_preflights_bridge_readiness(
+    profile, tmp_path, monkeypatch, runtime_state, backend, apis, endpoint
+):
+    import hashlib
+
+    from outerloop import bridge_install
+    from outerloop.attempt import _panel_lenses_from_args, author_config_error
+    from outerloop.harness_pins import pins
+    from outerloop.tick import ServiceSpec, _author_config_error, _panel_preflight_error
+
+    runtime = tmp_path / "bridge"
+    monkeypatch.setenv("OUTERLOOP_BRIDGE_RUNTIME", str(runtime))
+    if runtime_state != "missing":
+        python = runtime / "venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text("interpreter")
+        python.chmod(0o755)
+        (runtime / "python.sha256").write_text(hashlib.sha256(python.read_bytes()).hexdigest())
+        (runtime / ".complete").write_text(
+            f"{pins('bridge')['version']} {bridge_install.lock_digest()}"
+            if runtime_state == "ready"
+            else "outdated runtime"
+        )
+    monkeypatch.setenv("OUTERLOOP_ENDPOINT_LOCAL_API", apis)
+    monkeypatch.setenv("REVIEW_HERMES_REPO", str(tmp_path / "hermes"))
+    monkeypatch.setattr("outerloop.hermes_install.hermes_ready", lambda _: True)
+    model = "open-model[endpoint=local]" if endpoint else "gpt-native"
+    image = tmp_path / "image.sif"
+    image.touch()
+    author_key = tmp_path / "author-key"
+    author_key.write_text("separate-author-secret")
+    author_key.chmod(0o600)
+    monkeypatch.setenv("OUTERLOOP_CODEX_KEY_FILE", str(author_key))
+    monkeypatch.setenv(
+        "OUTERLOOP_PANEL_CODEX_KEY_FILE", profile["OUTERLOOP_ENDPOINT_LOCAL_KEY_FILE"]
+    )
+    monkeypatch.delenv("OUTERLOOP_AUTHOR_ENDPOINT", raising=False)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", backend)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", model)
+    spec = ServiceSpec(
+        account="",
+        partition="",
+        run_root=tmp_path,
+        home=tmp_path,
+        panel=f"verify:{backend}:{model},review:{backend}:{model}",
+        image=str(image),
+        panel_key_file=str(tmp_path / "unused-panel-key"),
+    )
+    blocked = backend == "codex" and endpoint and apis == "chat" and runtime_state != "ready"
+    message = (
+        "codex chat-only endpoint bridge runtime is not ready; run outerloop harness upgrade --used"
+    )
+    expected = message if blocked else ""
+    assert author_config_error(backend, model, str(image), environ=dict(os.environ)) == expected
+    assert _author_config_error(spec) == expected
+
+    # Judges use separate credentials from a native author, before any author work.
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "codex")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_MODEL", "gpt-native")
+    panel_error = _panel_preflight_error(spec)
+    if blocked:
+        assert message in panel_error
+    else:
+        assert panel_error == ""
+    args = SimpleNamespace(
+        panel=spec.panel,
+        author_backend="codex",
+        model="gpt-native",
+        key_file=str(author_key),
+        panel_key_file=spec.panel_key_file,
+        image=str(image),
+        claude_bin="/opt/claude",
+        codex_bin="/opt/codex",
+    )
+    if blocked:
+        with pytest.raises(ValueError, match=message):
+            _panel_lenses_from_args(args)
+    else:
+        lenses, _ = _panel_lenses_from_args(args)
+        assert len(lenses) == 2
+
+    monkeypatch.setenv("REVIEW_BACKEND", backend)
+    monkeypatch.setenv("REVIEW_MODEL", model)
+    monkeypatch.delenv("REVIEW_ENDPOINT", raising=False)
+    monkeypatch.setenv("OPENAI_REVIEWER_KEY", "reviewer-secret")
+    harness, error, _ = resolve_reviewer_harness(reviewer_spec())
+    assert error == expected
+    assert (harness is None) == blocked

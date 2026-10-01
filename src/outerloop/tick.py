@@ -2549,6 +2549,7 @@ def _panel_preflight_error(
             if profile is None:
                 traditional.append((kind, backend, model))
                 continue
+            profile.validate_runtime(backend)
             if not spec.image or not Path(spec.image).is_file():
                 return f"a {backend} endpoint panel lens requires a real container image"
             from outerloop.endpoints import validate_judge_key_file
@@ -3451,6 +3452,12 @@ def _default_image() -> str:
     return os.path.expanduser("~/outerloop-images/agent-py312.sif")
 
 
+def startup_image() -> str:
+    """The image sessions run with: OUTERLOOP_IMAGE, else the default. Startup
+    validation uses the same value, so it can never refuse what the tick would run."""
+    return os.environ.get("OUTERLOOP_IMAGE", _default_image())
+
+
 def _service_spec_from_env(
     root: Path, *, gpu_lanes: dict[str, GpuLane] | None = None
 ) -> tuple[Any, ServiceSpec | None]:
@@ -3463,7 +3470,7 @@ def _service_spec_from_env(
     account = os.environ.get("OUTERLOOP_ACCOUNT", "")
     partition = os.environ.get("OUTERLOOP_PARTITION", "")
     qos = os.environ.get("OUTERLOOP_QOS", "")
-    image = os.environ.get("OUTERLOOP_IMAGE", _default_image())
+    image = startup_image()
     home = os.environ.get("OUTERLOOP_HOME", "")
     # Account and partition are optional on Slurm: empty ones leave the billing
     # association and the partition to Slurm's defaults, as `start` already
@@ -3599,7 +3606,7 @@ def main() -> int:
 
     try:
         gpu_lanes = gpu_lanes_from_env()
-        validate_overrides(os.environ, os.environ.get("OUTERLOOP_IMAGE", ""))
+        validate_overrides(os.environ, startup_image())
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

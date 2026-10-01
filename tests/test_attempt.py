@@ -14,6 +14,7 @@ import pytest
 from ledger_fake import LedgerGitHub
 from outerloop import attempt as climb_mod
 from outerloop.attempt import _park_run, live_attempt, resume_run
+from outerloop.contract import load_contract
 from outerloop.dispatch import Snapshot
 from outerloop.harness import SessionResult
 from outerloop.orchestrator import RunConfig, RunParked
@@ -29,6 +30,14 @@ budgets: {gpu_hours_per_run: 1, runs_per_week: 10}
 scope: {allowed: [src/pilot/solvers/]}
 roadmap: docs/roadmap.md
 """
+
+SNAPSHOT_CONTRACT = load_contract(
+    CONTRACT.replace(
+        "[src/pilot/solvers/]",
+        "[src/pilot/solvers/, docs/belief.md, train.py, notes.txt, config.txt, .gitignore]",
+    ),
+    "org/pilot",
+)
 
 # Same contract with an eval hint past the in-job runway, so `should_dispatch`
 # selects the dispatched backend.
@@ -4254,7 +4263,9 @@ def test_push_line_snapshot_publishes_the_terminal_tree(tmp_path: Path, target_r
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
     (ws.root / "docs" / "belief.md").write_text("depth pays\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "depth pays\n"
     msg = _git(target_repo, "log", "-1", "--format=%s", "agents/agent-07").strip()
     assert "tsp-9" in msg and "no-improvement" in msg
@@ -4271,7 +4282,9 @@ def test_push_line_snapshot_skips_an_unchanged_tree(tmp_path: Path, target_repo)
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
     before = _git(target_repo, "rev-parse", "agents/agent-07").strip()
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     assert _git(target_repo, "rev-parse", "agents/agent-07").strip() == before
 
 
@@ -4281,10 +4294,12 @@ def test_push_line_snapshot_chains_sequential_terminals(tmp_path: Path, target_r
     ws = _line_ws(tmp_path, target_repo)
     _checkout_line(ws, ws.root, "agent-07", "main")
     (ws.root / "docs" / "belief.md").write_text("first\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     first = _git(target_repo, "rev-parse", "agents/agent-07").strip()
     (ws.root / "docs" / "belief.md").write_text("second\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "eval-error")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "eval-error", contract=SNAPSHOT_CONTRACT)
     tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
     assert _git(target_repo, "rev-parse", f"{tip}^").strip() == first  # fast-forward chain
     assert _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "second\n"
@@ -4317,7 +4332,7 @@ def test_line_seal_parents_on_the_kernels_head_not_the_checked_out_branch(
     # ...and it starts a fresh topic file in the (recreated) memory directory
     (ws.root / "agent_memory").mkdir()
     (ws.root / "agent_memory" / "wd.md").write_text("wd 0.01\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved", contract=SNAPSHOT_CONTRACT)
     tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
     assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip  # on the line, not main
     assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "remember the pivot\n"
@@ -4352,7 +4367,9 @@ def test_line_seal_survives_a_session_removing_or_moving_the_kernels_record(
             ws.git("reset", "-q", "--hard", "origin/main")
         assert not (ws.root / "AGENT_MEMORY.md").exists()
         (ws.root / "docs" / "belief.md").write_text(f"after the reset ({tamper})\n")
-        _push_line_snapshot(ws, "agents/agent-07", f"tsp-{tamper}", "improved")
+        _push_line_snapshot(
+            ws, "agents/agent-07", f"tsp-{tamper}", "improved", contract=SNAPSHOT_CONTRACT
+        )
         tip = _git(target_repo, "rev-parse", "agents/agent-07").strip()
         assert _git(target_repo, "rev-parse", f"{tip}^").strip() == line_tip, tamper
         assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == (
@@ -4376,7 +4393,7 @@ def test_line_seal_prefers_the_lines_memory_over_mains_stale_copy(
     ws.git("checkout", "-q", "--detach", "origin/main")  # the line branch itself is untouched
     assert (ws.root / "AGENT_MEMORY.md").read_text() == "main's stale copy\n"
     (ws.root / "docs" / "belief.md").write_text("after the reset\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved")
+    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "improved", contract=SNAPSHOT_CONTRACT)
     assert (
         _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "the line's newer memory\n"
     )
@@ -4399,7 +4416,9 @@ def test_line_seal_keeps_a_memory_deletion_the_session_made_on_the_line(
     _checkout_line(ws, ws.root, "agent-07", "main")
     (ws.root / "agent_memory" / "lr.md").unlink()  # the agent retires a topic
     (ws.root / "AGENT_MEMORY.md").write_text("fresh\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     tree = _git(target_repo, "ls-tree", "-r", "--name-only", "agents/agent-07")
     assert "agent_memory/lr.md" not in tree
     assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "fresh\n"
@@ -4409,9 +4428,11 @@ def test_push_line_snapshot_is_best_effort(tmp_path: Path, target_repo) -> None:
     from outerloop.attempt import _push_line_snapshot
 
     ws = _line_ws(tmp_path, target_repo)
-    _push_line_snapshot(ws, "", "tsp-9", "no-improvement")  # feature off: no-op
     _push_line_snapshot(
-        ws, "agents/agent-99", "tsp-9", "no-improvement"
+        ws, "", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )  # feature off: no-op
+    _push_line_snapshot(
+        ws, "agents/agent-99", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
     )  # no such ref: logged skip
     with pytest.raises(subprocess.CalledProcessError):
         _git(target_repo, "rev-parse", "agents/agent-99")
@@ -4482,7 +4503,9 @@ def test_push_line_snapshot_publishes_session_commits(tmp_path: Path, target_rep
     (ws.root / "docs" / "belief.md").write_text("committed by the session\n")
     ws.git("add", "-A")
     ws.git("-c", "user.name=s", "-c", "user.email=s@s", "commit", "-qm", "agent commit")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     assert (
         _git(target_repo, "show", "agents/agent-07:docs/belief.md") == "committed by the session\n"
     )
@@ -4583,7 +4606,9 @@ def test_notebook_keeps_memory_the_target_gitignores(tmp_path: Path, target_repo
     (ws.root / "AGENT_MEMORY.md").write_text("survives the ignore\n")
     (ws.root / "agent_memory").mkdir()
     (ws.root / "agent_memory" / "muon.md").write_text("notes\n")
-    _push_line_snapshot(ws, "agents/agent-07", "tsp-9", "no-improvement")
+    _push_line_snapshot(
+        ws, "agents/agent-07", "tsp-9", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
     tree = _git(target_repo, "ls-tree", "-r", "--name-only", "agents/agent-07")
     assert "AGENT_MEMORY.md" in tree and "agent_memory/muon.md" in tree
 
@@ -4621,7 +4646,8 @@ def test_fallback_run_still_excludes_memory_from_the_seal(
     assert "src/pilot/solvers/tsp.py" in published and "AGENT_MEMORY.md" not in published
 
 
-def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("cruft", [False, True])
+def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch, cruft, caplog) -> None:
     """A negative candidate wake on a lines run lands the session's final
     tree — memory included — on the agent's branch."""
     state, run_id = _write_parked_candidate(
@@ -4634,7 +4660,11 @@ def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
         agent_id="agent-07",
     )
     wsroot = state / "runs" / run_id / "ws"
+    if not cruft:
+        (wsroot / "eval-cache.tmp").unlink()
     (wsroot / "AGENT_MEMORY.md").write_text("- candidate was flat\n")
+    (wsroot / "agent_memory").mkdir(exist_ok=True)
+    (wsroot / "agent_memory" / "candidate.md").write_text("keep these observations\n")
     outcome = resume_run(
         state,
         run_id,
@@ -4647,8 +4677,20 @@ def test_wake_terminal_pushes_the_line_notebook(tmp_path, monkeypatch) -> None:
     bare = tmp_path / f"origin-{run_id}.git"
     tree = _git(bare, "ls-tree", "-r", "--name-only", "agents/agent-07")
     assert "AGENT_MEMORY.md" in tree
+    assert "eval-cache.tmp" not in tree
+    assert _git(bare, "show", "agents/agent-07:AGENT_MEMORY.md") == "- candidate was flat\n"
+    assert _git(bare, "show", "agents/agent-07:agent_memory/candidate.md") == (
+        "keep these observations\n"
+    )
+    assert _git(bare, "show", "agents/agent-07:src/pilot/solvers/tsp.py") == (
+        "def solve(): return 'better'\n"
+    )
     msg = _git(bare, "log", "-1", "--format=%s", "agents/agent-07").strip()
     assert run_id in msg and "no-improvement" in msg
+    logs = [r.message for r in caplog.records if "snapshot dropped" in r.message]
+    assert len(logs) == int(cruft)
+    if cruft:
+        assert "eval-cache.tmp" in logs[0]
 
 
 def test_line_memory_reaches_the_next_session_brief(tmp_path: Path, target_repo_lines) -> None:
@@ -5096,6 +5138,7 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     bare = tmp_path / "origin.git"
     _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
     _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "fetch", "-q", "origin")
     _git(wsroot, "branch", "agents/agent-01", base)
     _git(wsroot, "push", "-q", "origin", "agents/agent-01")
     # the sibling run advances the remote line while we are parked
@@ -5122,7 +5165,11 @@ def test_line_snapshot_parents_on_a_remote_line_that_moved_while_parked(tmp_path
     # our run ends with its own tree
     (wsroot / "train.py").write_text("winner\n")
     _push_line_snapshot(
-        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+        Workspace(root=wsroot, auth=NoAuth()),
+        "agents/agent-01",
+        "run-1",
+        "improved",
+        contract=SNAPSHOT_CONTRACT,
     )
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
     assert head != sibling
@@ -5154,6 +5201,7 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     bare = tmp_path / "origin.git"
     _git(tmp_path, "clone", "-q", "--bare", str(wsroot), str(bare))
     _git(wsroot, "remote", "add", "origin", str(bare))
+    _git(wsroot, "fetch", "-q", "origin")
     _git(wsroot, "branch", "agents/agent-01", base)
     _git(wsroot, "push", "-q", "origin", "agents/agent-01")
     other = tmp_path / "other"
@@ -5181,7 +5229,11 @@ def test_line_snapshot_reseals_when_the_line_moves_between_fetch_and_push(
     monkeypatch.setattr(attempt_mod.Workspace, "push", racing_push)
     (wsroot / "train.py").write_text("winner\n")
     _push_line_snapshot(
-        Workspace(root=wsroot, auth=NoAuth()), "agents/agent-01", "run-1", "improved"
+        Workspace(root=wsroot, auth=NoAuth()),
+        "agents/agent-01",
+        "run-1",
+        "improved",
+        contract=SNAPSHOT_CONTRACT,
     )
     sibling = _git(other, "rev-parse", "HEAD").strip()
     head = _git(bare, "rev-parse", "agents/agent-01").strip()
@@ -5754,6 +5806,8 @@ def test_failed_submitted_park_without_resume_ends(tmp_path, monkeypatch, pr_url
         contract=CONTRACT_LINES,
         agent_id="agent-01",
     )
+    # Exercise the terminal publish with an admitted working tree.
+    (state / "runs" / run_id / "ws" / "eval-cache.tmp").unlink()
     record = load_record(state, run_id)
     save_record(
         state,
@@ -6096,7 +6150,14 @@ def test_line_snapshot_failures_do_not_retry(tmp_path, target_repo, monkeypatch,
         monkeypatch.setattr(ws, "fetch_origin" if operation == "fetch" else "push", fail)
     monkeypatch.setattr(climb_mod, "snapshot_tree", snapshot)
     caplog.set_level("INFO", logger="outerloop.attempt")
-    _push_line_snapshot(ws, "agents/agent-07", "failure-run", "no-improvement", ("private-token",))
+    _push_line_snapshot(
+        ws,
+        "agents/agent-07",
+        "failure-run",
+        "no-improvement",
+        ("private-token",),
+        contract=SNAPSHOT_CONTRACT,
+    )
     assert calls == [operation]
     assert len(seals) == (0 if operation == "fetch" else 1)
     logs = [r.message for r in caplog.records if "failed:" in r.message]
@@ -7632,3 +7693,144 @@ def test_candidate_wake_scope_backstop_never_snapshots_active_line(
     )
     assert outcome.outcome == ("negative-result" if submitted else "scope-violation")
     assert load_record(state, run_id).state == "ended"
+
+
+def test_scope_refusal_resume_exception_salvages_only_admitted_paths(
+    tmp_path, target_repo_lines, monkeypatch, caplog
+):
+    from outerloop import orchestrator
+
+    tips = []
+    real_append = orchestrator.append
+
+    def crash_after_refusal(directory, message):
+        if "Refused:" in str(message.payload):
+            tips.append(_git(target_repo_lines, "rev-parse", "agents/agent-01").strip())
+            raise RuntimeError("injected at resume entry after scope refusal")
+        return real_append(directory, message)
+
+    monkeypatch.setattr(orchestrator, "append", crash_after_refusal)
+    with _queued_local([]):
+        outcome = live_attempt(
+            config=RunConfig(target="org/pilot", benchmark="tsp"),
+            run_root=tmp_path / "state",
+            run_id="scope-crash",
+            harness=ScriptedHarness(
+                edits={
+                    "rejected.txt": "must never be sealed",
+                    "src/pilot/solvers/tsp.py": "admitted work\n",
+                    "AGENT_MEMORY.md": "preserve notebook\n",
+                    ".outerloop/syscall.json": json.dumps(
+                        {"type": "sleep", "submit": True, "report": "candidate"}
+                    ),
+                }
+            ),
+            github=FakeGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_000.0,
+            created="2026-08-06T00:00:00Z",
+            dispatch=_fake_dispatch(),
+        )
+    assert outcome.outcome == "attempt-error"
+    assert len(tips) == 1
+    assert _git(target_repo_lines, "rev-parse", "agents/agent-01^").strip() == tips[0]
+    tree = _git(target_repo_lines, "ls-tree", "-r", "--name-only", "agents/agent-01")
+    assert "rejected.txt" not in tree
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-01:AGENT_MEMORY.md") == "preserve notebook\n"
+    )
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-01:src/pilot/solvers/tsp.py")
+        == "admitted work\n"
+    )
+    logs = [r.message for r in caplog.records if "snapshot dropped" in r.message]
+    assert len(logs) == 1 and "rejected.txt" in logs[0]
+
+
+def test_clean_tree_still_salvages_after_attempt_exception(
+    tmp_path, target_repo_lines, monkeypatch
+):
+    def crash(config, contract_text, workspace, *args, **kwargs):
+        (workspace / "src/pilot/solvers/tsp.py").write_text("admitted work\n")
+        (workspace / "AGENT_MEMORY.md").write_text("preserve notebook\n")
+        raise RuntimeError("injected attempt failure")
+
+    monkeypatch.setattr(climb_mod, "attempt_once", crash)
+    outcome = live_attempt(
+        config=RunConfig(target="org/pilot", benchmark="tsp"),
+        run_root=tmp_path / "state",
+        run_id="clean-crash",
+        harness=ScriptedHarness(edits={}),
+        github=FakeGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_000.0,
+        created="2026-08-06T00:00:00Z",
+    )
+    assert outcome.outcome == "attempt-error"
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-01:src/pilot/solvers/tsp.py")
+        == "admitted work\n"
+    )
+    assert (
+        _git(target_repo_lines, "show", "agents/agent-01:AGENT_MEMORY.md") == "preserve notebook\n"
+    )
+
+
+@pytest.mark.parametrize("change", ["edit", "delete", "add", "commit", "revert", "merge"])
+def test_line_snapshot_restores_protected_paths_only_in_seal(tmp_path, target_repo, change, caplog):
+    from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+    ws = _line_ws(tmp_path, target_repo)
+    _checkout_line(ws, ws.root, "agent-07", "main")
+    parent = ws.git("rev-parse", "HEAD").strip()
+    protected = ".outerloop.yaml" if change != "add" else "report[1].log"
+    path = ws.root / protected
+    if change == "delete":
+        path.unlink()
+    else:
+        path.write_text("out of scope\n")
+    ws.git("add", "--", protected)
+    if change == "merge":
+        identity = ("-c", "user.name=s", "-c", "user.email=s@s")
+        side = ws.git(*identity, "commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", "side")
+        merged = ws.git(
+            *identity,
+            "commit-tree",
+            ws.git("write-tree"),
+            "-p",
+            parent,
+            "-p",
+            side,
+            "-m",
+            "forbidden merge resolution",
+        )
+        ws.git("update-ref", "HEAD", merged)
+    if change in {"commit", "revert"}:
+        ws.git("-c", "user.name=s", "-c", "user.email=s@s", "commit", "-qm", "forbidden")
+    if change == "revert":
+        ws.git("checkout", parent, "--", protected)
+        ws.git("-c", "user.name=s", "-c", "user.email=s@s", "commit", "-qm", "revert forbidden")
+    (ws.root / "src/pilot/solvers/tsp.py").write_text("admitted work\n")
+    (ws.root / "AGENT_MEMORY.md").write_text("notes\n")
+    index = (ws.root / ".git/index").read_bytes()
+    _push_line_snapshot(
+        ws, "agents/agent-07", "protected", "no-improvement", contract=SNAPSHOT_CONTRACT
+    )
+    assert not _git(target_repo, "diff", parent, "agents/agent-07", "--", protected)
+    assert _git(target_repo, "rev-parse", "agents/agent-07^").strip() == parent
+    assert (
+        _git(target_repo, "show", "agents/agent-07:src/pilot/solvers/tsp.py") == "admitted work\n"
+    )
+    assert _git(target_repo, "show", "agents/agent-07:AGENT_MEMORY.md") == "notes\n"
+    assert (ws.root / ".git/index").read_bytes() == index
+    if change == "delete":
+        assert not path.exists()
+    elif change == "revert":
+        assert path.read_text() == _git(ws.root, "show", f"{parent}:{protected}")
+    else:
+        assert path.read_text() == "out of scope\n"
+    logs = [r.message for r in caplog.records if "snapshot dropped" in r.message]
+    if change == "revert":
+        assert not logs  # Only ancestry was dropped; the final content was already restored.
+    else:
+        assert len(logs) == 1 and protected in logs[0]

@@ -116,6 +116,7 @@ def snapshot_tree(
     exclude: tuple[str, ...] = (),
     force: tuple[str, ...] = (),
     author: str = "",
+    restore_from_base: tuple[str, ...] = (),
 ) -> Snapshot:
     """Snapshot the workspace's current CONTENT as a commit parented on
     `base_sha`, without touching the working index, and retain it under a
@@ -127,7 +128,9 @@ def snapshot_tree(
     when the target's ignore rules match them — the notebook seal uses it so
     a .gitignore entry cannot silently discard session memory; callers pass
     only paths that exist. `author` is the bot login the seal commit is
-    made as (empty: OUTERLOOP_BOT_LOGIN).
+    made as (empty: OUTERLOOP_BOT_LOGIN). `restore_from_base` resets exact
+    paths to their parent content (or removes them when absent there), in
+    the private index only; working files and the real index stay untouched.
     """
     # the snapshot writes an index, a tree, a commit, and a ref into this
     # repository: a session-reshaped .git is refused first, like every other
@@ -176,6 +179,10 @@ def snapshot_tree(
             run([*git, "add", "-f", "--", *force], 60)
         if exclude:
             run([*git, "rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", *exclude], 60)
+        if restore_from_base:
+            # Literal pathspecs: agent-written filenames may contain glob syntax.
+            paths = [f":(literal){path}" for path in restore_from_base]
+            run([*git, "reset", "-q", base_sha, "--", *paths], 60)
         # .gitattributes are KEPT: the job materializes the tree by CHECKOUT
         # (git worktree), which reproduces content faithfully — including
         # .gitattributes — and does NOT apply export-ignore/export-subst

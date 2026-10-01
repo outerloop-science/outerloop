@@ -618,7 +618,15 @@ OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":{"backend":"claude","model":"served-mo
 Each entry requires `backend` (`claude`, `codex`, or `hermes`) and `model`.
 Omit `slots` to cover every author slot on that target; otherwise use the existing
 `agent-01`, `agent-02`, … identities allocated by the contract's authors-abreast
-width. This is deployment configuration, not a contract setting. The setting is
+width. To give different slots of one target different authors, map the target
+to a list of entries instead; each entry then names its `slots`, and no slot may
+appear twice:
+
+```sh
+OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":[{"backend":"claude","model":"served-model[endpoint=onprem]","slots":["agent-04"]},{"backend":"codex","model":"served-model[endpoint=onprem]","slots":["agent-03"]}]}'
+```
+
+This is deployment configuration, not a contract setting. The setting is
 parsed and validated at startup. Endpoint overrides select their own profile in
 `model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
 the selected backend's author credential. Normal author/judge credential

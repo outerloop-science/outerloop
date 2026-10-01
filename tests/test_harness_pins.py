@@ -204,7 +204,7 @@ def test_hermes_legacy_runtime_follows_installed_sha(tmp_path, monkeypatch, caps
         assert hermes_ready(repo)
         assert harness_cli.probe("hermes", repo) == (sha, True)
     harness_cli.status(env)
-    line = capsys.readouterr().out.splitlines()[-1]
+    line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("hermes:"))
     assert "override=" in line and "DRIFT" not in line and ".complete=valid" in line
     (runtime / ".complete").write_text("interrupted")
     assert not hermes_ready(repo)
@@ -219,7 +219,7 @@ def test_used_and_cache_environment(tmp_path):
     }
     assert harness_cli.used_harnesses(env) == ["codex", "hermes"]
     env["OUTERLOOP_STEWARD_KEY_FILE"] = "/keys/steward"
-    assert harness_cli.used_harnesses(env) == list(NAMES)
+    assert harness_cli.used_harnesses(env) == ["claude", "codex", "hermes"]
     cache = cache_environment(env)
     assert {"UV_CACHE_DIR", "XDG_CACHE_HOME", "WANDB_DIR"} <= cache.keys()
     assert all(
@@ -560,3 +560,41 @@ def test_retry_state_atomic_replace(tmp_path, monkeypatch):
         harness_cli.upgrade_one("claude", {}, tmp_path / ".env", tmp_path)
     assert len(published) == 1
     assert list(published[0].parent.iterdir()) == published
+
+
+@pytest.mark.parametrize("role", ["author", "override", "reviewer", "panel", "lens_model"])
+def test_upgrade_used_continues_after_role_resolution_error(tmp_path, monkeypatch, capsys, role):
+    (tmp_path / "key").write_text("test-key")
+    (tmp_path / "key").chmod(0o600)
+    env = {
+        "OUTERLOOP_AUTHOR_BACKEND": "claude",
+        "OUTERLOOP_AUTHOR_MODEL": "model",
+        "OUTERLOOP_PANEL": "review:codex:model[endpoint=good]",
+        "OUTERLOOP_ENDPOINT_GOOD_URL": "https://example.com/v1",
+        "OUTERLOOP_ENDPOINT_GOOD_KEY_FILE": str(tmp_path / "key"),
+        "OUTERLOOP_ENDPOINT_GOOD_API": "chat",
+        "OUTERLOOP_ENDPOINT_GOOD_MODEL": "model",
+    }
+    if role == "author":
+        env.update(OUTERLOOP_AUTHOR_BACKEND="codex", OUTERLOOP_AUTHOR_ENDPOINT="missing")
+    elif role == "override":
+        env["OUTERLOOP_AUTHOR_OVERRIDES"] = (
+            '{"owner/repo":{"backend":"codex","model":"model[endpoint=missing]"}}'
+        )
+    elif role == "reviewer":
+        env.update(REVIEW_BACKEND="codex", REVIEW_ENDPOINT="missing")
+    elif role == "panel":
+        env["OUTERLOOP_PANEL"] = "verify:codex:model[endpoint=missing]," + env["OUTERLOOP_PANEL"]
+    else:
+        env["OUTERLOOP_PANEL"] = "verify:hermes," + env["OUTERLOOP_PANEL"]
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr(paths, "ENV_FILE", tmp_path / ".env")
+    upgraded = []
+    monkeypatch.setattr(harness_cli, "upgrade_one", lambda name, *args: upgraded.append(name))
+    assert harness_cli.main(["upgrade", "--used", "--root", str(tmp_path)]) == 0
+    assert "codex" in upgraded and "bridge" in upgraded
+    assert ("hermes" in upgraded) == (role == "lens_model")
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 1
+    assert "skipping bridge detection" in lines[0]
+    assert ("names no model" if role == "lens_model" else "unknown endpoint profile") in lines[0]

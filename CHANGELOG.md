@@ -16,6 +16,40 @@ Versions follow [SemVer](https://semver.org).
   keys/journals are tolerated; ended runs and in-flight PRs are unchanged.
   Rollback to the preceding kernel safely ignores the additive state.
 
+- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
+  image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
+  codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.
+
+- `OUTERLOOP_AUTHOR_OVERRIDES` accepts a list of entries per target, so different
+  slots of one target can use different authors (each listed entry names its slots;
+  a slot may appear only once). The single-object form is unchanged.
+
+- Reject Codex authors and judges on chat-only endpoints during preflight when
+  the bridge runtime is missing or stale, with `outerloop harness upgrade --used`
+  as the fix, before spending the author budget.
+
+- Codex authors and judges can use chat-only endpoint profiles through a
+  per-session LiteLLM bridge and streaming shim, including tool calls and
+  reasoning replay on resume. The bridge runtime is isolated, transitively
+  locked, installed by `outerloop harness upgrade`, and mounted read-only.
+  Direct Responses profiles keep their existing route and interruption behavior;
+  the Codex pin is unchanged. Bridge runtime defaults use `OUTERLOOP_CACHE_ROOT`,
+  else `$OUTERLOOP_ROOT/cache` (local fallback: `~/.outerloop/cache`). Harness
+  upgrades skip bridge detection for misconfigured roles with a diagnostic and
+  continue upgrading the other configured harnesses.
+- Upgrading: install the bridge with `outerloop harness upgrade --used` before
+  selecting chat-only Codex profiles. Existing run records, session homes, and
+  harness retry records retain their formats; no backfill is needed. In-flight
+  direct-endpoint runs are unchanged. Before rollback, finish chat-only Codex
+  sessions or select a Responses-capable profile; older kernels reject that route.
+
+- Research-line salvage and terminal snapshots now recheck scope admission
+  against the trusted contract before sealing. Out-of-scope changes are
+  dropped from the seal (tracked paths retain their parent content), while
+  admitted work and line memory survive normal endings and crashes after
+  scope refusals. Filtering leaves working files and the real index untouched
+  and logs a bounded list of dropped paths. No persisted-state format changes.
+
 - Support separate instances on one cluster account: process-only absolute
   `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
   and stable settings-path suffixes for resident and per-cadence scheduler jobs.

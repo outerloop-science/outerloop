@@ -867,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     except StartError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
-    from outerloop.author_overrides import overrides, validate_overrides
+    from outerloop.author_overrides import override_entries, validate_overrides
 
     try:
         effective_overrides = {
@@ -875,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
             **answers.preserved_env,
             **os.environ,
         }
-        selected_authors = overrides(effective_overrides)
+        selected_authors = [o for _, o in override_entries(effective_overrides)]
     except (ValueError, StartError) as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
@@ -980,7 +980,7 @@ def main(argv: list[str] | None = None) -> int:
         deployment_env = effective_overrides
         override_keys = {
             key
-            for selected in selected_authors.values()
+            for selected in selected_authors
             for key in (
                 f"OUTERLOOP_{selected.backend.upper()}_KEY_FILE",
                 f"OUTERLOOP_{selected.backend.upper()}_BIN",
@@ -998,7 +998,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             panel = settings.get("OUTERLOOP_PANEL", "")
             lenses = parse_lenses(panel, answers.author_backend) if panel.strip() else ()
-            for backend in sorted({a.backend for a in selected_authors.values()}):
+            for backend in sorted({a.backend for a in selected_authors}):
                 if backend in (answers.author_backend or AUTHOR_BACKENDS[0], "hermes"):
                     continue
                 binary = locate_harness(backend)
@@ -1008,7 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
                     answers.preserved_env[author_bin_env(backend)] = binary
             needs_hermes = (
                 answers.author_backend == "hermes"
-                or any(a.backend == "hermes" for a in selected_authors.values())
+                or any(a.backend == "hermes" for a in selected_authors)
                 or settings.get("REVIEW_BACKEND", "").lower() == "hermes"
             ) or any(backend == "hermes" for _, backend, _ in lenses)
             if needs_hermes:
