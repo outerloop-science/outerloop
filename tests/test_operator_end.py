@@ -247,3 +247,32 @@ def test_dead_session_of_a_requested_run_ends_as_operator(tmp_path, run, monkeyp
 
     assert RELEASE_MARKER in github.comment.call_args.args[2]
     assert "operator: retired" in (run_dir(tmp_path, "r1") / "report.md").read_text()
+
+
+def test_request_during_wake_setup_still_prevents_the_leg(tmp_path, run, monkeypatch):
+    from types import SimpleNamespace
+
+    from outerloop import attempt
+
+    image = tmp_path / "image.sif"
+    image.touch()
+    argv = ["climb", "--resume", "r1", "--run-root", str(tmp_path), "--image", str(image)]
+    argv += ["--panel-skip", "test"]
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_BACKEND", "claude")
+    monkeypatch.setenv("OUTERLOOP_CLAUDE_MODEL", "claude-native")
+    monkeypatch.setattr(attempt, "_lease_held_by_another_job", lambda *args: "")
+    monkeypatch.setattr(attempt, "resolve_bot_auth", lambda *a: SimpleNamespace(token=lambda: "t"))
+    monkeypatch.setattr(attempt, "model_key", lambda *args: "key")
+
+    def limits(*args):
+        request_end(tmp_path, "r1", "late", 4)  # lands during setup, after the first check
+        return None
+
+    monkeypatch.setattr(attempt, "bound_limits", limits)
+    monkeypatch.setattr(attempt, "build_harness", lambda *a, **k: object())
+    released = []
+    monkeypatch.setattr(attempt, "_release_own_lease", lambda *args: released.append(args))
+    monkeypatch.setattr(attempt, "resume_run", Mock(side_effect=AssertionError("leg started")))
+    assert attempt.main() == 0
+    assert released

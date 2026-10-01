@@ -223,7 +223,7 @@ the note as the ending note. A merge or close
 ends the run at the next tick whatever it is doing: pending jobs are
 cancelled, a session in flight finishes its leg and its publish is refused.
 An operator request waits for the run's lease instead: a session in flight
-finishes its leg with its publish refused, a queued wake exits without a leg,
+finishes its leg, and its publish is refused unless it had already started, a queued wake exits without a leg,
 and the next tick that holds the lease ends the run. If that leg ends the run
 itself (a negative result, budget exhausted, stuck), its own ending stands.
 Every ending writes the report, seals the line notebook, releases the issue

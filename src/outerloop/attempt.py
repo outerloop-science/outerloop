@@ -5371,6 +5371,10 @@ def main() -> int:
                 else None,
             )
         wake_secrets = tuple(k for k in (bot_auth.token(), *wake_panel_secrets, wake_api_key) if k)
+        if end_requested(Path(args.run_root), args.resume):
+            # requested during setup: still no new leg
+            _release_own_lease(args.run_root, args.resume)
+            return 0
         try:
             resumed = resume_run(
                 args.run_root,
