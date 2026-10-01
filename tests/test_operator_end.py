@@ -220,15 +220,20 @@ def test_issue_run_without_github_is_never_woken_while_it_waits(tmp_path, run, m
 
 
 def test_dead_session_of_a_requested_run_ends_as_operator(tmp_path, run, monkeypatch):
-    save_record(tmp_path, replace(run, state=RUNNING, run_job_id="55"), 2)
+    save_record(tmp_path, replace(run, state=RUNNING, run_job_id="55", issue_number=12), 2)
     assert acquire_lease(tmp_path, "r1", "session", "55", 2)
     assert request_end(tmp_path, "r1", "retired", 3)
     compute = Mock()
     compute.status.return_value = "FAILED"
     monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: compute)
     dispatcher = RecordingDispatcher()
-    sweep(tmp_path, compute, dispatcher, 10, grace_s=1)  # stamps the kill
-    report = sweep(tmp_path, compute, dispatcher, 20, grace_s=1)
+    github = Mock()
+    sweep(tmp_path, compute, dispatcher, 10, grace_s=1, github=github)  # stamps the kill
+    report = sweep(tmp_path, compute, dispatcher, 20, grace_s=1, github=github)
     assert "r1" in report.running_ended
     final = load_record(tmp_path, "r1")
     assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "retired")
+    from outerloop.intake import RELEASE_MARKER
+
+    assert RELEASE_MARKER in github.comment.call_args.args[2]
+    assert "operator: retired" in (run_dir(tmp_path, "r1") / "report.md").read_text()

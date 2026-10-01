@@ -1589,14 +1589,19 @@ def _sweep_running(
 
             # A pending operator request names the ending: its session died first.
             requested = end_requested(root, fresh.run_id)
+            if requested:
+                ending, note = OPERATOR, requested_note(root, fresh.run_id)
+            else:
+                ending = ABORTED
+                note += " — ended by the sweep (a killed climb leaves no exception to contain)"
             finish_run(
                 root,
                 fresh,
-                OPERATOR if requested else ABORTED,
-                requested_note(root, fresh.run_id)
-                if requested
-                else f"{note} — ended by the sweep (a killed climb leaves no exception to contain)",
+                ending,
+                note,
                 now,
+                # an operator ending tells the requesting issue, like every other path
+                github if requested else None,
                 auth=getattr(github, "auth", None),
                 bot_login=bot_login,
             )
@@ -1607,7 +1612,7 @@ def _sweep_running(
                 try:
                     report_path.write_text(
                         f"# Run report — {record.target} / {record.benchmark}\n"
-                        f"Outcome: **aborted** (climb job killed)\n"
+                        f"Outcome: **{ending}** (climb job killed)\n"
                         f"Note: {note}\n"
                     )
                 except OSError as exc:
