@@ -1145,8 +1145,11 @@ def sweep(
 
             # An operator ending waits for the lease: a live session finishes its
             # leg (its publish is refused) and a queued wake exits without one.
+            # A running record is a session in flight (a fresh climb holds no lease):
+            # it finishes its leg; _sweep_running ends it if its job died.
             if (
                 not dry_run
+                and record.state != RUNNING
                 and end_requested(root, record.run_id)
                 and acquire_lease(root, record.run_id, holder, "", now)
             ):

@@ -128,6 +128,8 @@ def test_tick_operator_ending(tmp_path, run, monkeypatch, state, issue):
         )
         assert outcome.outcome == "publish-refused"
         release_lease(tmp_path, "r1")
+        # The leg finishes and parks; only then does the tick end the run.
+        save_record(tmp_path, replace(load_record(tmp_path, "r1"), state=PARKED), 4)
     report = sweep(tmp_path, compute, dispatcher, 5, github=github)
     assert report.review_ended == (("r1", "operator"),)
     final = load_record(tmp_path, "r1")
@@ -276,3 +278,14 @@ def test_request_during_wake_setup_still_prevents_the_leg(tmp_path, run, monkeyp
     monkeypatch.setattr(attempt, "resume_run", Mock(side_effect=AssertionError("leg started")))
     assert attempt.main() == 0
     assert released
+
+
+def test_fresh_climb_without_a_lease_finishes_its_leg(tmp_path, run, monkeypatch):
+    save_record(tmp_path, replace(run, state=RUNNING, run_job_id="42"), 2)
+    assert request_end(tmp_path, "r1", "", 3)
+    compute = Mock()
+    compute.status.return_value = "RUNNING"  # the climb job is alive
+    monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: compute)
+    report = sweep(tmp_path, compute, RecordingDispatcher(), 10, grace_s=1)
+    assert not report.review_ended and "r1" not in report.running_ended
+    assert load_record(tmp_path, "r1").state == RUNNING
