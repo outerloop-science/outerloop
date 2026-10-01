@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from outerloop.endpoint_wait import session_url as endpoint_session_url
 from outerloop.endpoints import EndpointProfile
 from outerloop.hermes_install import hermes_ready, hermes_runtime
 from outerloop.image import apptainer_from_env
@@ -731,7 +732,7 @@ class ClaudeCodeHarness:
                     {
                         # Claude Code appends /v1/messages itself; profiles use the
                         # OpenAI-style base, so drop a trailing /v1
-                        "ANTHROPIC_BASE_URL": self.endpoint.session_url()
+                        "ANTHROPIC_BASE_URL": endpoint_session_url(self.endpoint, workspace)
                         .rstrip("/")
                         .removesuffix("/v1"),
                         "CLAUDE_CODE_USE_VERTEX": "0",
@@ -1195,7 +1196,7 @@ class CodexHarness:
                 'model_provider = "outerloop_endpoint"\n'
                 "[model_providers.outerloop_endpoint]\n"
                 'name = "Outerloop endpoint"\n'
-                f"base_url = {json.dumps(self.endpoint.session_url())}\n"
+                f"base_url = {json.dumps(endpoint_session_url(self.endpoint, workspace))}\n"
                 'env_key = "OUTERLOOP_SESSION_KEY"\n'
                 'wire_api = "responses"\n'
                 "requires_openai_auth = false\n"
@@ -1508,10 +1509,11 @@ class HermesHarness:
                     config_lines.insert(1, f"  default: {json.dumps(self.model)}\n")
                 if self.endpoint:
                     config_lines.append("  reasoning_echo: true\n")
+                    endpoint_url = endpoint_session_url(self.endpoint, workspace)
                     config_lines.append(
                         "custom_providers:\n"
                         f"  - name: {json.dumps(self.provider)}\n"
-                        f"    base_url: {json.dumps(self.endpoint.session_url())}\n"
+                        f"    base_url: {json.dumps(endpoint_url)}\n"
                         f"    key_env: {json.dumps(self.key_env)}\n"
                         "    api_mode: chat_completions\n"
                     )

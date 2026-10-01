@@ -6,6 +6,16 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Add read-only `outerloop status` (text/`--json`) for local runs and endpoint
+  outages. Endpoint waits stay out of the published board/status strip and never
+  trigger research-log commits; log one shared outage start and recovery with
+  duration and run IDs.
+  Validate optional served model and expiry in bounded endpoint address records.
+- Upgrading: no action needed; the first endpoint deferral adds
+  `stage.endpoint_wait` and an `endpoint-waits/<profile>.json` log latch. Missing
+  keys/journals are tolerated; ended runs and in-flight PRs are unchanged.
+  Rollback to the preceding kernel safely ignores the additive state.
+
 - Support separate instances on one cluster account: process-only absolute
   `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
   and stable settings-path suffixes for resident and per-cadence scheduler jobs.

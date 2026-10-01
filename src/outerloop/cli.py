@@ -13,6 +13,7 @@ allowlist of author knobs per tick), so editing it later cannot move a chain.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -920,6 +921,9 @@ def main(argv: list[str] | None = None) -> int:
         return init.main(argv[1:])
     p = sub.add_parser("limits", help="show live operator ceilings and fleet GPU usage")
     p.add_argument("--root", help="state root (defaults to OUTERLOOP_ROOT or ~/.outerloop)")
+    p = sub.add_parser("status", help="show local runs and endpoint outages (read-only)")
+    p.add_argument("--root", help="state root (defaults to OUTERLOOP_ROOT or ~/.outerloop)")
+    p.add_argument("--json", action="store_true", help="print structured JSON")
     p = sub.add_parser("permissions", help="check and update the App's required permissions")
     p.add_argument("--open", action="store_true", help="open the next permission settings page")
     p = sub.add_parser("migrate-ledger", help="seed research-log from a pinned main ledger")
@@ -928,6 +932,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="replace an existing branch ledger")
     p.add_argument("--dry-run", action="store_true", help="print the table without writing")
     args = parser.parse_args(argv)
+    if args.command == "status":
+        from outerloop.status import collect_status, render_text
+
+        values = env_file_values(keys=("OUTERLOOP_ROOT",)) if not args.root else {}
+        root = Path(
+            args.root
+            or os.environ.get("OUTERLOOP_ROOT")
+            or values.get("OUTERLOOP_ROOT")
+            or DEFAULT_LOCAL_ROOT
+        ).expanduser()
+        status = collect_status(root)
+        print(json.dumps(status, indent=2) if args.json else render_text(status))
+        return 0
     if args.command == "migrate-ledger":
         from outerloop.ledger_migrate import migrate
 

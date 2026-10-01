@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
@@ -33,6 +35,10 @@ def split_endpoint(model: str) -> tuple[str, str]:
 
 class EndpointUnavailable(Exception):
     """A configured server address is temporarily unavailable."""
+
+    def __init__(self, message: str, endpoint: str = "") -> None:
+        super().__init__(message)
+        self.endpoint = endpoint.lower()
 
 
 def validate_url(value: str, name: str) -> str:
@@ -72,19 +78,41 @@ class EndpointProfile:
         if self.url_file is None:
             return self.fixed_url
         try:
-            value = self.url_file.read_text().strip()
+            with self.url_file.open("rb") as source:
+                raw = source.read(65537)
+            if len(raw) > 65536:
+                raise EndpointUnavailable(f"endpoint {self.name!r}: record too large", self.name)
+            value = raw.decode("utf-8").strip()
         except OSError as exc:
             raise EndpointUnavailable(
                 f"endpoint {self.name!r}: URL_FILE {self.url_file} unavailable; "
-                "waiting for server address"
+                "waiting for server address",
+                self.name,
             ) from exc
         if value.startswith("{"):
             try:
-                value = json.loads(value)["url"]
+                record = json.loads(value)
+                value = record["url"]
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError(
                     f"endpoint {self.name!r}: URL_FILE must contain a URL or JSON with a url key"
                 ) from exc
+            if "model" in record and record["model"] != self.model:
+                raise EndpointUnavailable(
+                    f"endpoint {self.name!r}: served model mismatch", self.name
+                )
+            if "expires_at" in record:
+                expiry = record["expires_at"]
+                if (
+                    isinstance(expiry, bool)
+                    or not isinstance(expiry, (int, float))
+                    or not 0 < expiry <= 253402300799
+                    or not math.isfinite(expiry)
+                    or expiry <= time.time()
+                ):
+                    raise EndpointUnavailable(
+                        f"endpoint {self.name!r}: expired or invalid expiry", self.name
+                    )
         if not isinstance(value, str):
             raise ValueError(f"endpoint {self.name!r}: URL_FILE url must be a string")
         return validate_url(value, self.name)
@@ -109,10 +137,14 @@ class EndpointProfile:
             )
             response = connection.getresponse()
             if response.status != 200:
-                raise EndpointUnavailable(f"endpoint {self.name!r}: models request failed")
+                raise EndpointUnavailable(
+                    f"endpoint {self.name!r}: models request failed", self.name
+                )
             return value
         except (OSError, HTTPException, Terminated, KeyboardInterrupt) as exc:
-            raise EndpointUnavailable(f"endpoint {self.name!r}: server unavailable") from exc
+            raise EndpointUnavailable(
+                f"endpoint {self.name!r}: server unavailable", self.name
+            ) from exc
         finally:
             if connection is not None:
                 connection.close()

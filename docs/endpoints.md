@@ -24,8 +24,9 @@ OUTERLOOP_IMAGE=/opt/agent.sif
 The files must be readable, nonempty, and private (`chmod 600`). Paths must be
 absolute (`~` is expanded). Profile names start with a letter and contain only
 letters, digits, and underscores; references are case-insensitive and their env
-keys are uppercase. Only `_URL`, `_KEY_FILE`, `_MODEL`, and `_API` are forwarded by the
-profile allowlist. URLs cannot contain credentials, a query, or a fragment.
+keys are uppercase. The profile allowlist forwards `_URL`, `_URL_FILE`,
+`_KEY_FILE`, `_MODEL`, and `_API`. URLs cannot contain credentials, a query, or a
+fragment.
 
 A profile owns its model. `OUTERLOOP_AUTHOR_MODEL` may be omitted; if set, it must
 match the profile's served model. Panel syntax is
@@ -186,3 +187,44 @@ request checks the server with a three-second timeout and the profile key in an
 Authorization header. Missing files, dead servers, and interrupted checks park
 fresh runs and defer wakes without consuming a wake retry. There is no polling. Malformed contents are configuration errors. Profile names, served model,
 API capabilities and credential paths retain their existing semantics.
+
+## Endpoint wait visibility
+
+When a run defers, `stage.endpoint_wait` records the canonical (lowercase)
+profile name as `endpoint` and its first unavailable time as `since` (Unix
+seconds). `outerloop status` shows the endpoint and start time locally.
+Endpoint infrastructure state is excluded from the GitHub board and status strip
+and never triggers a research-log commit. A successful session probe clears that
+run's wait. Other waiting runs retain their own start times until they resume.
+
+The kernel logs one outage-start line for the first waiting run and one recovery
+line with the duration and all run IDs that waited. A locked, atomically written
+`endpoint-waits/<profile>.json` journal shares the outage latch across processes
+and ticks. There are no notifications or extra health probes. As with
+ordinary logging, a process crash between journal persistence and log emission
+can lose a line; the journal prevents repetition on subsequent ticks.
+
+JSON address records may also contain `model` and `expires_at` (finite Unix
+seconds, at most the end of year 9999). When present, the model must match the
+profile and expiry must be in the future. Mismatched models, expired/invalid
+expiry, and records larger than 64 KiB are unavailable. Bare URLs and JSON without these optional fields retain
+their existing behavior. Reads are bounded to 64 KiB plus one byte; the
+existing health request retains its three-second timeout.
+
+Compatibility: legacy run records without `stage.endpoint_wait` and state roots
+without an outage journal mean no recorded wait; no backfill is needed. Ended
+runs are left untouched. The legacy author-route fixture exercises repeated
+reads and retry after an interrupted write. Unknown stage and journal keys are
+preserved. The preceding kernel can ignore these additive keys on rollback;
+wait visibility is lost, but run and PR lifecycle semantics are unchanged.
+
+## Local operator status
+
+Run `outerloop status` or `outerloop status --root /path/to/state --json` to
+read active runs and current endpoint outages without GitHub, scheduler calls,
+health probes, or state writes. Each run includes its author route and override
+flag, phase, recorded GPU-hours used/budget, and any endpoint wait. Text times
+are UTC; JSON times are Unix seconds. Outage waiting-run IDs come from the shared
+journal; after recovery, individual runs can still retain waits until they resume.
+GPU budgets use the local workspace contract (including review top-ups); missing
+or unreadable contracts show `unknown` (`null` in JSON).

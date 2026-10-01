@@ -668,7 +668,11 @@ def test_url_file_wake_keeps_park_and_refunds_retry(profile, tmp_path, monkeypat
     assert defer_endpoint_wake(tmp_path, record)
     waiting = load_record(tmp_path, record.run_id)
     assert waiting.state == "parked" and waiting.wake_attempts == 0
-    assert waiting.resume_session_id == "existing" and waiting.stage == record.stage
+    assert waiting.resume_session_id == "existing"
+    wait = waiting.stage["endpoint_wait"]
+    assert isinstance(wait, dict) and wait["endpoint"] == "local"
+    assert isinstance(wait["since"], float)
+    assert {k: v for k, v in waiting.stage.items() if k != "endpoint_wait"} == record.stage
     path.write_text("http://localhost:8000/v1")
     assert not defer_endpoint_wake(tmp_path, waiting)
 

@@ -1436,3 +1436,59 @@ def test_hypothesis_needs_a_real_label_and_status_falls_back(tmp_path: Path) -> 
     save_record(tmp_path, record, 2.0)
     (r,) = collect_status(tmp_path, "org/repo", 3.0)["runs"]
     assert r["hypothesis"] == "EMA helps." and r["direction"]
+
+
+def test_endpoint_wait_is_invisible_to_published_board_and_strip(tmp_path):
+    from outerloop.climbboard import collect_status
+    from outerloop.endpoint_wait import recovered, unavailable
+    from outerloop.endpoints import EndpointUnavailable
+
+    _terminal_run(tmp_path, "finished")
+    live = RunRecord(
+        "live",
+        "org/repo",
+        "Research",
+        "parked",
+        stage={"phase": "candidate", "hypothesis": "Improve the result"},
+    )
+    save_record(tmp_path, live, 10)
+    gh = _BoardGitHub()
+    service_climb_board(tmp_path, gh, "org/repo")
+    assert service_status(tmp_path, gh, "org/repo", 20)
+    published = dict(gh.files)
+    gh.puts.clear()
+    for now in (30, 40):
+        unavailable(tmp_path, "live", EndpointUnavailable("down", "local"), now)
+        assert service_climb_board(tmp_path, gh, "org/repo") == 0
+        assert not service_status(tmp_path, gh, "org/repo", now)
+        assert gh.files == published
+        assert gh.puts == []
+    recovered(tmp_path, "live", "local", 50)
+    assert not service_status(tmp_path, gh, "org/repo", 50)
+    assert service_climb_board(tmp_path, gh, "org/repo") == 0
+    assert gh.files == published
+    assert gh.puts == []
+
+    # Identical records apart from the additive key produce identical wire bytes,
+    # including a pre-existing configuration block and an ended run's board row.
+    for stage in (live.stage, {**live.stage, "hermes_resume_required_chars": 10**9}):
+        plain = dc_replace(live, stage=stage)
+        waiting = dc_replace(
+            plain, stage={**stage, "endpoint_wait": {"endpoint": "local", "since": 1}}
+        )
+        before = collect_status(tmp_path, "org/repo", 60, records=[plain])
+        after = collect_status(tmp_path, "org/repo", 60, records=[waiting])
+        assert json.dumps(before, indent=1) == json.dumps(after, indent=1)
+        assert "endpoint_wait" not in after["runs"][0]
+
+    from outerloop.runstate import load_record
+
+    ended = load_record(tmp_path, "finished")
+    waited = dc_replace(
+        ended, stage={**ended.stage, "endpoint_wait": {"endpoint": "local", "since": 1}}
+    )
+    fresh = _BoardGitHub()
+    with_wait = _BoardGitHub()
+    service_climb_board(tmp_path, fresh, "org/repo", records=[ended])
+    service_climb_board(tmp_path, with_wait, "org/repo", records=[waited])
+    assert fresh.files == with_wait.files
