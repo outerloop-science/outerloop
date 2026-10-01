@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Author overrides accept operator-only `session_minutes` (10–240) and
+  `session_max_turns` (10–300). Limits bind with the author selection and survive
+  settings changes across wakes and review replies. Contracts can still lower
+  budgets; job walltime follows session duration and the operator job cap.
+  Judge budgets are unchanged.
+- Upgrading: the new override fields are optional; existing settings and legacy
+  run records need no migration. Finish runs using extended limits before
+  rolling back to a version without bound author limits.
+
 - Bad author overrides hold only affected fresh claims during ticks, with one log
   per entry per tick; malformed settings hold named targets, or all fresh claims
   when unreadable. Other tick services and bound runs continue; `outerloop start`
