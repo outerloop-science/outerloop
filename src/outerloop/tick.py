@@ -1139,6 +1139,15 @@ def sweep(
                     migrate_inbox(root, record.run_id, now)
                 finally:
                     release_lease(root, record.run_id)
+            from outerloop.runstate import END_REQUEST_NAME
+
+            if not dry_run and (run_dir(root, record.run_id) / END_REQUEST_NAME).is_file():
+                from outerloop.attempt import close_if_done
+
+                ending = close_if_done(root, record, github, now)
+                if ending:
+                    ended.append((record.run_id, ending))
+                continue
             merged = False
             blessed_before = record.auto_blessed_head
             try:

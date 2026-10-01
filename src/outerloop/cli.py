@@ -859,6 +859,32 @@ def upgrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def end(args: argparse.Namespace) -> int:
+    import time
+
+    from outerloop.runstate import request_end
+
+    try:
+        values = env_file_values(keys=("OUTERLOOP_ROOT",))
+        root = Path(
+            args.root
+            or os.environ.get("OUTERLOOP_ROOT")
+            or values.get("OUTERLOOP_ROOT")
+            or DEFAULT_LOCAL_ROOT
+        ).expanduser()
+        created = request_end(root, args.run_id, args.note, time.time())
+    except (ValueError, OSError) as exc:
+        print(f"outerloop end: {exc}", file=sys.stderr)
+        return 2
+    status = "requested" if created else "already requested"
+    print(
+        f"Run {args.run_id}: ending {status}. At the next tick, the run will end as "
+        "operator and its pending jobs will be cancelled; a session in flight will "
+        "finish its leg and its publish will be refused."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     from outerloop import __version__
 
@@ -933,6 +959,10 @@ def main(argv: list[str] | None = None) -> int:
         from outerloop import init
 
         return init.main(argv[1:])
+    p = sub.add_parser("end", help="request an operator ending at the next tick")
+    p.add_argument("run_id")
+    p.add_argument("--root", help="state root (defaults to OUTERLOOP_ROOT or ~/.outerloop)")
+    p.add_argument("--note", default="", help="reason for ending the run")
     p = sub.add_parser("limits", help="show live operator ceilings and fleet GPU usage")
     p.add_argument("--root", help="state root (defaults to OUTERLOOP_ROOT or ~/.outerloop)")
     p = sub.add_parser("permissions", help="check and update the App's required permissions")
@@ -964,6 +994,8 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
         return 0
+    if args.command == "end":
+        return end(args)
     if args.command == "permissions":
         return permissions(args)
     if args.command == "upgrade":

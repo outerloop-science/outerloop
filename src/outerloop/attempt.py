@@ -5525,12 +5525,25 @@ def withdraw_pr(
     return ""
 
 
-def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
-    """Finish a withdrawal intent, then route the PR ending through the run terminal."""
+def close_if_done(
+    run_root: Path, record: RunRecord, github: GitHubClient | None, now: float
+) -> str:
+    """Route operator requests and PR endings through the run terminal."""
     from outerloop.github import GitHubError
-    from outerloop.runstate import MERGED, REJECTED
+    from outerloop.runstate import END_REQUEST_NAME, MERGED, OPERATOR, REJECTED
 
-    if record.state == ENDED or not record.pr_url:
+    record = load_record(run_root, record.run_id)
+    if record.state == ENDED:
+        return ""
+    request = run_dir_of(run_root, record.run_id) / END_REQUEST_NAME
+    if request.is_file():
+        try:
+            note = str(json.loads(request.read_text()).get("note", ""))
+        except (OSError, ValueError, AttributeError):
+            note = ""  # the request still stands; a damaged note never blocks the ending
+        finish_run(run_root, record, OPERATOR, note, now, github)
+        return OPERATOR
+    if github is None or not record.pr_url:
         return ""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))
@@ -5683,6 +5696,10 @@ def _ending_comment(record: RunRecord, ending: str) -> str:
     """
     from outerloop.steward import MAX_STEWARD_ATTEMPTS, RELEASE_MARKER
 
+    if ending == "operator":
+        # As for any ending without a PR, nothing else will resolve the issue.
+        release = "" if record.pr_url else f"{RELEASE_MARKER}\n"
+        return f"{release}Run `{record.run_id}` was ended by an operator."
     if ending == "merged":
         return (
             f"Pull request {record.pr_url} was merged; run `{record.run_id}` is "

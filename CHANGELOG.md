@@ -6,6 +6,13 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Add `outerloop end <run-id> [--root <root>] [--note <text>]` to request an
+  operator ending at the next tick, including runs waiting for an unavailable
+  endpoint. The tick uses the existing ending cleanup and refuses later publish.
+- Upgrading: existing run records need no backfill; an absent `end-request.json`
+  means no request. Older kernels ignore requests and do not recognize the new
+  `operator` ending when writing records; keep the updated kernel for these runs.
+
 - Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
   image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
   codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.

@@ -94,7 +94,7 @@ park, terminal at the ending. Legs are turns inside it.
 An ending is a completion with an outcome, not a task state. A negative
 result is successful work; a rejected PR is a human's decision, not the
 agent rejecting the task. Only kernel-side failure (stuck, aborted) maps to
-failed or canceled. The six endings travel as data on the final message.
+failed or canceled. The endings travel as data on the final message.
 
 | Outerloop | A2A | Note |
 | --- | --- | --- |
