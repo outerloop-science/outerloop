@@ -2364,6 +2364,101 @@ def test_gpu_capacity_refusal_reaches_author_without_charging(tmp_path):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("can_resume", [False, True])
+def test_capacity_refusal_parks_and_next_wake_delivers_note(tmp_path, can_resume):
+    from outerloop.inbox import pending, wake_pending
+    from outerloop.operator_limits import CapacityError
+    from outerloop.orchestrator import RunParked
+    from outerloop.runstate import RunRecord
+
+    note = "operator GPU limit for owner/repo: requested 1, running/pending 4, effective max_gpus 4"
+    launched = []
+    meters = []
+
+    class Author:
+        supports_resume = can_resume
+        calls = 0
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls += 1
+            if self.calls == 2:
+                assert resume_session_id == "s1"
+                assert note in brief_text
+            _write_syscall(workspace, {"launches": [{"name": "probe", "command": "x"}]})
+            return ok_session()
+
+    def launcher(sha, request):
+        launched.append(sha)
+        raise CapacityError(note)
+
+    author = Author()
+    with pytest.raises(RunParked) as caught:
+        run_climb(
+            tmp_path,
+            [],
+            harness=author,
+            contract=DEEP_CONTRACT,
+            launcher=launcher,
+            launches_used=1,
+            sleeps_used=1,
+            gpu_hours_used=0.1,
+            on_meter=lambda *args: meters.append(args),
+        )
+    park = caught.value
+    assert author.calls == len(launched) == (2 if can_resume else 1)
+    assert park.capacity_wait and park.phase == "author-sleep"
+    assert park.candidate_sha == launched[-1]
+    assert park.session and park.session.session_id == "s1"
+    assert park.syscall is not None and not park.syscall.launches
+    assert not park.afterany and not park.submitted
+    assert (park.launches_used, park.sleeps_used, park.gpu_hours_used) == (1, 1, 0.1)
+    assert all(meter == (1, 1, 0.1) for meter in meters)
+    directory = tmp_path.parent / (tmp_path.name + "-run")
+    refusal = pending(directory, 0)[-1]
+    assert refusal.source == "kernel" and refusal.kind == "note"
+    assert refusal.payload["quoted_text"] == note
+    # Deliver on wake without the note triggering a hot retry loop.
+    record = RunRecord("run", "owner/repo", "work", "parked", inbox_seq=refusal.seq - 1)
+    assert not wake_pending(directory, record)
+    _, harness, _ = run_climb(
+        tmp_path,
+        [],
+        contract=DEEP_CONTRACT,
+        launcher=launcher,
+        resume_session_id=park.session.session_id,
+        inbox_seq=refusal.seq - 1,
+        launches_used=park.launches_used,
+        sleeps_used=park.sleeps_used,
+        gpu_hours_used=park.gpu_hours_used,
+    )
+    assert harness.calls[0][2] == "s1"
+    assert note in harness.calls[0][0]
+    assert "Capacity may now be free" in harness.calls[0][0]
+
+
+def test_repeated_budget_refusal_keeps_existing_ending(tmp_path):
+    class Author:
+        calls = 0
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls += 1
+            _write_syscall(workspace, {"launches": [{"name": "probe", "command": "x"}]})
+            return ok_session()
+
+    author = Author()
+    result, _, evaluator = run_climb(
+        tmp_path,
+        [],
+        harness=author,
+        contract=DEEP_CONTRACT,
+        launcher=lambda *args: pytest.fail("over-budget launch"),
+        launches_used=100,
+    )
+    assert author.calls == 2
+    assert result.outcome == "no-improvement" and result.note == "ended without a submit"
+    assert not evaluator.calls
+
+
 @pytest.mark.parametrize("waiting", [False, True])
 def test_sibling_launch_capacity_race_keeps_evaluations_and_notifies_author(tmp_path, waiting):
     from outerloop.inbox import pending

@@ -1798,6 +1798,7 @@ def attempt_once(
                     gpus=bench.gpus,
                 ):
                     main_evals = 1
+            capacity_refused = False
             problem = no_backend or syscall_budget_error(
                 request,
                 launches_used=launches_used,
@@ -1913,6 +1914,7 @@ def attempt_once(
                     launch_afterany = launcher(sha, request)
                 except CapacityError as exc:
                     problem = str(exc)
+                    capacity_refused = True
                 else:
                     gpu_hours_used += launches_gpu_hours(request, gpus=bench.gpus)
                     raise RunParked(
@@ -1938,6 +1940,44 @@ def attempt_once(
                         session=session,
                         note=f"Stale submit refused; no gate or sibling launches ran: {problem}",
                         run_seed=run_seed,
+                    )
+                if capacity_refused:
+                    # Bound immediate retries without turning transient capacity
+                    # into an ending. The wake delivers the note, starting a fresh
+                    # session when the author cannot resume.
+                    append(
+                        inbox_dir,
+                        Message(
+                            0,
+                            "note",
+                            "kernel",
+                            inbox_thread,
+                            time.time(),
+                            f"refusal:{session.session_id}:{inbox_seq}",
+                            {
+                                "text": "Your syscall request was REFUSED and nothing was "
+                                "launched. The run was parked waiting for capacity. "
+                                "Capacity may now be free; you can retry the launch.",
+                                "quoted_text": problem,
+                                "context_only": True,
+                            },
+                            origin=inbox_dir.name,
+                        ),
+                    )
+                    raise RunParked(
+                        phase="author-sleep",
+                        afterany="",
+                        base_sha=base_sha,
+                        seed=run_seed,
+                        suite_seed=suite_seed,
+                        candidate_sha=sha,
+                        session=session,
+                        syscall=SyscallRequest(launches=()),
+                        launches_used=launches_used,
+                        sleeps_used=sleeps_used,
+                        gpu_hours_used=gpu_hours_used,
+                        judged=failed_gate,
+                        capacity_wait=True,
                     )
                 log.warning("syscall request dropped after refusal (%s); measuring as-is", problem)
                 break

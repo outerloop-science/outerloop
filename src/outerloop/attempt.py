@@ -1384,8 +1384,11 @@ def run_author_leg(
     if record.agent_id.startswith("steward"):
         kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
-    if not record.resume_session_id:
-        # A cross-backend rebind starts fresh; workspace, line memory and inbox orient it.
+    resume_session_id = record.resume_session_id
+    if record.stage.get("capacity_wait") and not getattr(harness, "supports_resume", True):
+        resume_session_id = ""
+    if not resume_session_id:
+        # Fresh wakes use the workspace, line memory and inbox for orientation.
         kwargs.setdefault("task_hypothesis", str(record.stage.get("hypothesis") or ""))
         line_ref = _line_ref_for(bench, config.agent_id)
         kwargs.setdefault("line_ref", line_ref)
@@ -1404,7 +1407,7 @@ def run_author_leg(
         submit_preflight=lambda: _submit_preflight(
             ws, str(record.stage.get("base_branch") or "main"), pinned_tip
         ),
-        resume_session_id=record.resume_session_id,
+        resume_session_id=resume_session_id,
         redact_secrets=secrets,
         inbox_dir=directory,
         inbox_seq=record.inbox_seq,
@@ -1567,7 +1570,7 @@ def _wake_author_sleep(
                 drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
-    # A capacity park before the first session starts with a fresh brief.
+    # A capacity park starts fresh before the first session or without resume support.
     # Other wakes NEED the author harness and saved session. Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
     # help without the harness, so leaving it PARKED would just hit the stuck
@@ -1580,7 +1583,7 @@ def _wake_author_sleep(
             and not record.author_rebind_id
             and not record.stage.get("capacity_wait")
         )
-        or not getattr(harness, "supports_resume", True)
+        or (not getattr(harness, "supports_resume", True) and not record.stage.get("capacity_wait"))
     ):
         return _end(
             AttemptResult(

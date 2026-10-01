@@ -3454,7 +3454,14 @@ def test_resume_improved_reconciles_to_an_existing_pr(tmp_path, monkeypatch) -> 
 
 
 def _write_parked_author_sleep(
-    tmp_path, monkeypatch, *, raise_exc=None, run_id="tsp-9", values=None, submitted=False
+    tmp_path,
+    monkeypatch,
+    *,
+    raise_exc=None,
+    run_id="tsp-9",
+    values=None,
+    submitted=False,
+    contract_text=CONTRACT_SYSCALLS,
 ):
     """An author-sleep-parked run on disk in the REAL park state: the session's
     tree persisted as the author left it (uncommitted edits over base), the
@@ -3470,7 +3477,7 @@ def _write_parked_author_sleep(
     state = tmp_path / "state"
     wsroot = state / "runs" / run_id / "ws"
     (wsroot / "src" / "pilot" / "solvers").mkdir(parents=True)
-    (wsroot / ".outerloop.yaml").write_text(CONTRACT_SYSCALLS)
+    (wsroot / ".outerloop.yaml").write_text(contract_text)
     (wsroot / "src" / "pilot" / "solvers" / "tsp.py").write_text("def solve(): ...\n")
     _git(wsroot, "init", "-q", "-b", "main")
     _git(wsroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -3617,6 +3624,103 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     refs = [r for r in _git(wsroot, "for-each-ref", "refs/dispatch/").splitlines() if r]
     assert len(refs) == 1
     assert str(record.stage["candidate_ref"]) in refs[0]
+
+
+@pytest.mark.parametrize("can_resume", [False, True])
+def test_capacity_wait_wake_delivers_refusal_with_fresh_session_when_needed(
+    tmp_path, monkeypatch, can_resume
+) -> None:
+    from dataclasses import replace
+
+    from outerloop.inbox import Message, append, pending
+    from outerloop.measure import MeasurementPending
+    from outerloop.roles import author_spec
+
+    state, run_id, wsroot, _ = _write_parked_author_sleep(
+        tmp_path,
+        monkeypatch,
+        raise_exc=MeasurementPending(("701", "702")),
+        contract_text=CONTRACT_SYSCALLS.replace(
+            "    direction: min\n", "    direction: min\n    lines: true\n"
+        ),
+    )
+    (wsroot / "AGENT_MEMORY.md").write_text("Narrow sweeps were promising.\n")
+    record = load_record(state, run_id)
+    save_record(
+        state,
+        replace(
+            record,
+            agent_id="agent-01",
+            stage={
+                **record.stage,
+                "capacity_wait": True,
+                "afterany": "",
+                "syscall_launches": [],
+                "hypothesis": "try a narrower search",
+                "gpu_hours_used": 0.1,
+            },
+        ),
+        1_000_001,
+    )
+    note = "operator GPU limit: requested 1, running/pending 4"
+    append(
+        state / "runs" / run_id,
+        Message(
+            0,
+            "note",
+            "kernel",
+            "",
+            1_000_001,
+            "capacity-refusal",
+            {
+                "text": "Your syscall request was REFUSED.",
+                "quoted_text": note,
+                "context_only": True,
+            },
+        ),
+    )
+    calls = []
+
+    class RecordingHarness(ScriptedHarness):
+        supports_resume = can_resume
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            calls.append((brief_text, workspace, resume_session_id))
+            stage = load_record(state, run_id).stage
+            assert stage["launches_used"] == stage["sleeps_used"] == 1
+            assert stage["gpu_hours_used"] == 0.1
+            assert (workspace / "src/pilot/solvers/tsp.py").read_text() == (
+                "def solve(): return 'wip'\n"
+            )
+            return super().run(brief_text, workspace, resume_session_id)
+
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100,
+        harness=RecordingHarness(edits={}, submit=True),
+        spec=author_spec(),
+    )
+    assert outcome.outcome == "parked"
+    assert len(calls) == 1
+    brief, workspace, session_id = calls[0]
+    assert workspace == wsroot
+    assert session_id == ("s1" if can_resume else None)
+    assert note in brief and "REFUSED" in brief
+    assert "compare against the sweep" in brief
+    if not can_resume:
+        assert "try a narrower search" in brief
+        assert "Narrow sweeps were promising." in brief
+        assert "agents/agent-01" in brief
+    saved = load_record(state, run_id)
+    assert saved.stage["phase"] == "candidate"
+    assert saved.stage["launches_used"] == 1
+    assert saved.stage["sleeps_used"] == 2  # the fresh submit consumes a sleep
+    assert saved.stage["gpu_hours_used"] == 0.1
+    assert not pending(state / "runs" / run_id, saved.inbox_seq)
 
 
 def test_author_sleep_wake_publishes_an_inline_improvement(tmp_path, monkeypatch) -> None:
