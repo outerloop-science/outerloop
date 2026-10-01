@@ -933,6 +933,24 @@ On by default. Think hard before changing any of them:
 Open an issue. If you're reporting something the agent did, include its run
 report — every run writes one, success or failure.
 
+### Rebinding a run
+
+Use `outerloop rebind <run-id> [--root <root>] [--note <text>]` when a
+bound server is retired or you explicitly want a run to continue with its
+slot's current author selection. Update the author override or fleet settings
+first. The next wake validates and binds that selection; an in-flight session
+finishes its leg first. An unusable selection leaves the request pending until
+three applications fail. The request then stays on disk as failed, with its count
+and last error; normal endpoint deferral, deadlines and stuck handling resume.
+`outerloop status` shows pending and failed requests and their last error.
+Use `outerloop rebind <run-id> --cancel` to remove a pending request (it refuses
+when none is pending). A new rebind replaces a failed request.
+The workspace, experiments, notebook, inbox and meter survive. A backend change
+starts a fresh session; a model change on the same backend resumes the session.
+The author's `end` syscall finishes its leg and may end the run; use rebind
+to continue its work under a different author. Rebind is an operator command,
+never an author syscall.
+
 ### Lifecycle deployment
 
 Runs appear as `running`, `parked`, or `ended` on the board and in logs.

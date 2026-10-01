@@ -562,6 +562,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 STAGE_RETAINED_KEYS = (
+    "candidate_authors",
     "endpoint_wait",
     LEDGER_RETRY,
     "withdraw_reason",
@@ -688,6 +689,17 @@ def _park_run(
             for job_id in afterany_ids(parked.afterany):
                 dispatch.compute.cancel(job_id)
         return
+    from outerloop.provenance import candidate_authors
+
+    authors = candidate_authors(latest)
+    if parked.candidate_sha:
+        authors.setdefault(
+            parked.candidate_sha,
+            {
+                "backend": record.author_backend or "claude",
+                "model": record.author_model,
+            },
+        )
     job_ids = afterany_ids(parked.afterany)
     stage: dict[str, object] = {
         **{k: latest.stage[k] for k in STAGE_RETAINED_KEYS if k in latest.stage},
@@ -695,6 +707,8 @@ def _park_run(
         "capacity_wait": parked.capacity_wait,
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
+        "candidate_authors": authors,
+        "candidate_author": authors.get(parked.candidate_sha, {}),
         "candidate_ref": candidate_ref,
         "seed": parked.seed,
         "suite_seed": parked.suite_seed,
@@ -1371,7 +1385,14 @@ def run_author_leg(
         kwargs.setdefault("scope_validator", steward_out_of_scope)
     kwargs.setdefault("ruler", RULER)
     if not record.resume_session_id:
+        # A cross-backend rebind starts fresh; workspace, line memory and inbox orient it.
         kwargs.setdefault("task_hypothesis", str(record.stage.get("hypothesis") or ""))
+        line_ref = _line_ref_for(bench, config.agent_id)
+        kwargs.setdefault("line_ref", line_ref)
+        memory = workspace / "AGENT_MEMORY.md"
+        if line_ref and memory.is_file() and not memory.is_symlink():
+            with memory.open("rb") as stream:
+                kwargs.setdefault("line_memory", stream.read(65_536).decode("utf-8", "replace"))
     result = attempt_once(
         config,
         contract_text,
@@ -1554,7 +1575,11 @@ def _wake_author_sleep(
     if (
         harness is None
         or spec is None
-        or (not record.resume_session_id and not record.stage.get("capacity_wait"))
+        or (
+            not record.resume_session_id
+            and not record.author_rebind_id
+            and not record.stage.get("capacity_wait")
+        )
         or not getattr(harness, "supports_resume", True)
     ):
         return _end(
@@ -2808,7 +2833,12 @@ def resume_run(
     contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
-    config = RunConfig(target=record.target, benchmark=record.benchmark, agent_id=record.agent_id)
+    config = RunConfig(
+        target=record.target,
+        benchmark=record.benchmark,
+        agent_id=record.agent_id,
+        author_history=record.author_history,
+    )
     eval_minutes = next(
         (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
     )
@@ -2965,7 +2995,7 @@ def resume_run(
     author_resumable = (
         harness is not None
         and spec is not None
-        and bool(record.resume_session_id)
+        and bool(record.resume_session_id or record.author_rebind_id)
         and getattr(harness, "supports_resume", True)
     )
 
@@ -5267,6 +5297,39 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
+        from outerloop.rebind import apply as apply_rebind
+        from outerloop.rebind import failed_application, request_status
+
+        if isinstance(_wake_record, RunRecord):
+            pending = request_status(args.run_root, args.resume)
+            rebinding = pending is not None and pending.get("status", "pending") == "pending"
+            apply_failed = False
+            try:
+                _wake_record = apply_rebind(args.run_root, _wake_record, args.image)
+            except Exception as exc:
+                log.exception("run %s: rebind application failed", args.resume)
+                apply_failed = True
+                if pending:
+                    try:
+                        failed_application(args.run_root, args.resume, pending["id"], exc)
+                    except Exception:
+                        log.exception("run %s: could not record rebind failure", args.resume)
+            if apply_failed or (rebinding and request_status(args.run_root, args.resume)):
+                # Failed rebind deliveries, including the third failure, are refunded.
+                try:
+                    _wake_record = load_record(args.run_root, args.resume)
+                    save_record(
+                        Path(args.run_root),
+                        dc_replace(
+                            _wake_record, wake_attempts=max(0, _wake_record.wake_attempts - 1)
+                        ),
+                        time.time(),
+                    )
+                finally:
+                    _release_own_lease(args.run_root, args.resume)
+                return 0
+            if rebinding and pending and _wake_record.author_rebind_id == pending["id"]:
+                args.key_file = _wake_record.author_key_file
         wake_limits = bound_limits(getattr(_wake_record, "author_limits", None))
         if wake_limits is not None:
             if args.job_minutes:

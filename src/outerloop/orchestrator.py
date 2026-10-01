@@ -452,6 +452,7 @@ class RunConfig:
     # configurable later; this is the loop-side floor)
     min_relative_improvement: float = 0.005
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 1))
+    author_history: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def branch_prefix(self) -> str:
@@ -528,6 +529,11 @@ class AttemptResult:
             f"# Run report — {config.target} / {config.benchmark}",
             f"Outcome: **{self.outcome}**",
         ]
+        if len(config.author_history) > 1:
+            lines.append(
+                "Authors: "
+                + " → ".join(f"{a['backend']}/{a['model']}" for a in config.author_history)
+            )
         if self.baseline is not None:
             lines.append(f"Baseline: {self.baseline}")
         if self.candidate is not None:
@@ -1442,8 +1448,19 @@ def attempt_once(
             ),
             created=created,
         )
+        messages = pending_messages(inbox_dir, inbox_seq)
+        prompt = render(brief)
+        if messages:
+            prompt += "\n\n" + _render_author_inbox(
+                messages,
+                inbox_dir=inbox_dir,
+                budgets=_budgets_line(),
+                redact_secrets=redact_secrets,
+            )
         with _watched():
-            role_result = run_role(spec, harness, render(brief), workspace)
+            role_result = run_role(spec, harness, prompt, workspace)
+        if role_result.ok:
+            _ack(messages)
     session = role_result.session
     if not role_result.ok:
         _finish_replies()

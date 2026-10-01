@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from outerloop.contract import CONTRACT_NAME, MAX_CONTRACT_BYTES, load_contract
+from outerloop.rebind import request_status
 from outerloop.runstate import RunRecord, list_runs, run_dir
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def collect_status(root: Path) -> dict[str, Any]:
             continue
         stage = record.stage or {}
         wait = stage.get("endpoint_wait")
+        rebind = request_status(root, record.run_id)
         runs.append(
             {
                 "run_id": record.run_id,
@@ -48,6 +50,7 @@ def collect_status(root: Path) -> dict[str, Any]:
                 "author_overridden": record.author_overridden,
                 "gpu_hours_used": stage.get("gpu_hours_used", 0.0),
                 "gpu_hours_budget": _gpu_budget(root, record),
+                **({"rebind": rebind} if rebind is not None else {}),
                 "endpoint_wait": dict(wait) if isinstance(wait, dict) else None,
             }
         )
@@ -92,6 +95,12 @@ def render_text(status: dict[str, Any]) -> str:
             line += (
                 f" waiting for endpoint {wait.get('endpoint', '?')} "
                 f"since {_time(wait.get('since'))}"
+            )
+        if rebind := run.get("rebind"):
+            line += (
+                f" rebind={rebind.get('status', 'pending')}"
+                f" failures={rebind.get('failures', 0)}"
+                f" last_error={rebind.get('last_error') or '-'}"
             )
         lines.append(line)
     if not lines:

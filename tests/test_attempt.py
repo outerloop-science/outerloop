@@ -3539,8 +3539,9 @@ def _write_parked_author_sleep(
     return state, run_id, wsroot, json_mod
 
 
+@pytest.mark.parametrize("rebound", [False, True])
 def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, rebound
 ) -> None:
     # the woken session continues, finishes, and the gate (dispatched) parks the
     # run as a CANDIDATE — the existing wake path decides it next time.
@@ -3551,6 +3552,14 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     )
     from outerloop.inbox import pending
     from outerloop.roles import author_spec
+
+    if rebound:
+        from dataclasses import replace
+
+        record = load_record(state, run_id)
+        save_record(
+            state, replace(record, resume_session_id="", author_rebind_id="request"), 1_000_001
+        )
 
     siblings = [{"agent_id": "agent-02", "benchmark": "tsp", "state": "parked"}]
     monkeypatch.setattr("outerloop.attempt._sibling_entries", lambda *args: siblings)
@@ -3595,7 +3604,7 @@ def test_author_sleep_wake_delivers_results_and_flows_to_a_candidate_park(
     assert not (wsroot / "inbox").exists()
     # the SAME session was resumed, with the launch results as its prompt
     wake_text, _ws, resumed = calls[0]
-    assert resumed == "s1"
+    assert resumed == (None if rebound else "s1")
     assert "tail improvement: 0.7" in wake_text  # the job's stdout, delivered
     assert "compare against the sweep" in wake_text  # the author's note, echoed
     assert "2 launches and 19 sleeps remaining" in wake_text  # budgets visible

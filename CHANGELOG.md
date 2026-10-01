@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Add operator `outerloop rebind <run-id> [--root <root>] [--note <text>]` to
+  explicitly move an existing run to its slot's current author at the next leg,
+  including runs waiting on retired endpoints. Reports and board details show
+  ordered authors; evaluation and launch provenance retain the producing author.
+  Pending requests can be cancelled; three failed applications stop retries,
+  with the count and last error visible in status. A new request replaces a failed one.
+- Upgrading: optional run fields `author_history`, `author_rebind_id` and
+  `stage.candidate_author` / `stage.candidate_authors`, plus `rebind.json` requests
+  and evaluation provenance, require no migration. Legacy author history is populated lazily. Consume
+  pending requests before rolling back to a kernel without rebind support.
+
 - Author overrides accept operator-only `session_minutes` (10–240) and
   `session_max_turns` (10–300). Limits bind with the author selection and survive
   settings changes across wakes and review replies. Contracts can still lower
