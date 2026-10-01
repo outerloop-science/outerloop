@@ -41,6 +41,7 @@ from outerloop.compute import (
     quote_command,
 )
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
+from outerloop.endpoint_wait import EndpointWaitReason
 from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
@@ -1693,7 +1694,9 @@ def _sweep_one(
         if profile:
             _ = profile.url
     except EndpointUnavailable as exc:
-        log.warning("run %s: %s", record.run_id, exc)
+        from outerloop.endpoint_wait import unavailable
+
+        unavailable(None if dry_run else root, record.run_id, exc, now)
         deferred.append(record.run_id)
         return
     except ValueError:
@@ -2476,7 +2479,12 @@ def _author_config_error(spec: ServiceSpec, agent_id: str = "agent-01") -> str:
         if profile:
             _ = profile.url  # Readiness before claim: a missing address never spends an attempt.
         return author_config_error(backend, model, spec.image)
-    except (ClaudeModelUnset, ValueError, EndpointUnavailable) as exc:
+    except EndpointUnavailable as exc:
+        from outerloop.endpoint_wait import unavailable
+
+        unavailable(None, "", exc, 0)
+        return EndpointWaitReason(str(exc))
+    except (ClaudeModelUnset, ValueError) as exc:
         return str(exc)
 
 
@@ -2839,6 +2847,8 @@ def service_self_initiated(
             return None
         author_error = _author_config_error(spec, slot_agent)
         if author_error:
+            if isinstance(author_error, EndpointWaitReason):
+                return None
             log.error(
                 "climb on %s not launched: author misconfigured — %s "
                 "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",
@@ -3117,6 +3127,8 @@ def service_intake(
             return None
         author_error = _author_config_error(spec)
         if author_error:
+            if isinstance(author_error, EndpointWaitReason):
+                return None
             log.error(
                 "issue #%d not claimed: author misconfigured — %s "
                 "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",

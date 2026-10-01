@@ -303,7 +303,9 @@ def _defer_endpoint(root: Path, record: RunRecord, exc: EndpointUnavailable) -> 
         dc_replace(record, state=PARKED, wake_attempts=max(0, record.wake_attempts - 1)),
         time.time(),
     )
-    log.warning("run %s: %s", record.run_id, exc)
+    from outerloop.endpoint_wait import unavailable
+
+    unavailable(root, record.run_id, exc, time.time())
 
 
 def resume_author(
@@ -559,6 +561,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 STAGE_RETAINED_KEYS = (
+    "endpoint_wait",
     LEDGER_RETRY,
     "withdraw_reason",
     "ledger_digits",
@@ -579,7 +582,7 @@ def _message_stage(run_root: Path, record: RunRecord) -> dict[str, object]:
     """Delivery owns these keys; captured leg records are never authoritative."""
     current = load_record(run_root, record.run_id)
     stage = dict(record.stage)
-    for key in ("message_counter", "message_delivery"):
+    for key in ("message_counter", "message_delivery", "endpoint_wait"):
         stage.pop(key, None)
         if key in current.stage:
             stage[key] = current.stage[key]
@@ -4783,7 +4786,9 @@ def live_attempt(
                 base_branch=base_branch,
             )
             parked = p
-            log.warning("run %s: %s", run_id, exc)
+            from outerloop.endpoint_wait import unavailable
+
+            unavailable(run_root, run_id, exc, time.time())
             return AttemptOutcome(run_id=run_id, outcome="parked")
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
