@@ -976,7 +976,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--main-sha", required=True, help="full current default-branch commit SHA")
     p.add_argument("--force", action="store_true", help="replace an existing branch ledger")
     p.add_argument("--dry-run", action="store_true", help="print the table without writing")
+    p = sub.add_parser("rebind", help="request the slot's current author for the next leg")
+    p.add_argument("run_id")
+    p.add_argument("--root")
+    p.add_argument("--note", default="")
+    p.add_argument("--cancel", action="store_true", help="remove a pending rebind request")
     args = parser.parse_args(argv)
+    if args.command == "rebind":
+        from outerloop.rebind import cancel, request
+
+        values = env_file_values(keys=("OUTERLOOP_ROOT",)) if not args.root else {}
+        root = Path(
+            args.root
+            or os.environ.get("OUTERLOOP_ROOT")
+            or values.get("OUTERLOOP_ROOT")
+            or DEFAULT_LOCAL_ROOT
+        ).expanduser()
+        try:
+            if args.cancel:
+                cancel(root, args.run_id)
+                print(f"run {args.run_id}: rebind cancelled")
+                return 0
+            created = request(root, args.run_id, args.note)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"run {args.run_id}: rebind {'requested' if created else 'already pending'}")
+        return 0
     if args.command == "status":
         from outerloop.status import collect_status, render_text
 

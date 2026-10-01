@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from outerloop.provenance import producing_author
 from outerloop.syscall import Launch, LaunchResult, launch_jobs
 
 LEDGER = "launches.jsonl"
@@ -73,6 +74,7 @@ def append_submitted(
             {
                 "event": "submitted",
                 "commit": commit,
+                "author": producing_author(run_dir, commit),
                 "sleep": sleep,
                 "name": launch.name,
                 "why": launch.why,
@@ -176,6 +178,7 @@ def history(run_dir: Path) -> list[dict[str, Any]]:
             "job_ids": list(row.get("job_ids") or []),
             "submitted_at": row.get("at"),
             "commit": str(row.get("commit") or ""),
+            "author": row.get("author", {}),
             "jobs": [],
         }
     for row in rows:
@@ -216,6 +219,7 @@ def experiments_rows(run_dir: Path) -> list[dict[str, Any]]:
                     "sleep": entry.get("sleep"),
                     "launch": name,
                     "commit": entry["commit"],
+                    "author": entry["author"],
                     "why": str(entry.get("why") or ""),
                     "array": array,
                     "concurrency": int(entry.get("concurrency") or 0),

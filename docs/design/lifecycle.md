@@ -379,3 +379,13 @@ between stages.
 - A moved base is told, never forced; the finish's "merge and re-measure
   both sides" in `roles.md`'s flow is retired.
 - One batch in flight per run is not a rule; launch several, sleep once.
+
+An operator may explicitly request `outerloop rebind <run-id>` to move a run to
+its slot's current author. The atomic request survives endpoint outages; the
+sweep dispatches it and the next wake lease holder validates the selection
+before replacing the binding. After three failed applications, the request is
+marked failed and normal sweep handling resumes. Status shows its last error;
+operators can cancel pending requests or replace failed ones with a new rebind.
+Same-backend changes retain the session; backend changes start a fresh briefed
+session. Ordered author history and immutable evaluation/launch provenance keep
+work attributed to the producing author. Judges retain fleet selection semantics.

@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import math
+import os
 import re
 import shlex
 import shutil
@@ -295,6 +296,13 @@ def _git_env(extra: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _provenance_commit(path: Path) -> str:
+    try:
+        return str(json.loads(path.read_text()).get("commit", ""))
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def write_eval_job(
     run_dir: Path,
     name: str,
@@ -350,6 +358,21 @@ def write_eval_job(
     """
     ev = run_dir / f"eval-{name}"
     ev.mkdir(parents=True, exist_ok=True)
+    from outerloop.provenance import producing_author
+
+    provenance = ev / "provenance.json"
+    # A reused eval directory measures a new commit: rewrite its provenance.
+    if not provenance.exists() or _provenance_commit(provenance) != snapshot_sha:
+        temporary = ev / ".provenance.tmp"
+        temporary.write_text(
+            json.dumps(
+                {
+                    "commit": snapshot_sha,
+                    "author": producing_author(run_dir, snapshot_sha),
+                }
+            )
+        )
+        os.replace(temporary, provenance)
     task_dirs = [run_dir / f"eval-{name}.{k}" for k in range(array)] if array > 1 else [ev]
     for task_dir in task_dirs:
         task_dir.mkdir(parents=True, exist_ok=True)

@@ -1705,6 +1705,12 @@ def _sweep_one(
     if end_requested(root, record.run_id):
         return  # an operator ending is pending: never wake the run again
 
+    from outerloop.rebind import requested
+
+    if requested(root, record.run_id):
+        wake(record, "operator rebind", "configuration")
+        return
+
     from outerloop.inbox import wake_pending
 
     job_ids = _poll_targets(record)
@@ -3376,6 +3382,9 @@ class JobWakeDispatcher:
     wake_minutes: int = 20
 
     def dispatch(self, record: RunRecord, reason: str) -> str:
+        from outerloop.rebind import requested
+
+        rebinding = requested(self.spec.run_root, record.run_id)
         argv = [
             *_interpreter(self.spec.home),
             "-m",
@@ -3405,7 +3414,9 @@ class JobWakeDispatcher:
             ),
         ]
         panel_skip = (
-            _panel_preflight_error(self.spec, record=record) if self.spec.panel.strip() else ""
+            _panel_preflight_error(self.spec, record=record)
+            if self.spec.panel.strip() and not rebinding
+            else ""
         )
         if panel_skip:
             argv += ["--panel-skip", panel_skip]
@@ -3419,7 +3430,12 @@ class JobWakeDispatcher:
         from outerloop.limits import ATTEMPT_OVERHEAD_MINUTES
         from outerloop.roles import author_spec
 
-        if (limits := bound_limits(record.author_limits)) is not None:
+        limits = bound_limits(record.author_limits)
+        if rebinding:
+            # The wake reports invalid selections and keeps their requests.
+            with contextlib.suppress(ValueError):
+                limits = _selected_author_limits(self.spec, record.agent_id) or effective_limits()
+        if limits is not None:
             if record.pr_url or record.stage.get("phase") == "author-sleep":
                 job_minutes = _attempt_job_minutes(self.spec, limits)
             else:

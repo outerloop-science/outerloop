@@ -743,7 +743,9 @@ def render_html(
         "    card.append(top);\n"
         "    if (r.author_model) {\n"
         "      const a = document.createElement('span');\n"
-        "      a.textContent = r.author_backend + ' / ' + r.author_model\n"
+        "      a.textContent = ((r.author_history || []).length > 1\n"
+        "        ? r.author_history.map(h => h.backend + ' / ' + h.model).join(' → ')\n"
+        "        : r.author_backend + ' / ' + r.author_model)\n"
         "        + (r.author_overridden ? ' (override)' : '');\n"
         "      a.style.display = 'block'; card.append(a);\n"
         "    }\n"
@@ -1113,6 +1115,7 @@ def collect_status(
                 "agent": record.agent_id,
                 "author_backend": record.author_backend or "claude",
                 "author_model": record.author_model,
+                "author_history": record.author_history,
                 "author_overridden": record.author_overridden,
                 "benchmark": record.benchmark,
                 "state": record.state,
@@ -1192,6 +1195,7 @@ def service_status(
                 "run_id",
                 "author_backend",
                 "author_model",
+                "author_history",
                 "author_overridden",
                 "state",
                 "phase",

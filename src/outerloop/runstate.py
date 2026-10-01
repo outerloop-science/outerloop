@@ -132,13 +132,16 @@ class RunRecord:
     resume_session_id: str = ""  # harness session to resume on wake
     pr_url: str = ""  # the run's open PR, once one exists
     benchmark: str = ""  # contract benchmark this run works on
-    # The author this run was STARTED with ("" backend = legacy/claude). A wake or
+    # The currently bound author, changed only by operator rebind.
+    # "" backend = legacy/claude. A wake or
     # follow-up reproduces the run's OWN author from these, not the current fleet
     # default, so a fleet backend flip never resumes a run on the wrong backend,
     # model, or key. Endpoint-backed models retain their [endpoint=profile] selector;
     # the harness strips it only when constructing the backend session.
     author_backend: str = ""
     author_model: str = ""
+    author_history: list[dict[str, object]] = field(default_factory=list)
+    author_rebind_id: str = ""  # crash-safe request consumption
     author_limits: dict[str, int] | None = None  # bound operator session budgets
     author_overridden: bool = False  # judges inherit the fleet author for this run
     # The resolved author key FILE PATH (not the key) this run used, so a wake or
@@ -228,6 +231,8 @@ def save_record(root: Path, record: RunRecord, now: float) -> None:
             latest = None
         if latest is not None and latest.state == ENDED:
             return
+        if latest is not None and latest.author_history and not record.author_history:
+            record = replace(record, author_history=latest.author_history)
         _save_record(root, record, now)
 
 
@@ -287,11 +292,27 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
         stage = dict(record.stage)
         stage.pop("hermes_resume_required_chars", None)
         record = replace(record, stage=stage)
-    stamped = replace(record, updated=now, created=record.created or now)
+    history = record.author_history or (
+        []
+        if record.created
+        else [
+            {
+                "backend": record.author_backend or "claude",
+                "model": record.author_model,
+                "since": record.created or now,
+                "note": "",
+            }
+        ]
+    )
+    stamped = replace(record, updated=now, created=record.created or now, author_history=history)
     # unique tmp name: two concurrent writers must not interleave into the
     # same tmp file before the atomic replace
     tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     payload = asdict(stamped)
+    if not stamped.author_history:
+        payload.pop("author_history")
+    if not stamped.author_rebind_id:
+        payload.pop("author_rebind_id")
     if stamped.author_limits is None:
         payload.pop("author_limits")
     if not stamped.author_overridden:
