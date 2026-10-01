@@ -15,7 +15,22 @@ Versions follow [SemVer](https://semver.org).
   run records need no migration. Finish runs using extended limits before
   rolling back to a version without bound author limits.
 
-- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
+- Bad author overrides hold only affected fresh claims during ticks, with one log
+  per entry per tick; malformed settings hold named targets, or all fresh claims
+  when unreadable. Other tick services and bound runs continue; `outerloop start`
+  and `outerloop init` remain strict. No persisted state changes.
+
+- Add read-only `outerloop status` (text/`--json`) for local runs and endpoint
+  outages. Endpoint waits stay out of the published board/status strip and never
+  trigger research-log commits; log one shared outage start and recovery with
+  duration and run IDs.
+  Validate optional served model and expiry in bounded endpoint address records.
+- Upgrading: no action needed; the first endpoint deferral adds
+  `stage.endpoint_wait` and an `endpoint-waits/<profile>.json` log latch. Missing
+  keys/journals are tolerated; ended runs and in-flight PRs are unchanged.
+  Rollback to the preceding kernel safely ignores the additive state.
+
+- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (`outerloop start`) uses the
   image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
   codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.
 

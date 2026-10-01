@@ -22,12 +22,13 @@ import re
 import socket
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from outerloop.author_overrides import AuthorOverride
 from outerloop.compute import (
     GONE,
     Compute,
@@ -41,6 +42,7 @@ from outerloop.compute import (
     quote_command,
 )
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
+from outerloop.endpoint_wait import EndpointWaitReason
 from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
@@ -1693,7 +1695,9 @@ def _sweep_one(
         if profile:
             _ = profile.url
     except EndpointUnavailable as exc:
-        log.warning("run %s: %s", record.run_id, exc)
+        from outerloop.endpoint_wait import unavailable
+
+        unavailable(None if dry_run else root, record.run_id, exc, now)
         deferred.append(record.run_id)
         return
     except ValueError:
@@ -1907,6 +1911,9 @@ def tick(
                 min_tick_s,
             )
             return TickReport(coalesced=True, launch_blocked=_launches_held(root))
+    author_errors: set[str] = set()
+    if service_spec is not None:
+        _preflight_claim_overrides(service_spec, author_errors)
     report = sweep(
         root,
         compute,
@@ -2048,6 +2055,7 @@ def tick(
                 limits,
                 dry_run=service_dry_run,
                 records=tick_records,
+                author_errors=author_errors,
             )
             if launch_ok and contract is not None
             else None
@@ -2079,6 +2087,7 @@ def tick(
                     limits=limits,
                     dry_run=service_dry_run,
                     records=tick_records,
+                    author_errors=author_errors,
                 )
             except Exception as exc:
                 log.warning("self-initiated selection failed: %s", exc)
@@ -2435,11 +2444,77 @@ def _climb_panel_argv(spec: ServiceSpec) -> list[str]:
     return argv
 
 
+def _malformed_override_targets() -> tuple[str, ...] | None:
+    """Recover target scope only from a readable JSON object; otherwise hold all."""
+    from outerloop.author_overrides import SETTING
+
+    try:
+        data = json.loads(os.environ.get(SETTING, ""))
+    except ValueError:
+        return None
+    return tuple(data) if isinstance(data, dict) and data else None
+
+
+def _claim_overrides(target: str) -> Mapping[str, tuple[AuthorOverride, ...]]:
+    from outerloop.author_overrides import overrides
+
+    try:
+        return overrides()
+    except ValueError:
+        targets = _malformed_override_targets()
+        if targets is not None and target not in targets:
+            return {}
+        raise
+
+
+def _claim_author_error(spec: ServiceSpec, agent_id: str, reported: set[str] | None = None) -> str:
+    """Use the author preflight for claims, logging each affected entry once per tick."""
+    error = _author_config_error(spec, agent_id)
+    if not error or isinstance(error, EndpointWaitReason):
+        return error
+    from outerloop.author_overrides import overrides
+
+    try:
+        selected = next((o for o in overrides().get(spec.target, ()) if o.matches(agent_id)), None)
+        slots = ", ".join(selected.slots) if selected and selected.slots else "all"
+        scope = f"target {spec.target}, slots {slots}"
+    except ValueError:
+        targets = _malformed_override_targets()
+        scope = f"targets {', '.join(targets)}, slots all" if targets else "all targets, slots all"
+    message = f"fresh claims held: {scope}: author misconfigured — {error}"
+    if reported is None or message not in reported:
+        log.error("%s", message)
+        if reported is not None:
+            reported.add(message)
+    return error
+
+
+def _preflight_claim_overrides(spec: ServiceSpec, reported: set[str]) -> None:
+    from outerloop.author_overrides import overrides
+
+    try:
+        entries = overrides()
+    except ValueError:
+        targets = _malformed_override_targets()
+        _claim_author_error(
+            replace(spec, target=targets[0] if targets else spec.target), "agent-01", reported
+        )
+        return
+    for target, group in entries.items():
+        for entry in group:
+            _claim_author_error(
+                replace(spec, target=target),
+                entry.slots[0] if entry.slots else "agent-01",
+                reported,
+            )
+
+
 def _selected_author(spec: ServiceSpec, agent_id: str = "agent-01") -> tuple[str, str]:
     from outerloop.attempt import fleet_author_model
-    from outerloop.author_overrides import select_override
 
-    selected = select_override(spec.target, agent_id)
+    selected = next(
+        (o for o in _claim_overrides(spec.target).get(spec.target, ()) if o.matches(agent_id)), None
+    )
     if selected:
         return selected.backend, selected.resolved_model()
     backend = os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude"
@@ -2449,9 +2524,9 @@ def _selected_author(spec: ServiceSpec, agent_id: str = "agent-01") -> tuple[str
 def _selected_author_limits(
     spec: ServiceSpec, agent_id: str = "agent-01", budgets: Any = None
 ) -> EffectiveLimits | None:
-    from outerloop.author_overrides import select_override
-
-    selected = select_override(spec.target, agent_id)
+    selected = next(
+        (o for o in _claim_overrides(spec.target).get(spec.target, ()) if o.matches(agent_id)), None
+    )
     if selected is None or (
         selected.session_minutes is None and selected.session_max_turns is None
     ):
@@ -2467,10 +2542,13 @@ def _climb_author_argv(
     spec: ServiceSpec, agent_id: str = "agent-01", limits: EffectiveLimits | None = None
 ) -> list[str]:
     from outerloop.attempt import effective_author_credential
-    from outerloop.author_overrides import overrides, select_override
+    from outerloop.author_overrides import overrides
 
-    if not overrides():
-        return []
+    try:
+        if not overrides():
+            return []
+    except ValueError:
+        _claim_overrides(spec.target)  # Only unaffected targets may bind the fleet author.
     backend, model = _selected_author(spec, agent_id)
     credential = effective_author_credential(backend, model)
     selected_limits = _selected_author_limits(spec, agent_id)
@@ -2489,7 +2567,11 @@ def _climb_author_argv(
         model,
         "--key-file",
         str(credential.key_file),
-        *(["--author-overridden"] if select_override(spec.target, agent_id) else []),
+        *(
+            ["--author-overridden"]
+            if any(o.matches(agent_id) for o in _claim_overrides(spec.target).get(spec.target, ()))
+            else []
+        ),
     ]
 
 
@@ -2503,7 +2585,12 @@ def _author_config_error(spec: ServiceSpec, agent_id: str = "agent-01") -> str:
         if profile:
             _ = profile.url  # Readiness before claim: a missing address never spends an attempt.
         return author_config_error(backend, model, spec.image)
-    except (ClaudeModelUnset, ValueError, EndpointUnavailable) as exc:
+    except EndpointUnavailable as exc:
+        from outerloop.endpoint_wait import unavailable
+
+        unavailable(None, "", exc, 0)
+        return EndpointWaitReason(str(exc))
+    except (ClaudeModelUnset, ValueError) as exc:
         return str(exc)
 
 
@@ -2772,6 +2859,7 @@ def service_self_initiated(
     limits: EffectiveLimits | None = None,
     dry_run: bool = False,
     records: list[RunRecord] | None = None,
+    author_errors: set[str] | None = None,
 ) -> tuple[str, str] | None:
     """The default background mode: when nothing else needs doing, climb the
     least-recently-attempted benchmark.
@@ -2780,6 +2868,7 @@ def service_self_initiated(
     `compute.submit` and the climb job writing its run record — without it,
     every tick during Slurm queue latency would launch a duplicate climb.
     """
+    author_errors = author_errors if author_errors is not None else set()
     limits = limits if limits is not None else effective_limits(getattr(contract, "budgets", None))
     paused = outage_active(root, now, role="solver")
     if paused:
@@ -2840,6 +2929,9 @@ def service_self_initiated(
         if len(occupied) >= width:
             return None
         slot_agent = _free_agent_slot(occupied, width)
+        while slot_agent is not None and _claim_author_error(spec, slot_agent, author_errors):
+            occupied.add(slot_agent)
+            slot_agent = _free_agent_slot(occupied, width)
         if slot_agent is None:
             return None
         dead_attempts = read_tombstones(root, spec.target, contract, now)
@@ -2861,15 +2953,6 @@ def service_self_initiated(
             return None
         if lane_error := _gpu_lane_error(contract, benchmark, spec):
             log.error("attempt on %s not launched: %s", benchmark, lane_error)
-            return None
-        author_error = _author_config_error(spec, slot_agent)
-        if author_error:
-            log.error(
-                "climb on %s not launched: author misconfigured — %s "
-                "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",
-                benchmark,
-                author_error,
-            )
             return None
         panel_error = _panel_preflight_error(spec, slot_agent)
         if panel_error:
@@ -3087,6 +3170,7 @@ def service_intake(
     limits: EffectiveLimits | None = None,
     dry_run: bool = False,
     records: list[RunRecord] | None = None,
+    author_errors: set[str] | None = None,
 ) -> tuple[str, str] | None:
     """The requested lane: claim at most ONE qualifying issue per tick and
     submit a climb job for it. The claim comment (posted by the climb job
@@ -3141,14 +3225,7 @@ def service_intake(
         if lane_error := _gpu_lane_error(contract, task.benchmark, spec):
             log.error("attempt on %s not launched: %s", task.benchmark, lane_error)
             return None
-        author_error = _author_config_error(spec)
-        if author_error:
-            log.error(
-                "issue #%d not claimed: author misconfigured — %s "
-                "(fix OUTERLOOP_AUTHOR_BACKEND/_MODEL)",
-                task.number,
-                author_error,
-            )
+        if _claim_author_error(spec, "agent-01", author_errors):
             return None
         panel_error = _panel_preflight_error(spec)
         if panel_error:
@@ -3632,11 +3709,8 @@ def main() -> int:
         "OUTERLOOP_CADENCE_MIN via the chain's own parser (default 30)",
     )
     args = parser.parse_args()
-    from outerloop.author_overrides import validate_overrides
-
     try:
         gpu_lanes = gpu_lanes_from_env()
-        validate_overrides(os.environ, startup_image())
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

@@ -7430,6 +7430,7 @@ def test_endpoint_unavailable_parks_and_recovers(
     from dataclasses import replace
     from unittest.mock import Mock
 
+    from outerloop.endpoint_wait import session_url
     from outerloop.endpoints import EndpointProfile
     from outerloop.roles import author_spec
 
@@ -7498,8 +7499,11 @@ def test_endpoint_unavailable_parks_and_recovers(
     waiting = load_record(root, "tsp-1")
     assert waiting.state == "parked" and not waiting.ending
     assert waiting.wake_attempts == (2 if wake else 0)
+    wait = waiting.stage["endpoint_wait"]
+    assert isinstance(wait, dict) and wait["endpoint"] == "local"
+    assert isinstance(wait["since"], float)
     if wake:
-        assert waiting.stage == before.stage
+        assert {k: v for k, v in waiting.stage.items() if k != "endpoint_wait"} == before.stage
         assert waiting.resume_session_id == before.resume_session_id
     else:
         assert waiting.stage["capacity_wait"] and not waiting.resume_session_id
@@ -7511,15 +7515,22 @@ def test_endpoint_unavailable_parks_and_recovers(
     assert resume().outcome == "parked"
     assert load_record(root, "tsp-1").wake_attempts == waiting.wake_attempts
 
-    def recovered(self, brief, *args, **kwargs):
+    assert load_record(root, "tsp-1").stage["endpoint_wait"] == wait
+    address.write_text("http://localhost:8000/v1")
+    connection.request.side_effect = None
+    connection.getresponse.return_value.status = 200
+
+    def recovered(self, brief, workspace, *args, **kwargs):
+        session_url(endpoint, workspace)
         seen_briefs.append(brief)
-        return original(self, brief, *args, **kwargs)
+        return original(self, brief, workspace, *args, **kwargs)
 
     monkeypatch.setattr(ScriptedHarness, "run", recovered)
     assert resume().outcome != "parked"
     if not wake:
         assert "try a new move" in seen_briefs[0]
     assert load_record(root, "tsp-1").ending != "aborted"
+    assert "endpoint_wait" not in load_record(root, "tsp-1").stage
 
 
 @pytest.mark.parametrize("entry", ["fresh", "wake"])

@@ -268,7 +268,7 @@ def test_binding_survives_setting_change(deployment, monkeypatch, backend, queue
         backend,
         "served-model[endpoint=onprem]",
     )
-    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", "{}")
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", "broken json")
     # Exercise the actual dispatched wake entrypoint, including its harness.
     monkeypatch.setattr(attempt, "_lease_held_by_another_job", lambda *a: "")
     monkeypatch.setattr("outerloop.tick.dispatch_wake_armed", lambda *a: True)
@@ -493,16 +493,6 @@ def test_startup_validation_uses_the_image_the_tick_runs(monkeypatch):
         assert "requires --image" not in str(exc)
 
 
-def test_tick_startup_validates_with_startup_image():
-    # The tick's entry point must validate overrides with the image sessions run with.
-    import inspect
-
-    from outerloop import tick
-
-    src = inspect.getsource(tick.main)
-    assert "validate_overrides(os.environ, startup_image())" in src
-
-
 @pytest.mark.parametrize(
     ("mode", "env_value", "file_value", "expected"),
     [
@@ -668,3 +658,120 @@ roadmap: docs/roadmap.md
     assert f"--session-minutes {min(180, cap - 20)}" in jobs[0].command
     assert "--max-turns 250" in jobs[0].command
     assert "--author-limits" in jobs[0].command
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "broken json",
+        '{"owner/repo":{"backend":"claude","model":"claude-trial","unknown":true}}',
+        '{"owner/repo":[{"backend":"claude","model":"claude-trial","slots":["agent-01"]},{"backend":"codex","model":"trial","slots":["agent-01"]}]}',
+    ],
+)
+def test_malformed_claim_scope(deployment, monkeypatch, caplog, raw):
+    from outerloop import tick
+
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
+    reported: set[str] = set()
+    tick._preflight_claim_overrides(deployment, reported)
+    for slot in ("agent-01", "agent-02"):
+        assert tick._claim_author_error(deployment, slot, reported)
+    assert caplog.text.count("fresh claims held:") == 1
+    other = replace(deployment, target="owner/other")
+    if raw.startswith("{"):
+        assert tick._author_config_error(other) == ""
+        argv = tick._climb_author_argv(other)
+        assert "--author-bound" in argv
+        assert "--author-overridden" not in argv
+    else:
+        assert tick._author_config_error(other)
+
+
+def test_bad_entry_skips_its_slots_without_fallback(deployment, monkeypatch, caplog):
+    from outerloop import tick
+    from outerloop.contract import load_contract
+
+    monkeypatch.setenv(
+        "OUTERLOOP_AUTHOR_OVERRIDES",
+        json.dumps(
+            {
+                "owner/repo": [
+                    {
+                        "backend": "codex",
+                        "model": "claude-wrong",
+                        "slots": ["agent-01", "agent-02"],
+                    },
+                    {"backend": "claude", "model": "claude-trial", "slots": ["agent-03"]},
+                ]
+            }
+        ),
+    )
+    spec = replace(deployment, panel="")
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: bench, command: c, metric: m, direction: min}
+budgets: {max_active_attempts: 3, gpu_hours_per_run: 1, runs_per_week: 500}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        spec.target,
+    )
+    submitted = []
+
+    def submit(*args):
+        submitted.append(args[-1])
+        return "123"
+
+    monkeypatch.setattr(tick, "submit", submit)
+    monkeypatch.setattr(tick, "_flight_command", lambda home, name, now, argv: " ".join(argv))
+    monkeypatch.setattr(
+        "outerloop.intake.pick_issue", lambda *args: SimpleNamespace(benchmark="bench", number=1)
+    )
+    for now in (1000000, 1000100):
+        caplog.clear()
+        reported: set[str] = set()
+        tick._preflight_claim_overrides(spec, reported)
+        assert (
+            tick.service_intake(
+                spec.run_root,
+                cast(Any, object()),
+                cast(Any, object()),
+                spec,
+                now,
+                contract=contract,
+                author_errors=reported,
+            )
+            is None
+        )
+        assert tick.service_self_initiated(
+            spec.run_root,
+            cast(Any, object()),
+            spec,
+            contract,
+            now,
+            records=[],
+            author_errors=reported,
+        ) == ("bench", "123")
+        tick.clear_pending(spec.run_root, spec.target, "agent-03")
+        assert caplog.text.count("fresh claims held:") == 1
+        assert "owner/repo, slots agent-01, agent-02" in caplog.text
+    assert all("--agent-id agent-03" in job.command for job in submitted)
+    assert all("--model claude-trial" in job.command for job in submitted)
+    assert tick._selected_author(spec, "agent-01") == ("codex", "claude-wrong")
+
+
+@pytest.mark.parametrize(
+    "raw", ["broken json", '{"owner/repo":{"backend":"codex","model":"claude-wrong"}}']
+)
+def test_start_rejects_bad_overrides(deployment, monkeypatch, capsys, raw):
+    from outerloop import cli
+
+    settings = deployment.home / "settings.env"
+    settings.write_text("")
+    settings.chmod(0o600)
+    monkeypatch.setattr(cli, "ENV_FILE", settings)
+    monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(settings))
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
+    assert cli.main(["start", "--local", "--dry-run", "--root", str(deployment.run_root)]) == 2
+    assert "OUTERLOOP_AUTHOR_OVERRIDES" in capsys.readouterr().err

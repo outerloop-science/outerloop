@@ -1533,6 +1533,10 @@ def attempt_once(
                     spec, harness, prompt, workspace, resume_session_id=session.session_id
                 )
         except EndpointUnavailable as exc:
+            from outerloop.endpoint_wait import run_context, unavailable
+
+            wait_root, wait_run = run_context(workspace)
+            unavailable(wait_root, wait_run, exc, time.time())
             if not allow_checkpoint or scope_validator(list(changed_paths()), contract):
                 # A rejected tree cannot be sealed even to preserve an outage park.
                 return AttemptResult(

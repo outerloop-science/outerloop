@@ -479,6 +479,25 @@ The login loop does **not auto-update**, even with `OUTERLOOP_AUTO_UPDATE=main`.
 To restart or upgrade: stop the process, run `git pull`, run `uv sync`, then
 run `outerloop start` again. Settings from `.env` are exported only at launch.
 
+### Local status
+
+```bash
+outerloop status
+outerloop status --root /path/to/state --json
+```
+
+This read-only command lists non-ended runs with target, agent, state/phase,
+author backend/model and override flag, recorded GPU-hours used/budget, and
+endpoint waits, followed by current endpoint outages and their waiting run IDs.
+It reads local files only, with no GitHub, scheduler, or health-probe calls, so it
+is safe on a login node. GPU budgets come from each local workspace contract,
+including review top-ups; unavailable contracts show unknown/null.
+Root precedence is `--root`, process `OUTERLOOP_ROOT`, the selected operator
+settings file's `OUTERLOOP_ROOT`, then `~/.outerloop`—the resolution used by
+`start` when launching the tick (`tick` itself requires `--root`).
+An empty or nonexistent root reports no runs/outages without creating files.
+See [endpoint waits](endpoints.md#local-operator-status) for outage semantics.
+
 ### Upgrading
 
 1. Run `outerloop upgrade` (add `--pre` for pre-releases).
@@ -623,8 +642,11 @@ Codex has no turn cap, so `session_max_turns` applies to Claude Code and Hermes
 authors only; Codex sessions are bounded by `session_minutes`.
 
 This is deployment configuration, not a contract setting. The setting is
-parsed and validated at startup. Endpoint overrides select their own profile in
-`model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
+strictly validated by `outerloop start` and `outerloop init`; during ticks, an unusable
+entry holds fresh claims only for its slots, without falling back to the fleet author.
+A malformed setting holds fresh claims for every readable target key (or all targets
+if unreadable), while existing runs and other tick services continue.
+Endpoint overrides select their own profile in `model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
 the selected backend's author credential. Normal author/judge credential
 separation still applies to the effective override credential.
 
