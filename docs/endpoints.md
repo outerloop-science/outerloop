@@ -24,8 +24,9 @@ OUTERLOOP_IMAGE=/opt/agent.sif
 The files must be readable, nonempty, and private (`chmod 600`). Paths must be
 absolute (`~` is expanded). Profile names start with a letter and contain only
 letters, digits, and underscores; references are case-insensitive and their env
-keys are uppercase. Only `_URL`, `_KEY_FILE`, `_MODEL`, and `_API` are forwarded by the
-profile allowlist. URLs cannot contain credentials, a query, or a fragment.
+keys are uppercase. The profile allowlist forwards `_URL`, `_URL_FILE`,
+`_KEY_FILE`, `_MODEL`, and `_API`. URLs cannot contain credentials, a query, or a
+fragment.
 
 A profile owns its model. `OUTERLOOP_AUTHOR_MODEL` may be omitted; if set, it must
 match the profile's served model. Panel syntax is
@@ -217,3 +218,35 @@ proxy and CLI in the test gate, set `OUTERLOOP_BRIDGE_TEST_PYTHON` to the instal
 runtime's `venv/bin/python` and `OUTERLOOP_BRIDGE_TEST_CODEX` to the pinned Codex
 binary before running `uv run pytest -q`. These tests never install packages or
 contact a model endpoint; without these artifacts, the real-binary tests skip.
+
+## Endpoint wait visibility
+
+When a run defers, `stage.endpoint_wait` records the canonical (lowercase)
+profile name as `endpoint` and its first unavailable time as `since` (Unix
+seconds). `outerloop status` shows the endpoint and start time locally.
+Endpoint infrastructure state is excluded from the GitHub board and status strip
+and never triggers a research-log commit. A successful session probe clears that
+run's wait. Other waiting runs retain their own start times until they resume.
+
+The kernel logs one outage-start line for the first waiting run and one recovery
+line with the duration and all run IDs that waited. A locked, atomically written
+`endpoint-waits/<profile>.json` journal shares the outage latch across processes
+and ticks. There are no notifications or extra health probes.
+
+JSON address records may also contain `model` and `expires_at` (finite Unix
+seconds, at most the end of year 9999). When present, the model must match the
+profile and expiry must be in the future. Mismatched models, expired/invalid
+expiry, and records larger than 64 KiB are unavailable. Bare URLs and JSON without these optional fields retain
+their existing behavior. Reads are bounded to 64 KiB plus one byte; the
+existing health request retains its three-second timeout.
+
+## Local operator status
+
+Run `outerloop status` or `outerloop status --root /path/to/state --json` to
+read active runs and current endpoint outages without GitHub, scheduler calls,
+health probes, or state writes. Each run includes its author route and override
+flag, phase, recorded GPU-hours used/budget, and any endpoint wait. Text times
+are UTC; JSON times are Unix seconds. Outage waiting-run IDs come from the shared
+journal; after recovery, individual runs can still retain waits until they resume.
+GPU budgets use the local workspace contract (including review top-ups); missing
+or unreadable contracts show `unknown` (`null` in JSON).

@@ -162,6 +162,13 @@ def test_legacy_record_without_request_is_unchanged(tmp_path, run):
     assert load_record(tmp_path, "r1").state == PARKED
 
 
+@pytest.mark.parametrize("note", [None, 3, ["x"]])
+def test_non_text_note_is_recorded_empty(tmp_path, run, note):
+    (run_dir(tmp_path, "r1") / END_REQUEST_NAME).write_text(json.dumps({"note": note}))
+    assert end_on_request(tmp_path, load_record(tmp_path, "r1"), None, 10.0) == "operator"
+    assert load_record(tmp_path, "r1").ending_note == ""
+
+
 def test_damaged_request_still_ends_the_run_once(tmp_path, run):
     (run_dir(tmp_path, "r1") / END_REQUEST_NAME).write_text("{not json")
     assert end_on_request(tmp_path, load_record(tmp_path, "r1"), None, 10.0) == "operator"

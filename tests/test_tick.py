@@ -4686,3 +4686,28 @@ def test_hermes_panel_preflight_runtime(tmp_path, monkeypatch, state):
         assert problem == ""
     else:
         assert "bash scripts/install_hermes.sh" in problem
+
+
+@pytest.mark.parametrize("raw", ["broken json", '{"o/r":{"unexpected":true}}'])
+def test_malformed_overrides_do_not_stop_tick_main(tmp_path, monkeypatch, caplog, raw):
+    import sys
+
+    from outerloop import tick as mod
+
+    waiting_run(tmp_path)
+    compute = FakeSlurm(states={"100": "FAILED"}).compute()
+    dispatcher = RecordingDispatcher()
+    spec = mod.ServiceSpec(
+        account="", partition="", run_root=tmp_path, target="o/r", home=tmp_path, image=""
+    )
+    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
+    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--min-free-gb", "0"])
+    monkeypatch.setattr(mod, "compute_from_env", lambda: compute)
+    monkeypatch.setattr(mod, "_service_spec_from_env", lambda *a, **kw: (None, spec))
+    monkeypatch.setattr(mod, "_wake_dispatcher_from_env", lambda *a: (dispatcher, True))
+    monkeypatch.setattr("time.time", lambda: NOW)
+    assert mod.main() == 0
+    assert dispatcher.dispatched == [("r1", "experiment FAILED")]
+    assert load_record(tmp_path, "r1").wake_attempts == 1
+    assert caplog.text.count("fresh claims held:") == 1
+    assert mod._author_config_error(spec)

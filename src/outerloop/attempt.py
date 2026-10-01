@@ -83,6 +83,7 @@ from outerloop.ledger_events import (
     observe_target,
     queue_pending,
 )
+from outerloop.limits import bound_limits, capped_limits, clamp_bound_limits, effective_limits
 from outerloop.markers import has_marker, marker
 from outerloop.measure import DispatchedMeasurer, DispatchSettings
 from outerloop.orchestrator import (
@@ -303,7 +304,9 @@ def _defer_endpoint(root: Path, record: RunRecord, exc: EndpointUnavailable) -> 
         dc_replace(record, state=PARKED, wake_attempts=max(0, record.wake_attempts - 1)),
         time.time(),
     )
-    log.warning("run %s: %s", record.run_id, exc)
+    from outerloop.endpoint_wait import unavailable
+
+    unavailable(root, record.run_id, exc, time.time())
 
 
 def resume_author(
@@ -559,6 +562,7 @@ def _best_effort(what: str, fn: Callable[[], object], secrets: tuple[str, ...] =
 
 
 STAGE_RETAINED_KEYS = (
+    "endpoint_wait",
     LEDGER_RETRY,
     "withdraw_reason",
     "ledger_digits",
@@ -579,7 +583,7 @@ def _message_stage(run_root: Path, record: RunRecord) -> dict[str, object]:
     """Delivery owns these keys; captured leg records are never authoritative."""
     current = load_record(run_root, record.run_id)
     stage = dict(record.stage)
-    for key in ("message_counter", "message_delivery"):
+    for key in ("message_counter", "message_delivery", "endpoint_wait"):
         stage.pop(key, None)
         if key in current.stage:
             stage[key] = current.stage[key]
@@ -4388,6 +4392,7 @@ def live_attempt(
     author_model: str = "",
     author_key_file: str = "",
     author_overridden: bool = False,
+    author_limits: dict[str, int] | None = None,
     task_hypothesis: str = "",
     spec: RoleSpec | None = None,
     panel_lenses: tuple[PanelLens, ...] = (),
@@ -4418,6 +4423,7 @@ def live_attempt(
         author_backend=author_backend,
         author_model=author_model,
         author_overridden=author_overridden,
+        author_limits=author_limits,
         author_key_file=author_key_file,
         run_job_id=_os.environ.get("SLURM_JOB_ID", ""),
         stage={"hypothesis": redact(task_hypothesis, secrets)} if task_hypothesis else {},
@@ -4459,6 +4465,23 @@ def live_attempt(
         _exclude_merge_artifacts(workspace)
         contract_text = contract_text_in_tree(workspace)
         contract = load_contract(contract_text, config.target)
+        if (stored := bound_limits(record.author_limits)) is not None:
+            # Direct climbs learn the trusted contract only after cloning. Queued
+            # climbs already carry its clamp; neither path rereads operator settings.
+            bound = clamp_bound_limits(stored, contract.budgets)
+            record = dc_replace(record, author_limits=asdict(bound))
+            save_record(run_root, record, now)
+            spec = author_spec(
+                max_turns=bound.session_max_turns, walltime_s=bound.session_minutes * 60
+            )
+            from outerloop.harness import ClaudeCodeHarness, CodexHarness, HermesHarness
+
+            if isinstance(harness, (ClaudeCodeHarness, HermesHarness)):
+                harness = dc_replace(
+                    harness, max_turns=spec.budget.max_turns, timeout_s=spec.budget.walltime_s
+                )
+            elif isinstance(harness, CodexHarness):
+                harness = dc_replace(harness, timeout_s=spec.budget.walltime_s)
         # Load the brief budget from the contract and run state: callers do
         # not supply it (the dataclass default rendered "0.0 GPU-hours" and
         # honest agents refused to launch). Same weekly counting rule as the
@@ -4783,7 +4806,9 @@ def live_attempt(
                 base_branch=base_branch,
             )
             parked = p
-            log.warning("run %s: %s", run_id, exc)
+            from outerloop.endpoint_wait import unavailable
+
+            unavailable(run_root, run_id, exc, time.time())
             return AttemptOutcome(run_id=run_id, outcome="parked")
         except RunParked as p:
             # The climb dispatched its measures and hibernated. Persist the
@@ -5157,6 +5182,7 @@ def main() -> int:
     )
     parser.add_argument("--author-bound", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--author-overridden", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--author-limits", type=json.loads, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     from outerloop.author_overrides import select_override
     from outerloop.gpu_lanes import gpu_lanes_from_env
@@ -5168,6 +5194,23 @@ def main() -> int:
             if selected:
                 args.author_backend, args.model = selected.backend, selected.resolved_model()
                 args.author_overridden = True
+                if selected.session_minutes is not None or selected.session_max_turns is not None:
+                    from outerloop.tick import _max_job_minutes_from_env
+
+                    limits = effective_limits(
+                        session_minutes=selected.session_minutes,
+                        session_max_turns=selected.session_max_turns,
+                    )
+                    if args.job_minutes:  # 0 keeps the self-deadline off
+                        args.job_minutes = min(args.job_minutes, _max_job_minutes_from_env())
+                        limits = capped_limits(limits, args.job_minutes)
+                    args.author_limits = asdict(limits)
+        if args.author_limits is not None and not args.resume:
+            passed = bound_limits(args.author_limits)
+            if passed is None:
+                raise ValueError("--author-limits must carry every session limit")
+            args.max_turns = passed.session_max_turns
+            args.session_minutes = passed.session_minutes
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -5229,6 +5272,12 @@ def main() -> int:
             # once this wake's lease is free
             _release_own_lease(args.run_root, args.resume)
             return 0
+        wake_limits = bound_limits(getattr(_wake_record, "author_limits", None))
+        if wake_limits is not None:
+            if args.job_minutes:
+                wake_limits = capped_limits(wake_limits, args.job_minutes)
+            args.max_turns = wake_limits.session_max_turns
+            args.session_minutes = wake_limits.session_minutes
         try:
             explicit_model = args.model  # what the operator typed, before any env fill-in
             if not getattr(_wake_record, "author_model", "") and not args.model:
@@ -5480,6 +5529,7 @@ def main() -> int:
                 author_backend=args.author_backend,
                 author_model=args.model,
                 author_overridden=args.author_overridden,
+                author_limits=args.author_limits,
                 author_key_file=args.key_file,
                 task_hypothesis=(
                     __import__("base64").b64decode(args.hypothesis_b64).decode()
@@ -5557,7 +5607,8 @@ def requested_note(run_root: Path, run_id: str) -> str:
 
     try:
         request = run_dir_of(run_root, run_id) / END_REQUEST_NAME
-        return str(json.loads(request.read_text()).get("note", ""))
+        note = json.loads(request.read_text()).get("note", "")
+        return note if isinstance(note, str) else ""
     except (OSError, ValueError, AttributeError):
         return ""  # the request still stands; a damaged note never blocks the ending
 

@@ -13,7 +13,31 @@ Versions follow [SemVer](https://semver.org).
   means no request. Older kernels ignore requests and do not recognize the new
   `operator` ending when writing records; keep the updated kernel for these runs.
 
-- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (the tick and `outerloop start`) uses the
+- Author overrides accept operator-only `session_minutes` (10–240) and
+  `session_max_turns` (10–300). Limits bind with the author selection and survive
+  settings changes across wakes and review replies. Contracts can still lower
+  budgets; job walltime follows session duration and the operator job cap.
+  Judge budgets are unchanged.
+- Upgrading: the new override fields are optional; existing settings and legacy
+  run records need no migration. Finish runs using extended limits before
+  rolling back to a version without bound author limits.
+
+- Bad author overrides hold only affected fresh claims during ticks, with one log
+  per entry per tick; malformed settings hold named targets, or all fresh claims
+  when unreadable. Other tick services and bound runs continue; `outerloop start`
+  and `outerloop init` remain strict. No persisted state changes.
+
+- Add read-only `outerloop status` (text/`--json`) for local runs and endpoint
+  outages. Endpoint waits stay out of the published board/status strip and never
+  trigger research-log commits; log one shared outage start and recovery with
+  duration and run IDs.
+  Validate optional served model and expiry in bounded endpoint address records.
+- Upgrading: no action needed; the first endpoint deferral adds
+  `stage.endpoint_wait` and an `endpoint-waits/<profile>.json` log latch. Missing
+  keys/journals are tolerated; ended runs and in-flight PRs are unchanged.
+  Rollback to the preceding kernel safely ignores the additive state.
+
+- Startup validation of `OUTERLOOP_AUTHOR_OVERRIDES` (`outerloop start`) uses the
   image sessions actually run with, the default image when `OUTERLOOP_IMAGE` is unset. Before, a
   codex override on a deployment without `OUTERLOOP_IMAGE` failed validation and stopped the tick.
 

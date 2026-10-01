@@ -479,6 +479,25 @@ The login loop does **not auto-update**, even with `OUTERLOOP_AUTO_UPDATE=main`.
 To restart or upgrade: stop the process, run `git pull`, run `uv sync`, then
 run `outerloop start` again. Settings from `.env` are exported only at launch.
 
+### Local status
+
+```bash
+outerloop status
+outerloop status --root /path/to/state --json
+```
+
+This read-only command lists non-ended runs with target, agent, state/phase,
+author backend/model and override flag, recorded GPU-hours used/budget, and
+endpoint waits, followed by current endpoint outages and their waiting run IDs.
+It reads local files only, with no GitHub, scheduler, or health-probe calls, so it
+is safe on a login node. GPU budgets come from each local workspace contract,
+including review top-ups; unavailable contracts show unknown/null.
+Root precedence is `--root`, process `OUTERLOOP_ROOT`, the selected operator
+settings file's `OUTERLOOP_ROOT`, then `~/.outerloop`—the resolution used by
+`start` when launching the tick (`tick` itself requires `--root`).
+An empty or nonexistent root reports no runs/outages without creating files.
+See [endpoint waits](endpoints.md#local-operator-status) for outage semantics.
+
 ### Upgrading
 
 1. Run `outerloop upgrade` (add `--pre` for pre-releases).
@@ -607,16 +626,36 @@ appear twice:
 OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":[{"backend":"claude","model":"served-model[endpoint=onprem]","slots":["agent-04"]},{"backend":"codex","model":"served-model[endpoint=onprem]","slots":["agent-03"]}]}'
 ```
 
+Either form also accepts optional integer `session_minutes` (10–240) and
+`session_max_turns` (10–300) on each entry, for authors that need longer sessions.
+For example, add `"session_minutes":180,"session_max_turns":250` to an entry.
+Values outside these ranges fail startup validation. Only operator settings can
+raise these limits; a contract's explicit session budget can still lower them.
+The session uses the smaller of the contract value and the override, subject to
+the existing floors. An overridden session duration gets a job budget of that
+duration plus 20 minutes of overhead; an explicit contract job budget can lower
+it. Panel work keeps its additional allowance. `OUTERLOOP_MAX_JOB_MINUTES` still
+caps the job and shortens the session when needed to leave overhead; at the cap,
+the panel allowance is what gets cut. A run keeps the limits it was claimed
+with, and its wake and review-reply jobs are sized from those limits too.
+Codex has no turn cap, so `session_max_turns` applies to Claude Code and Hermes
+authors only; Codex sessions are bounded by `session_minutes`.
+
 This is deployment configuration, not a contract setting. The setting is
-parsed and validated at startup. Endpoint overrides select their own profile in
-`model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
+strictly validated by `outerloop start` and `outerloop init`; during ticks, an unusable
+entry holds fresh claims only for its slots, without falling back to the fleet author.
+A malformed setting holds fresh claims for every readable target key (or all targets
+if unreadable), while existing runs and other tick services continue.
+Endpoint overrides select their own profile in `model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
 the selected backend's author credential. Normal author/judge credential
 separation still applies to the effective override credential.
 
 Queued climbs bind the selection when submitted (before an intake claim is
-launched); direct climbs bind at startup. Backend, model and key path are saved
-in the run record. Changing overrides cannot switch an existing run, even at a
-resume or wake. Panel inheritance and CI reviewers still use the fleet author,
+launched); direct climbs bind at startup. Backend, model, key path and resolved
+override limits are saved in the run record. Bound limits also apply to author-sleep wakes, resumed legs
+and author replies to reviews; judge budgets are unchanged. Entries without the
+new fields and older records retain their existing limits. Changing overrides
+cannot switch an existing run, even at a resume or wake. Panel inheritance and CI reviewers still use the fleet author,
 exactly as for a run without an override. Per-run board details show the author
 backend/model and mark overrides. Remove the setting (or use `{}`) to stop
 selecting overrides for new work.
