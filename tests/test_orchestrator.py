@@ -2364,7 +2364,31 @@ def test_gpu_capacity_refusal_reaches_author_without_charging(tmp_path):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("can_resume", [False, True])
+def test_capacity_refusal_without_resume_keeps_existing_behaviour(tmp_path):
+    from outerloop.operator_limits import CapacityError
+
+    class Author:
+        supports_resume = False
+        calls = 0
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls += 1
+            _write_syscall(workspace, {"launches": [{"name": "probe", "command": "x"}]})
+            return ok_session()
+
+    def launcher(sha, request):
+        raise CapacityError("operator GPU limit: requested 1, running/pending 4")
+
+    author = Author()
+    # No park: a capacity wait would wake an author that cannot resume.
+    result, _, _ = run_climb(
+        tmp_path, [13.876, 13.876], harness=author, contract=DEEP_CONTRACT, launcher=launcher
+    )
+    assert author.calls == 1
+    assert result.outcome != "parked"  # measured as-is, as before
+
+
+@pytest.mark.parametrize("can_resume", [True])
 def test_capacity_refusal_parks_and_next_wake_delivers_note(tmp_path, can_resume):
     from outerloop.inbox import pending, wake_pending
     from outerloop.operator_limits import CapacityError

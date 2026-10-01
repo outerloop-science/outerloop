@@ -1941,9 +1941,10 @@ def attempt_once(
                         note=f"Stale submit refused; no gate or sibling launches ran: {problem}",
                         run_seed=run_seed,
                     )
-                if capacity_refused:
+                if capacity_refused and _can_resume():
                     # Bound immediate retries without turning transient capacity
-                    # into an ending. The wake delivers this still-pending note.
+                    # into an ending. The wake resumes this session with the note;
+                    # an author that cannot resume keeps the old behaviour.
                     append(
                         inbox_dir,
                         Message(
