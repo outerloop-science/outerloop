@@ -669,7 +669,8 @@ The run ends as `operator`, with the same cleanup as a PR merge or close, at the
 first active tick when no session holds it, even without a PR or an available
 model endpoint. A session in flight finishes its leg but cannot publish; a queued
 wake exits without starting one. Pending jobs are cancelled. A run with an issue
-waits until GitHub is reachable, so the issue is told.
+waits until GitHub is reachable, so the issue is told. If a session in flight
+ends the run itself first, its own ending stands.
 The slot becomes free, and the next claim uses the current settings, including
 `OUTERLOOP_AUTHOR_OVERRIDES`. A paused loop must resume to process the request.
 
