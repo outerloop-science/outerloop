@@ -627,8 +627,11 @@ OUTERLOOP_AUTHOR_OVERRIDES='{"owner/repo":[{"backend":"claude","model":"served-m
 ```
 
 This is deployment configuration, not a contract setting. The setting is
-parsed and validated at startup. Endpoint overrides select their own profile in
-`model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
+strictly validated by `outerloop start` and `outerloop init`; during ticks, an unusable
+entry holds fresh claims only for its slots, without falling back to the fleet author.
+A malformed setting holds fresh claims for every readable target key (or all targets
+if unreadable), while existing runs and other tick services continue.
+Endpoint overrides select their own profile in `model`; they do not inherit `OUTERLOOP_AUTHOR_ENDPOINT`. Native overrides use
 the selected backend's author credential. Normal author/judge credential
 separation still applies to the effective override credential.
 
