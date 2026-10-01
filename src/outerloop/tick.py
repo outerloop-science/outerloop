@@ -1139,15 +1139,22 @@ def sweep(
                     migrate_inbox(root, record.run_id, now)
                 finally:
                     release_lease(root, record.run_id)
-            from outerloop.runstate import END_REQUEST_NAME
+            from outerloop.attempt import end_on_request, end_requested
 
-            if not dry_run and (run_dir(root, record.run_id) / END_REQUEST_NAME).is_file():
-                from outerloop.attempt import close_if_done
-
-                ending = close_if_done(root, record, github, now)
+            # An operator ending waits for the lease: a live session finishes its
+            # leg (its publish is refused) and a queued wake exits without one.
+            if (
+                not dry_run
+                and end_requested(root, record.run_id)
+                and acquire_lease(root, record.run_id, holder, "", now)
+            ):
+                try:
+                    ending = end_on_request(root, record, github, now)
+                finally:
+                    release_lease(root, record.run_id)
                 if ending:
                     ended.append((record.run_id, ending))
-                continue
+                    continue
             merged = False
             blessed_before = record.auto_blessed_head
             try:
@@ -1577,13 +1584,18 @@ def _sweep_running(
                 # after its run is declared dead must never survive one
                 with contextlib.suppress(Exception):
                     compute.cancel(jid)
-            from outerloop.attempt import finish_run
+            from outerloop.attempt import end_requested, finish_run, requested_note
+            from outerloop.runstate import OPERATOR
 
+            # A pending operator request names the ending: its session died first.
+            requested = end_requested(root, fresh.run_id)
             finish_run(
                 root,
                 fresh,
-                ABORTED,
-                f"{note} — ended by the sweep (a killed climb leaves no exception to contain)",
+                OPERATOR if requested else ABORTED,
+                requested_note(root, fresh.run_id)
+                if requested
+                else f"{note} — ended by the sweep (a killed climb leaves no exception to contain)",
                 now,
                 auth=getattr(github, "auth", None),
                 bot_login=bot_login,
@@ -1675,6 +1687,11 @@ def _sweep_one(
         if not reap_lease(root, record.run_id, reaper=f"{os.getpid()}-{now}", expected=lease):
             return  # a concurrent tick reaped it first; it owns redelivery
         reaped.append(record.run_id)
+
+    from outerloop.attempt import end_requested
+
+    if end_requested(root, record.run_id):
+        return  # an operator ending is pending: never wake the run again
 
     from outerloop.inbox import wake_pending
 

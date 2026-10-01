@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from fakes import RecordingDispatcher
-from outerloop.attempt import close_if_done, publish
+from outerloop.attempt import end_on_request, publish
 from outerloop.cli import main
 from outerloop.endpoints import EndpointUnavailable
 from outerloop.runstate import (
@@ -18,6 +18,7 @@ from outerloop.runstate import (
     RunRecord,
     acquire_lease,
     load_record,
+    release_lease,
     request_end,
     run_dir,
     save_record,
@@ -101,31 +102,11 @@ def test_tick_operator_ending(tmp_path, run, monkeypatch, state, issue):
     dry = sweep(tmp_path, compute, dispatcher, 4, github=github, dry_run=True)
     assert not dry.review_ended
     assert load_record(tmp_path, "r1").state == state
-    report = sweep(tmp_path, compute, dispatcher, 5, github=github)
-    assert report.review_ended == (("r1", "operator"),)
-    final = load_record(tmp_path, "r1")
-    assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "endpoint retired")
-    assert "operator: endpoint retired" in (run_dir(tmp_path, "r1") / "report.md").read_text()
-    from outerloop.climbboard import collect_rows
-
-    row = collect_rows(tmp_path, "owner/repo")["benchmark"][0]
-    assert (row.outcome, row.note) == ("operator", "endpoint retired")
-    dispatch.assert_not_called()
-    compute.cancel.assert_called_once_with("7")
-    if github:
-        from outerloop.intake import RELEASE_MARKER
-
-        assert RELEASE_MARKER in github.comment.call_args.args[2]
-        github.get_pull_request.assert_not_called()
-    # The request stays as an audit record, but neither a later tick nor a stale
-    # session record can act on it twice.
-    assert (run_dir(tmp_path, "r1") / END_REQUEST_NAME).exists()
-    assert not sweep(tmp_path, compute, dispatcher, 6, github=github).review_ended
-    assert close_if_done(tmp_path, record, github, 7) == ""
-    compute.cancel.assert_called_once()
-    if github:
-        github.comment.assert_called_once()
     if state == RUNNING:
+        # The live session keeps its lease: the tick waits, and the session's
+        # publish is refused while the request is pending.
+        assert not sweep(tmp_path, compute, dispatcher, 5, github=github).review_ended
+        assert load_record(tmp_path, "r1").state == RUNNING
         outcome = publish(
             result=Mock(),
             ws=Mock(),
@@ -146,18 +127,108 @@ def test_tick_operator_ending(tmp_path, run, monkeypatch, state, issue):
             date="",
         )
         assert outcome.outcome == "publish-refused"
+        release_lease(tmp_path, "r1")
+    report = sweep(tmp_path, compute, dispatcher, 5, github=github)
+    assert report.review_ended == (("r1", "operator"),)
+    final = load_record(tmp_path, "r1")
+    assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "endpoint retired")
+    assert "operator: endpoint retired" in (run_dir(tmp_path, "r1") / "report.md").read_text()
+    from outerloop.climbboard import collect_rows
+
+    row = collect_rows(tmp_path, "owner/repo")["benchmark"][0]
+    assert (row.outcome, row.note) == ("operator", "endpoint retired")
+    dispatch.assert_not_called()
+    compute.cancel.assert_called_once_with("7")
+    if github:
+        from outerloop.intake import RELEASE_MARKER
+
+        assert RELEASE_MARKER in github.comment.call_args.args[2]
+        github.get_pull_request.assert_not_called()
+    # The request stays as an audit record, but neither a later tick nor a stale
+    # session record can act on it twice.
+    assert (run_dir(tmp_path, "r1") / END_REQUEST_NAME).exists()
+    assert not sweep(tmp_path, compute, dispatcher, 6, github=github).review_ended
+    assert end_on_request(tmp_path, record, github, 7) == ""
+    compute.cancel.assert_called_once()
+    if github:
+        github.comment.assert_called_once()
+    if state == RUNNING:
         save_record(tmp_path, record, 9)
         assert load_record(tmp_path, "r1") == final
 
 
 def test_legacy_record_without_request_is_unchanged(tmp_path, run):
-    assert close_if_done(tmp_path, run, None, 3) == ""
+    assert end_on_request(tmp_path, run, None, 3) == ""
     assert load_record(tmp_path, "r1").state == PARKED
 
 
 def test_damaged_request_still_ends_the_run_once(tmp_path, run):
     (run_dir(tmp_path, "r1") / END_REQUEST_NAME).write_text("{not json")
-    assert close_if_done(tmp_path, load_record(tmp_path, "r1"), None, 10.0) == "operator"
+    assert end_on_request(tmp_path, load_record(tmp_path, "r1"), None, 10.0) == "operator"
     final = load_record(tmp_path, "r1")
     assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "")
-    assert close_if_done(tmp_path, final, None, 11.0) == ""
+    assert end_on_request(tmp_path, final, None, 11.0) == ""
+
+
+def test_issue_run_waits_for_github_before_ending(tmp_path, run):
+    save_record(tmp_path, replace(run, issue_number=12), 2)
+    assert request_end(tmp_path, "r1", "", 3)
+    assert end_on_request(tmp_path, load_record(tmp_path, "r1"), None, 4) == ""
+    assert load_record(tmp_path, "r1").state == PARKED
+    github = Mock()
+    assert end_on_request(tmp_path, load_record(tmp_path, "r1"), github, 5) == "operator"
+    github.comment.assert_called_once()
+
+
+def test_queued_wake_exits_without_a_leg(tmp_path, run, monkeypatch):
+    from outerloop import attempt
+
+    assert request_end(tmp_path, "r1", "", 3)
+    image = tmp_path / "image.sif"
+    image.touch()
+    argv = ["climb", "--resume", "r1", "--run-root", str(tmp_path), "--image", str(image)]
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr(attempt, "_lease_held_by_another_job", lambda *args: "")
+    released = []
+    monkeypatch.setattr(attempt, "_release_own_lease", lambda *args: released.append(args))
+    monkeypatch.setattr(attempt, "resume_run", Mock(side_effect=AssertionError("leg started")))
+    monkeypatch.setattr(attempt, "build_harness", Mock(side_effect=AssertionError("harness built")))
+    assert attempt.main() == 0
+    assert released == [(str(tmp_path), "r1")] or released == [(tmp_path, "r1")]
+    assert load_record(tmp_path, "r1").state == PARKED
+
+
+def test_issue_run_without_github_is_never_woken_while_it_waits(tmp_path, run, monkeypatch):
+    record = replace(run, issue_number=12, experiment_job_id="7", deadline=10.0)
+    save_record(tmp_path, record, 2)
+    assert request_end(tmp_path, "r1", "retired", 3)
+    compute = Mock()
+    compute.status.return_value = "COMPLETED"
+    monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: compute)
+    dispatcher = RecordingDispatcher()
+    dispatch = Mock()
+    monkeypatch.setattr(dispatcher, "dispatch", dispatch)
+    for now in (100, 200, 300, 400):
+        assert not sweep(tmp_path, compute, dispatcher, now, grace_s=0).review_ended
+    dispatch.assert_not_called()
+    waiting = load_record(tmp_path, "r1")
+    assert (waiting.state, waiting.wake_attempts) == (PARKED, 0)
+    github = Mock()
+    report = sweep(tmp_path, compute, dispatcher, 500, grace_s=0, github=github)
+    assert report.review_ended == (("r1", "operator"),)
+    assert load_record(tmp_path, "r1").ending_note == "retired"
+
+
+def test_dead_session_of_a_requested_run_ends_as_operator(tmp_path, run, monkeypatch):
+    save_record(tmp_path, replace(run, state=RUNNING, run_job_id="55"), 2)
+    assert acquire_lease(tmp_path, "r1", "session", "55", 2)
+    assert request_end(tmp_path, "r1", "retired", 3)
+    compute = Mock()
+    compute.status.return_value = "FAILED"
+    monkeypatch.setattr("outerloop.compute.compute_from_env", lambda: compute)
+    dispatcher = RecordingDispatcher()
+    sweep(tmp_path, compute, dispatcher, 10, grace_s=1)  # stamps the kill
+    report = sweep(tmp_path, compute, dispatcher, 20, grace_s=1)
+    assert "r1" in report.running_ended
+    final = load_record(tmp_path, "r1")
+    assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "retired")

@@ -3749,7 +3749,7 @@ def publish(
 ) -> AttemptOutcome:
     """Publish a credited sealed tree: open a PR or fast-forward its head."""
     latest = load_record(run_root, run_id)
-    if latest.state == ENDED:
+    if latest.state == ENDED or end_requested(run_root, run_id):
         return AttemptOutcome(run_id=run_id, outcome="publish-refused", pr_url=latest.pr_url)
     meter = {
         k: v
@@ -5224,6 +5224,11 @@ def main() -> int:
             # a wake must never crash on an unreadable/odd record — fall back to
             # the claude author (resume_author), same fail-safe as the sweep
             _wake_record = None
+        if end_requested(Path(args.run_root), args.resume):
+            # an operator ending is pending: no new leg; the tick ends the run
+            # once this wake's lease is free
+            _release_own_lease(args.run_root, args.resume)
+            return 0
         try:
             explicit_model = args.model  # what the operator typed, before any env fill-in
             if not getattr(_wake_record, "author_model", "") and not args.model:
@@ -5525,25 +5530,44 @@ def withdraw_pr(
     return ""
 
 
-def close_if_done(
+def end_requested(run_root: Path, run_id: str) -> bool:
+    from outerloop.runstate import END_REQUEST_NAME
+
+    return (run_dir_of(run_root, run_id) / END_REQUEST_NAME).is_file()
+
+
+def end_on_request(
     run_root: Path, record: RunRecord, github: GitHubClient | None, now: float
 ) -> str:
-    """Route operator requests and PR endings through the run terminal."""
-    from outerloop.github import GitHubError
-    from outerloop.runstate import END_REQUEST_NAME, MERGED, OPERATOR, REJECTED
+    """End a run an operator asked to end. The caller holds the run's lease, so
+    no session leg (and no publish) is in flight."""
+    from outerloop.runstate import OPERATOR
 
     record = load_record(run_root, record.run_id)
-    if record.state == ENDED:
+    if record.state == ENDED or not end_requested(run_root, record.run_id):
         return ""
-    request = run_dir_of(run_root, record.run_id) / END_REQUEST_NAME
-    if request.is_file():
-        try:
-            note = str(json.loads(request.read_text()).get("note", ""))
-        except (OSError, ValueError, AttributeError):
-            note = ""  # the request still stands; a damaged note never blocks the ending
-        finish_run(run_root, record, OPERATOR, note, now, github)
-        return OPERATOR
-    if github is None or not record.pr_url:
+    if record.issue_number and github is None:
+        return ""  # the issue comment needs GitHub; a later tick ends it
+    finish_run(run_root, record, OPERATOR, requested_note(run_root, record.run_id), now, github)
+    return OPERATOR
+
+
+def requested_note(run_root: Path, run_id: str) -> str:
+    from outerloop.runstate import END_REQUEST_NAME
+
+    try:
+        request = run_dir_of(run_root, run_id) / END_REQUEST_NAME
+        return str(json.loads(request.read_text()).get("note", ""))
+    except (OSError, ValueError, AttributeError):
+        return ""  # the request still stands; a damaged note never blocks the ending
+
+
+def close_if_done(run_root: Path, record: RunRecord, github: GitHubClient, now: float) -> str:
+    """Finish a withdrawal intent, then route the PR ending through the run terminal."""
+    from outerloop.github import GitHubError
+    from outerloop.runstate import MERGED, REJECTED
+
+    if record.state == ENDED or not record.pr_url:
         return ""
     try:
         pr = github.get_pull_request(record.target, _pr_number(record.pr_url))

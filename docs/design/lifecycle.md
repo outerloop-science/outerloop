@@ -219,9 +219,12 @@ or a kernel action that made no progress
 `MAX_WAKE_ATTEMPTS` times, a failed publish retry included. The operator command
 atomically records the request time and optional note in the run directory; it
 does not end the run itself. The tick records the ending as `operator` and keeps
-the note as the ending note. A merge, close, or operator request
+the note as the ending note. A merge or close
 ends the run at the next tick whatever it is doing: pending jobs are
 cancelled, a session in flight finishes its leg and its publish is refused.
+An operator request waits for the run's lease instead: a session in flight
+finishes its leg with its publish refused, a queued wake exits without a leg,
+and the next tick that holds the lease ends the run.
 Every ending writes the report, seals the line notebook, releases the issue
 claim when no PR exists, and cancels the run's live launches. These are the only
 paths that end a run. A gate verdict never ends a run by itself, and a reviewer's

@@ -665,9 +665,11 @@ The root defaults to `OUTERLOOP_ROOT` in the environment or operator settings,
 then `~/.outerloop`. The command atomically writes `end-request.json` in the
 run directory with the requested time and note. Unknown and already ended runs
 are refused; repeating a pending request preserves its original time and note.
-At the next active tick, the run ends as `operator` through the same cleanup as
-a PR merge or close, even without a PR or an available model endpoint. Pending
-jobs are cancelled; a session in flight finishes its leg and cannot publish.
+The run ends as `operator`, with the same cleanup as a PR merge or close, at the
+first active tick when no session holds it, even without a PR or an available
+model endpoint. A session in flight finishes its leg but cannot publish; a queued
+wake exits without starting one. Pending jobs are cancelled. A run with an issue
+waits until GitHub is reachable, so the issue is told.
 The slot becomes free, and the next claim uses the current settings, including
 `OUTERLOOP_AUTHOR_OVERRIDES`. A paused loop must resume to process the request.
 
