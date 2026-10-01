@@ -250,6 +250,8 @@ and the contract's allowed scope (up to ten entries and 1,000 characters).
 Later refusals in the same run start with “Refused again:”. Nothing is sealed,
 launched, measured, or charged for a refused request. Refusals repeat and never
 end the run, including requests with malformed content or budget problems.
+When a launch capacity refusal cannot be delivered in another immediate resume,
+the run parks uncharged in capacity wait; its next wake receives the refusal and can retry.
 The session walltime and contract sleep, launch, and GPU-hour budgets bound
 the loop. A session that cannot resume ends as `session-error`; endpoint loss
 during refusal delivery ends as `session-outage` without sealing the rejected

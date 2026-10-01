@@ -6,6 +6,11 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Park repeated launch capacity refusals in capacity wait instead of ending the
+  run. The next wake resumes the same session with the refusal and a retry note;
+  meters are preserved and capacity waits do not exhaust stuck retries.
+  Existing records need no migration.
+
 - Add operator `outerloop rebind <run-id> [--root <root>] [--note <text>]` to
   explicitly move an existing run to its slot's current author at the next leg,
   including runs waiting on retired endpoints. Reports and board details show

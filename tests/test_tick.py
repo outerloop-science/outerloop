@@ -512,6 +512,63 @@ def test_running_experiment_is_left_alone(tmp_path: Path) -> None:
     assert dispatcher.dispatched == []
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_jobless_capacity_wait_wakes_at_deadline(tmp_path, legacy):
+    from outerloop.attempt import _park_run
+    from outerloop.harness import SessionResult
+    from outerloop.inbox import Message, append
+    from outerloop.orchestrator import RunParked
+    from outerloop.syscall import SyscallRequest
+
+    record = waiting_run(tmp_path)
+    parked = RunParked(
+        phase="author-sleep",
+        afterany="",
+        base_sha="base",
+        seed=1,
+        suite_seed=1,
+        candidate_sha="candidate",
+        session=SessionResult("end_turn", False, 1.0, 1, "same-session", "", ""),
+        syscall=SyscallRequest(launches=()),
+        capacity_wait=True,
+        launches_used=1,
+        sleeps_used=2,
+        gpu_hours_used=0.25,
+    )
+    append(
+        tmp_path / "runs" / record.run_id,
+        Message(
+            0,
+            "note",
+            "kernel",
+            "",
+            NOW,
+            "capacity",
+            {
+                "text": "Capacity may now be free; retry.",
+                "context_only": True,
+            },
+        ),
+    )
+    for cycle in range(5):
+        now = NOW + cycle * 100
+        _park_run(tmp_path, record, parked, "ref", 1, now, keep_wake_attempts=True)
+        saved = load_record(tmp_path, record.run_id)
+        assert saved.wake_attempts == 0 and saved.deadline == now + 60
+        assert saved.resume_session_id == "same-session"
+        if legacy:
+            # Old records have no capacity_wait marker; the jobless deadline still works.
+            stage = dict(saved.stage)
+            del stage["capacity_wait"]
+            save_record(tmp_path, replace(saved, stage=stage), now)
+        early, _ = run_tick(tmp_path, FakeSlurm(), now=now + 59, min_tick_s=0)
+        assert not early.woken and not early.stuck
+        due, _ = run_tick(tmp_path, FakeSlurm(), now=now + 61, min_tick_s=0)
+        assert due.woken == ((record.run_id, "deadline"),) and not due.stuck
+        record = load_record(tmp_path, record.run_id)
+        assert record.state == PARKED and record.wake_attempts == 1
+
+
 def test_attempts_exhausted_becomes_stuck(tmp_path: Path) -> None:
     waiting_run(tmp_path, wake_attempts=3)
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
