@@ -1206,9 +1206,10 @@ class CodexHarness:
                 codex_dir.mkdir(mode=0o700, exist_ok=True)
             except OSError:
                 return _error_result("workspace-error", detail="could not create codex config dir")
-            base_url = (
-                "http://127.0.0.1:1/v1" if bridge else endpoint_session_url(self.endpoint, workspace)
-            )
+            if bridge:
+                base_url = "http://127.0.0.1:1/v1"
+            else:
+                base_url = endpoint_session_url(self.endpoint, workspace)
             config = (
                 'model_provider = "outerloop_endpoint"\n'
                 "[model_providers.outerloop_endpoint]\n"
