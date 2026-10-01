@@ -699,6 +699,21 @@ message delivery, GitHub polling, self-merge sweep, board, and ending records
 continue; existing runs keep spending, including their panels, author sessions,
 and the authors' own `launch` submissions.
 
+To end one run, use `outerloop end <run-id> [--root <root>] [--note <text>]`.
+The root defaults to `OUTERLOOP_ROOT` in the environment or operator settings,
+then `~/.outerloop`. The command atomically writes `end-request.json` in the
+run directory with the requested time and note. Unknown and already ended runs
+are refused; repeating a pending request preserves its original time and note.
+The run ends as `operator`, with the same cleanup as a PR merge or close, at the
+first active tick when no session holds it, even without a PR or an available
+model endpoint. A session in flight finishes its leg and cannot start a publish (one
+already under way completes, and the run ends right after the leg); a queued
+wake exits without starting one. Pending jobs are cancelled. A run with an issue
+waits until GitHub is reachable, so the issue is told. If a session in flight
+ends the run itself first, its own ending stands.
+The slot becomes free, and the next claim uses the current settings, including
+`OUTERLOOP_AUTHOR_OVERRIDES`. A paused loop must resume to process the request.
+
 **Live operator ceilings.** Create `<root>/limits.toml` to limit this fleet while
 leaving target contracts under their normal review process:
 

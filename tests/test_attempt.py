@@ -7432,7 +7432,7 @@ def test_hermes_resume_configuration_block_preserves_park(
 
 
 @pytest.mark.parametrize("wake", [False, True])
-@pytest.mark.parametrize("failure", ["missing", "dead", "term", "interrupt"])
+@pytest.mark.parametrize("failure", ["missing", "dead", "term", "interrupt", "operator"])
 def test_endpoint_unavailable_parks_and_recovers(
     tmp_path, target_repo_syscalls, monkeypatch, wake, failure
 ):
@@ -7462,7 +7462,7 @@ def test_endpoint_unavailable_parks_and_recovers(
     key.write_text("secret")
     key.chmod(0o600)
     endpoint = EndpointProfile("local", "", key, "model", ("anthropic",), address)
-    if failure != "missing":
+    if failure not in ("missing", "operator"):
         address.write_text("http://localhost:8000/v1")
     connection = Mock()
     connection.request.side_effect = {
@@ -7470,6 +7470,7 @@ def test_endpoint_unavailable_parks_and_recovers(
         "term": climb_mod.Terminated(),
         "interrupt": KeyboardInterrupt(),
         "missing": None,
+        "operator": None,
     }[failure]
     monkeypatch.setattr("outerloop.endpoints.HTTPConnection", Mock(return_value=connection))
     original = ScriptedHarness.run
@@ -7525,6 +7526,18 @@ def test_endpoint_unavailable_parks_and_recovers(
     assert load_record(root, "tsp-1").wake_attempts == waiting.wake_attempts
 
     assert load_record(root, "tsp-1").stage["endpoint_wait"] == wait
+    if failure == "operator":
+        from fakes import RecordingDispatcher
+        from outerloop.compute import LocalCompute
+        from outerloop.runstate import request_end
+        from outerloop.tick import sweep
+
+        request_end(root, "tsp-1", "endpoint retired", 1_000_102)
+        report = sweep(root, LocalCompute(root), RecordingDispatcher(), 1_000_103)
+        assert report.review_ended == (("tsp-1", "operator"),)
+        assert load_record(root, "tsp-1").ending_note == "endpoint retired"
+        return
+
     address.write_text("http://localhost:8000/v1")
     connection.request.side_effect = None
     connection.getresponse.return_value.status = 200

@@ -1461,7 +1461,7 @@ def test_review_outage_refunds_attempt_and_preserves_delivery(review_run):
     assert outage_active(root, NOW)
 
 
-@pytest.mark.parametrize("ending", ["merged", "rejected"])
+@pytest.mark.parametrize("ending", ["merged", "rejected", "operator"])
 @pytest.mark.parametrize("during", ["session", "post"])
 def test_reply_return_preserves_concurrent_ending(review_run, ending, during):
     from outerloop.attempt import finish_run

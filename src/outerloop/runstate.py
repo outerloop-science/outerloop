@@ -34,16 +34,18 @@ LEDGER_RETRY = "ledger_retry"
 
 STATES = (RUNNING, PARKED, ENDED)
 
-# The six endings ("The life of a run" — every one produces a report).
+# The endings ("The life of a run" — every one produces a report).
 MERGED = "merged"
 REJECTED = "rejected"
 NEGATIVE_RESULT = "negative-result"
 BUDGET_EXHAUSTED = "budget-exhausted"
 ABORTED = "aborted"
 STUCK = "stuck"
+OPERATOR = "operator"
 
-ENDINGS = (MERGED, REJECTED, NEGATIVE_RESULT, BUDGET_EXHAUSTED, ABORTED, STUCK)
+ENDINGS = (MERGED, REJECTED, NEGATIVE_RESULT, BUDGET_EXHAUSTED, ABORTED, STUCK, OPERATOR)
 
+END_REQUEST_NAME = "end-request.json"
 RECORD_NAME = "state.json"
 LEASE_NAME = "lease.json"
 
@@ -191,6 +193,30 @@ class Lease:
 
 def run_dir(root: Path, run_id: str) -> Path:
     return root / "runs" / run_id
+
+
+def request_end(root: Path, run_id: str, note: str, now: float) -> bool:
+    """Atomically retain the first operator request without changing the run."""
+    if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
+        raise ValueError(f"unknown run id: {run_id}")
+    directory = run_dir(root, run_id)
+    if not (directory / RECORD_NAME).is_file():
+        raise ValueError(f"unknown run id: {run_id}")
+    with (directory / ".record-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_record(root, run_id)
+        if record.ended():
+            raise ValueError(f"run {run_id} already ended ({record.ending})")
+        path = directory / END_REQUEST_NAME
+        if path.exists():
+            return False
+        tmp = directory / f".{END_REQUEST_NAME}.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(json.dumps({"requested_at": now, "note": note}) + "\n")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return True
 
 
 def save_record(root: Path, record: RunRecord, now: float) -> None:

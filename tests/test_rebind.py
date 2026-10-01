@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -247,7 +247,8 @@ def test_launch_rows_credit_the_launched_commit(tmp_path, parked, selection):
     apply(tmp_path, parked, "")
     directory = tmp_path / "runs/one"
     launch = SimpleNamespace(name="probe", why="", minutes=10, array=1, concurrency=1, jobs=None)
-    append_submitted(directory, sleep=1, launches=[launch], job_ids=["5"], at=12, commit="old-sha")
+    launches = cast(Any, (launch,))
+    append_submitted(directory, sleep=1, launches=launches, job_ids=["5"], at=12, commit="old-sha")
     rows = [json.loads(line) for line in (directory / "launches.jsonl").read_text().splitlines()]
     assert rows[-1]["author"]["model"] == parked.author_model
 

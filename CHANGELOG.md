@@ -17,6 +17,13 @@ Versions follow [SemVer](https://semver.org).
   and evaluation provenance, require no migration. Legacy author history is populated lazily. Consume
   pending requests before rolling back to a kernel without rebind support.
 
+- Add `outerloop end <run-id> [--root <root>] [--note <text>]` to request an
+  operator ending at the next tick, including runs waiting for an unavailable
+  endpoint. The tick uses the existing ending cleanup and refuses later publish.
+- Upgrading: existing run records need no backfill; an absent `end-request.json`
+  means no request. Older kernels ignore requests and do not recognize the new
+  `operator` ending when writing records; keep the updated kernel for these runs.
+
 - Author overrides accept operator-only `session_minutes` (10–240) and
   `session_max_turns` (10–300). Limits bind with the author selection and survive
   settings changes across wakes and review replies. Contracts can still lower
