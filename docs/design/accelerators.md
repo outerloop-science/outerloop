@@ -4,8 +4,8 @@
 meters, caps and places experiment work in GPUs. This note proposes adding
 Cloud TPUs as a second, separately metered device kind, so the same kernel can
 run TPU benchmarks under budgets, operator limits and refusals as strict as
-the GPU ones. Budget caps are load-bearing safety features: nothing in this
-proposal may let TPU work run unmetered, or let a GPU budget pay for it.
+the GPU ones. Budget caps are safety features: nothing in this proposal may let TPU work
+run unmetered, or let a GPU budget pay for it.
 
 ## Why
 
@@ -51,7 +51,9 @@ benchmarks:
     tpu_chips: 8          # one TPU node per job; mutually exclusive with gpus
 ```
 
-`tpu_chips` and `gpus` cannot both be set. A suite gate's device demand is
+`tpu_chips` is a positive integer equal to one supported single-host node
+size (4 or 8 chips in the first version); other values are refused at contract
+load. `tpu_chips` and `gpus` cannot both be set. A suite gate's device demand is
 the union over all its benchmarks, including the one that initiated it. In the
 first version a gate may demand at most one device kind, and the initiating
 benchmark must carry that kind: GPU and TPU never mix in one gate, and a
@@ -94,6 +96,13 @@ resource names, reconciliation after an ambiguous create, queue and execution
 deadlines, and deletion confirmed independently of the worker. Author sessions
 and wakes never run on a TPU allocation; the deployment gives them a CPU lane.
 
+The TPU worker runs the benchmark in the same no-credential jail as dispatched
+GPU evals: the adapter's cloud credentials, the GitHub App key and any operator
+secret stay in the adapter's process and never reach the TPU VM or the
+container. The VM's own service identity can only read the job's inputs and
+write its outputs in the staging bucket; it cannot create, change or delete
+TPU resources.
+
 ### Operator limits
 
 `limits.toml` gains `max_tpu_chips` (fleet default and per target). Admission
@@ -103,15 +112,23 @@ TPU job (allocation id, chips, array concurrency) and counts running and
 pending allocations from that record, reconciled with the backend. A fleet
 job whose TPU allocation cannot be bounded from either source blocks further
 TPU admission until it is resolved; it is never counted as zero or as a
-guess. A finite ceiling with no usable snapshot fails closed, as today. A
+guess. Admission is serialized: a request takes the fleet's admission lock,
+counts persisted allocations plus outstanding reservations, writes its own
+reservation (allocation id, chips) before asking the backend to create
+anything, and releases the lock; the reservation turns into an allocation or
+is removed on refusal or failure. Two concurrent requests therefore cannot
+both fit into the same headroom. A finite ceiling with no usable snapshot fails closed, as today. A
 capacity refusal parks the run (#453). The limits bound this fleet's own jobs
 (attributed by run id); they are not a cloud-project-wide cap, which the
 deployment enforces separately.
 
 ### Refusal until complete
 
-TPU support ships as one feature flag that is off until declaration, budgets,
-meters, placement, limits, caches and surfaces are all in place. Until then a
+TPU support ships behind one operator setting, `OUTERLOOP_TPU=1` in the
+operator settings file, read by the tick like the other settings. It defaults
+to off, and the kernel refuses to enable it unless a TPU lane and a finite
+`max_tpu_chips` are configured. Until declaration, budgets, meters, placement,
+limits, caches and surfaces are all in place, the setting is not offered. Until then a
 contract with `tpu_chips` is refused with a clear message, never run as CPU.
 The local backend refuses TPU benchmarks explicitly.
 
@@ -155,8 +172,10 @@ each in its own PR.
 ## Compatibility
 
 New persisted fields only: `tpu_chips` and TPU budget fields in contracts,
-`tpu_chip_hours_used` and `meter_kind` in run stages, `max_tpu_chips` in
-`limits.toml`, device identity in cache keys. GPU records, contracts and limits
+`tpu_chip_hours_used` and `meter_kind` in run stages, the per-job TPU
+allocation and reservation records (allocation id, chips, array concurrency)
+under the run and the fleet state root, `max_tpu_chips` in `limits.toml`,
+device identity in cache keys. GPU records, contracts and limits
 are byte-identical. Rolling back: an older kernel rejects contracts and
 `limits.toml` files carrying the new keys (unknown fields are errors there).
 Before rolling back: end every TPU run, parked ones included (`outerloop end`),
