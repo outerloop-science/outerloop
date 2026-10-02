@@ -6,6 +6,8 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Upgrading: no action needed; the first tick adopts completed and in-flight evals in the same run directory; cross-run baselines re-measure once.
+
 - Park launch capacity refusals in capacity wait when an immediate resume is
   unavailable or already refused, instead of ending the run. The next wake
   delivers the refusal and a retry note, resuming the same session when supported

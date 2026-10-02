@@ -439,3 +439,18 @@ def test_cached_baseline_is_keyed_by_image_and_command(tmp_path):
     )
     got = read_baseline_cache(d, "main", BASE, image="/a.sif", command="run main")
     assert got and got["value"] == 0.6 and not list(d.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("missing", [("gpus",), ("gpu_type",), ("gpus", "gpu_type")])
+def test_baseline_cache_missing_resource_fields_is_a_miss(tmp_path, missing):
+    import json
+
+    from outerloop.measure import read_baseline_cache, write_baseline_cache
+
+    write_baseline_cache(tmp_path, "main", BASE, value=0.5, seed=0, run_tag="old")
+    path = tmp_path / f"main@{BASE}.json"
+    data = json.loads(path.read_text())
+    for key in missing:
+        del data[key]
+    path.write_text(json.dumps(data))
+    assert read_baseline_cache(tmp_path, "main", BASE) is None

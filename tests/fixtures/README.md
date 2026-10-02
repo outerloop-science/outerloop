@@ -1,5 +1,16 @@
 # Endpoint compatibility fixtures
 
+- `dispatched_pre_gpu_identity/`: run directories produced by
+  `DispatchedMeasurer._dispatch` from kernel `d4ad7529667de79aef299e2e0ad8b5fb6c9c9598`,
+  before GPU count/type entered the determinant. A fake Slurm submit returned
+  job `101`; the completed variant adds the job's exit-code and metric stdout.
+  Both use a synthetic repo/image, one GPU, and `SEED=7`. `identity.json`
+  records that kernel's slot and scheduler name. The new reader preserves the
+  directories (including when interrupted), so old jobs can finish writing and
+  rollback can still read adopted records. Newly dispatched GPU-aware slots
+  are not readable by the old kernel without re-measurement. Cross-run legacy
+  baseline entries remain misses.
+
 - `author_route_legacy.json`: produced by `runstate.RunRecord` and
   `runstate.save_record` from kernel commit `5563c46` (the parent tree before the
   endpoint change), with synthetic `owner/repo` and key-file coordinates.

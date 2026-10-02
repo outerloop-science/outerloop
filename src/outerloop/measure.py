@@ -182,12 +182,13 @@ def read_baseline_cache(
     metric: str = "",
     seed_env: str = "",
     gpus: int = 0,
+    gpu_type: str = "",
 ) -> dict[str, Any] | None:
     """The cached base-tree measurement for (benchmark, base sha), or None.
     The entry must have been measured under the SAME determinants the
     candidate will be — eval image, contract command, metric key, seed
-    variable, GPU count: everything the measurer's own eval identity
-    carries except the tree sha (the key) and the seed VALUE (fresh per
+    variable, GPU count and resolved GPU type: everything the measurer's
+    own eval identity carries except the tree sha (the key) and the seed VALUE (fresh per
     attempt by design) — or it is stale (terra #178): a comparison across
     determinants is not a comparison. A cache
     entry is only ever written from an orchestrator-measured value (below),
@@ -207,7 +208,8 @@ def read_baseline_cache(
         or data.get("command", "") != command
         or data.get("metric", "") != metric
         or data.get("seed_env", "") != seed_env
-        or int(data.get("gpus", 0) or 0) != gpus
+        or data.get("gpus") != gpus
+        or data.get("gpu_type") != gpu_type
     ):
         return None
     return data
@@ -226,6 +228,7 @@ def write_baseline_cache(
     metric: str = "",
     seed_env: str = "",
     gpus: int = 0,
+    gpu_type: str = "",
 ) -> None:
     """Record an orchestrator-measured baseline for every later attempt on
     this base, with the determinants it was measured under. Atomic (a
@@ -250,6 +253,7 @@ def write_baseline_cache(
                 "metric": metric,
                 "seed_env": seed_env,
                 "gpus": gpus,
+                "gpu_type": gpu_type,
             },
             fh,
         )
@@ -302,7 +306,8 @@ class DispatchedMeasurer:
         # Everything a measure's RESULT depends on and that can vary across a
         # PARK/RESUME (when a fresh measurer reads this run_dir): the container
         # image, the measure's logical role, the code (tree_sha), and the
-        # contract facts it is evaluated under (command, metric, seeded env).
+        # contract facts it is evaluated under (command, metric, seeded env),
+        # GPU count, and the resolved GPU type from the lane.
         # A cache key missing any of these would return a value computed under
         # DIFFERENT inputs — e.g. a resume that re-fetched the contract after
         # its command changed, or ran under a rebuilt image, reading the stale
@@ -310,7 +315,27 @@ class DispatchedMeasurer:
         # only whether it completes.) NUL separators keep the parts unambiguous
         # (`a`+`bc` != `ab`+`c`).
         env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
-        return f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
+        return (
+            f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}"
+            f"\0{m.gpus}\0{self.gpu_type}{env}"
+        )
+
+    def _storage_det(self, m: Measure) -> str:
+        """Adopt pre-GPU-identity evals only within this run.
+
+        Keep their directory and scheduler name intact: an in-flight job
+        still writes there. No migration means an interrupted adoption can
+        simply retry. A current slot always takes precedence. GPU resources
+        are fixed within a run; cross-run baselines must not use this fallback.
+        """
+        current = self._det(m)
+        env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
+        legacy = f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
+        for determinant in (current, legacy):
+            h = hashlib.sha1(determinant.encode()).hexdigest()
+            if (self.run_dir / f"eval-{m.name}-{m.tree_sha}-{h}").exists():
+                return determinant
+        return current
 
     def _slot(self, m: Measure) -> str:
         # Storage identity = the full determinant, with NOTHING truncated: the
@@ -322,7 +347,7 @@ class DispatchedMeasurer:
         # the sha OR any contract input lands in a fresh dir; a resume with
         # identical inputs reuses it. `m.name` stays the caller-facing key
         # (results["candidate"]). A dir has 255 chars to spare (~91 used).
-        h = hashlib.sha1(self._det(m).encode()).hexdigest()
+        h = hashlib.sha1(self._storage_det(m).encode()).hexdigest()
         return f"{m.name}-{m.tree_sha}-{h}"
 
     def _ev(self, m: Measure) -> Path:
@@ -339,7 +364,7 @@ class DispatchedMeasurer:
         # hash covers the whole determinant (+ run_tag, which disambiguates
         # jobs across runs sharing one Slurm account); the readable prefixes
         # are for a human reading squeue.
-        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:16]
+        h = hashlib.sha1(f"{self.run_tag}\0{self._storage_det(m)}".encode()).hexdigest()[:16]
         run_id = self.run_dir.name if self.run_dir.parent.name == "runs" else self.run_tag
         return run_job_name(run_id, prefix="eval-", suffix=f"-{m.name[:12]}-{h}")
 
