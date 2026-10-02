@@ -918,6 +918,7 @@ def measure_and_decide(
             metric=bench.metric,
             seed_env=bench.seed_env or "",
             gpus=bench.gpus,
+            gpu_type=str(getattr(measurer, "gpu_type", "")),
         )
         if bench.baseline == "cached" and cache_dir is not None
         else None
@@ -960,6 +961,7 @@ def measure_and_decide(
                 metric=bench.metric,
                 seed_env=bench.seed_env or "",
                 gpus=bench.gpus,
+                gpu_type=str(getattr(measurer, "gpu_type", "")),
             )
     candidate = main["candidate"]
     if not improved(baseline, candidate, bench.direction, min_relative_improvement):
@@ -1796,6 +1798,7 @@ def attempt_once(
                     metric=bench.metric,
                     seed_env=bench.seed_env or "",
                     gpus=bench.gpus,
+                    gpu_type=str(getattr(measurer, "gpu_type", "")),
                 ):
                     main_evals = 1
             capacity_refused = False

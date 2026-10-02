@@ -6,6 +6,8 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: An eval dispatched by the previous kernel and still in flight at upgrade is measured again once under the new cache key (no extra budget charge). To avoid the extra run, upgrade when no evals are in flight: `touch <root>/PAUSE` (stops wakes, so no new evals are dispatched), wait until no eval jobs remain in the queue, upgrade, then `rm <root>/PAUSE` and run `outerloop start`.
+
 - Park launch capacity refusals in capacity wait when an immediate resume is
   unavailable or already refused, instead of ending the run. The next wake
   delivers the refusal and a retry note, resuming the same session when supported

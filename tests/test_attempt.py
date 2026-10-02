@@ -7960,3 +7960,74 @@ def test_line_snapshot_restores_protected_paths_only_in_seal(tmp_path, target_re
         assert not logs  # Only ancestry was dropped; the final content was already restored.
     else:
         assert len(logs) == 1 and protected in logs[0]
+
+
+def test_legacy_eval_redispatch_preserves_run_gpu_meter(tmp_path, monkeypatch):
+    import hashlib
+
+    from outerloop.compute import CommandResult, SlurmCompute
+    from outerloop.measure import DispatchSettings, plan_measures
+
+    real_measurer = DispatchSettings.measurer
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, contract=CONTRACT_GPU)
+    monkeypatch.setattr(DispatchSettings, "measurer", real_measurer)
+    record = load_record(state, run_id)
+    record.stage.update(submitted=True, gpu_hours_used=1.0, sleeps_used=1, launches_used=0)
+    save_record(state, record, 1_000_000.0)
+    run_dir = state / "runs" / run_id
+    bench = load_contract(CONTRACT_GPU, "org/pilot").benchmarks[0]
+    measures = plan_measures(
+        bench.command,
+        bench.metric,
+        str(record.stage["base_sha"]),
+        str(record.stage["candidate_sha"]),
+        gpus=1,
+    )
+    # Old-format completed slots exist, but cannot satisfy the upgraded gate.
+    for measure in measures:
+        legacy_det = (
+            f"/img.sif\0{measure.name}\0{measure.tree_sha}\0{measure.command}\0{measure.metric}"
+        )
+        slot = run_dir / (
+            f"eval-{measure.name}-{measure.tree_sha}-{hashlib.sha1(legacy_det.encode()).hexdigest()}"
+        )
+        slot.mkdir()
+        (slot / "submitted").write_text("501")
+        (slot / "exit-code").write_text("0\n")
+        (slot / "stdout").write_text('{"metric":"mean_tour_length","value":13.0}\n')
+    submitted = []
+    live = {}
+
+    def runner(argv, timeout_s):
+        if argv[0] == "sbatch":
+            submitted.append(argv)
+            job = str(600 + len(submitted))
+            name = next(a.split("=", 1)[1] for a in argv if a.startswith("--job-name="))
+            live[name] = job
+            return CommandResult(0, job + "\n", "")
+        if argv[0] == "squeue" and "--name" in argv:
+            return CommandResult(0, live.get(argv[argv.index("--name") + 1], ""), "")
+        return CommandResult(0, "PENDING\n" if argv[0] == "sacct" else "", "")
+
+    dispatch = DispatchSettings(
+        compute=SlurmCompute(runner=runner),
+        image="/img.sif",
+        account="acct",
+        partition="cpu",
+        gpu_partition="gpu",
+    )
+    for now in (1_000_100.0, 1_000_200.0):
+        outcome = resume_run(
+            state,
+            run_id,
+            dispatch=dispatch,
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=now,
+        )
+        assert outcome.outcome == "parked"
+        assert len(submitted) == 2
+        saved = load_record(state, run_id)
+        assert saved.stage["afterany"] == "afterany:601:602"
+        assert saved.stage["gpu_hours_used"] == 1.0
+        assert saved.stage["sleeps_used"] == 1

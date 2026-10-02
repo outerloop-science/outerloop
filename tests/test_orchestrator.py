@@ -2927,3 +2927,90 @@ def test_scope_admission_uses_refreshed_submit_ancestry(tmp_path):
         )
     assert caught.value.base_sha == "tip"
     assert caught.value.sleeps_used == 1 and caught.value.launches_used == 0
+
+
+@pytest.mark.parametrize(
+    "change,main_evals", [("same", 1), ("count", 2), ("type", 2), ("legacy", 2)]
+)
+def test_cached_baseline_resource_identity_and_budget(tmp_path, monkeypatch, change, main_evals):
+    import json
+
+    from outerloop.contract import load_contract
+    from outerloop.measure import write_baseline_cache
+    from outerloop.orchestrator import MeasureOK, measure_and_decide
+    from outerloop.syscall import budget_error
+
+    contract_text = CONTRACT.replace(
+        "    direction: min\n",
+        "    direction: min\n    baseline: cached\n    min_delta: 0.01\n"
+        "    gpus: 2\n    eval_minutes: 30\n",
+    )
+    contract = load_contract(contract_text, CONFIG.target)
+    bench = contract.benchmarks[0]
+
+    class Measurer:
+        baseline_cache = tmp_path / "baselines"
+        image = "/eval.sif"
+        gpu_type = "type-a"
+
+        def results(self, measures):
+            assert len(measures) == main_evals
+            return {m.name: 10.0 if m.name == "baseline" else 9.0 for m in measures}
+
+    measurer = Measurer()
+    write_baseline_cache(
+        measurer.baseline_cache,
+        bench.name,
+        "base",
+        value=10.0,
+        seed=0,
+        run_tag="old",
+        image=measurer.image,
+        command=bench.command,
+        metric=bench.metric,
+        gpus=1 if change == "count" else 2,
+        gpu_type="type-b" if change == "type" else measurer.gpu_type,
+    )
+    if change == "legacy":
+        path = measurer.baseline_cache / f"{bench.name}@base.json"
+        data = json.loads(path.read_text())
+        del data["gpus"], data["gpu_type"]
+        path.write_text(json.dumps(data))
+
+    checked = []
+
+    def check_budget(request, **kwargs):
+        assert kwargs["main_evals"] == main_evals
+        error = budget_error(request, **kwargs)
+        assert bool(error) == (main_evals == 2)
+        checked.append(True)
+        return error
+
+    monkeypatch.setattr("outerloop.orchestrator.syscall_budget_error", check_budget)
+    _write_syscall(tmp_path, {"submit": True, "report": "H: candidate"})
+    attempt_once(
+        CONFIG,
+        contract_text,
+        tmp_path,
+        FakeHarness(result=ok_session()),
+        measurer,
+        "base",
+        lambda: "candidate",
+        inbox_dir=tmp_path / "inbox",
+        ruler="score",
+        changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+        launcher=_fake_launcher([]),
+    )
+    assert checked
+    outcome = measure_and_decide(
+        contract,
+        bench,
+        base_sha="base",
+        candidate_sha="candidate",
+        seed=0,
+        suite_seed=0,
+        measured_paths=("src/pilot/solvers/tsp.py",),
+        measurer=measurer,
+        min_relative_improvement=0.005,
+    )
+    assert isinstance(outcome, MeasureOK)

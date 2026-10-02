@@ -551,3 +551,101 @@ def test_mixed_suite_places_each_measure_on_its_own_lane(tmp_path):
     scripts = {n: Path(a[-1]).read_text() for n, a in by_job.items()}
     for n, text in scripts.items():
         assert ("--nv" in text) == ("-sib-speedru" in n)
+
+
+@pytest.mark.parametrize(
+    "gpus,gpu_type,reused", [(1, "type-a", True), (2, "type-a", False), (1, "type-b", False)]
+)
+def test_dispatched_cache_resource_identity(tmp_path, gpus, gpu_type, reused):
+    from dataclasses import replace
+
+    submitted: list = []
+    m = _measurer(tmp_path, submitted)
+    m.gpu_partition = "gpu"
+    m.gpu_type = "type-a"
+    original = Measure("candidate", "a" * 40, "cmd", "r2", gpus=1)
+    _land(m, original, 0.42)
+    resumed = replace(m, gpu_type=gpu_type)
+    measure = replace(original, gpus=gpus)
+    if reused:
+        assert resumed.results([measure]) == {"candidate": 0.42}
+        assert not submitted
+    else:
+        assert resumed._job_name(measure) != m._job_name(original)
+        with pytest.raises(MeasurementPending):
+            resumed.results([measure])
+        assert len(submitted) == 1
+
+
+@pytest.fixture
+def legacy_eval_run(tmp_path):
+    """Copy durable output from the previous kernel, without new-code writers."""
+    import shutil
+
+    source = Path(__file__).parent / "fixtures" / "dispatched_pre_gpu_identity"
+    identity = json.loads((source / "identity.json").read_text())
+
+    def copy(state):
+        run_dir = tmp_path / state
+        shutil.copytree(source / state, run_dir)
+        return run_dir, identity
+
+    return copy
+
+
+@pytest.mark.parametrize("state", ["completed", "inflight"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_legacy_slot_is_miss_and_redispatch_is_idempotent(
+    legacy_eval_run, state, interrupt, monkeypatch
+):
+    from dataclasses import replace
+
+    run_dir, identity = legacy_eval_run(state)
+    legacy = run_dir / ("eval-" + identity["slot"])
+    before = {p.name: p.read_bytes() for p in legacy.iterdir() if p.is_file()}
+    assert b"#SBATCH" not in before["job.sh"]
+    submitted: list = []
+    live = {identity["job_name"]: "old-job"} if state == "inflight" else {}
+    m = _measurer(run_dir, submitted, live=live)
+    m.gpu_partition = "gpu"
+    m.gpu_type = "type-a"
+    measure = Measure("candidate", "a" * 40, "cmd", "r2", (("SEED", "7"),), 1)
+    assert m._slot(measure) != identity["slot"]
+    assert m._job_name(measure) != identity["job_name"]
+
+    if interrupt:
+        # Die after sbatch accepts the new job, before its marker is written.
+        write_text = Path.write_text
+
+        def interrupted_write(path, *args, **kwargs):
+            if path == m._ev(measure) / "submitted":
+                raise KeyboardInterrupt
+            return write_text(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_text", interrupted_write)
+            with pytest.raises(KeyboardInterrupt):
+                m.results([measure])
+        assert not (m._ev(measure) / "submitted").exists()
+    else:
+        with pytest.raises(MeasurementPending) as caught:
+            m.results([measure])
+        assert caught.value.job_ids == ("101",)
+    assert len(submitted) == 1
+    assert Path(submitted[0][-1]) == m._ev(measure) / "job.sh"
+
+    live[m._job_name(measure)] = "101"
+    resumed = _measurer(run_dir, submitted, live=live)
+    resumed.gpu_partition = "gpu"
+    resumed.gpu_type = "type-a"
+    for _ in range(2):
+        with pytest.raises(MeasurementPending) as caught:
+            replace(resumed).results([measure])
+        assert caught.value.job_ids == ("101",)
+        assert len(submitted) == 1
+    assert before == {p.name: p.read_bytes() for p in legacy.iterdir() if p.is_file()}
+
+    # Only the new slot supplies a result, even alongside a completed old slot.
+    _land(resumed, measure, 0.9)
+    assert replace(resumed).results([measure]) == {"candidate": 0.9}
+    assert len(submitted) == 1
