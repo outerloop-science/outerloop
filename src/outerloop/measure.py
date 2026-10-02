@@ -320,23 +320,6 @@ class DispatchedMeasurer:
             f"\0{m.gpus}\0{self.gpu_type}{env}"
         )
 
-    def _storage_det(self, m: Measure) -> str:
-        """Adopt pre-GPU-identity evals only within this run.
-
-        Keep their directory and scheduler name intact: an in-flight job
-        still writes there. No migration means an interrupted adoption can
-        simply retry. A current slot always takes precedence. GPU resources
-        are fixed within a run; cross-run baselines must not use this fallback.
-        """
-        current = self._det(m)
-        env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
-        legacy = f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}{env}"
-        for determinant in (current, legacy):
-            h = hashlib.sha1(determinant.encode()).hexdigest()
-            if (self.run_dir / f"eval-{m.name}-{m.tree_sha}-{h}").exists():
-                return determinant
-        return current
-
     def _slot(self, m: Measure) -> str:
         # Storage identity = the full determinant, with NOTHING truncated: the
         # eval dir is the durable result cache, so any prefix could alias two
@@ -347,7 +330,7 @@ class DispatchedMeasurer:
         # the sha OR any contract input lands in a fresh dir; a resume with
         # identical inputs reuses it. `m.name` stays the caller-facing key
         # (results["candidate"]). A dir has 255 chars to spare (~91 used).
-        h = hashlib.sha1(self._storage_det(m).encode()).hexdigest()
+        h = hashlib.sha1(self._det(m).encode()).hexdigest()
         return f"{m.name}-{m.tree_sha}-{h}"
 
     def _ev(self, m: Measure) -> Path:
@@ -364,7 +347,7 @@ class DispatchedMeasurer:
         # hash covers the whole determinant (+ run_tag, which disambiguates
         # jobs across runs sharing one Slurm account); the readable prefixes
         # are for a human reading squeue.
-        h = hashlib.sha1(f"{self.run_tag}\0{self._storage_det(m)}".encode()).hexdigest()[:16]
+        h = hashlib.sha1(f"{self.run_tag}\0{self._det(m)}".encode()).hexdigest()[:16]
         run_id = self.run_dir.name if self.run_dir.parent.name == "runs" else self.run_tag
         return run_job_name(run_id, prefix="eval-", suffix=f"-{m.name[:12]}-{h}")
 

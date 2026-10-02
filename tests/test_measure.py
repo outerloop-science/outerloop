@@ -594,90 +594,58 @@ def legacy_eval_run(tmp_path):
 
 
 @pytest.mark.parametrize("state", ["completed", "inflight"])
-def test_dispatched_adopts_legacy_run(legacy_eval_run, state, monkeypatch):
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_legacy_slot_is_miss_and_redispatch_is_idempotent(
+    legacy_eval_run, state, interrupt, monkeypatch
+):
     from dataclasses import replace
 
     run_dir, identity = legacy_eval_run(state)
+    legacy = run_dir / ("eval-" + identity["slot"])
+    before = {p.name: p.read_bytes() for p in legacy.iterdir() if p.is_file()}
+    assert b"#SBATCH" not in before["job.sh"]
     submitted: list = []
-    live = {identity["job_name"]: "101"} if state == "inflight" else {}
-    original = _measurer(run_dir, submitted, live=live)
-    original.gpu_type = "type-a"
-    measure = Measure("candidate", "a" * 40, "cmd", "r2", (("SEED", "7"),), 1)
-    before = {p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
-
-    def adopt(m):
-        assert m._slot(measure) == identity["slot"]
-        assert m._job_name(measure) == identity["job_name"]
-        if state == "completed":
-            assert m.results([measure]) == {"candidate": 0.42}
-        else:
-            with pytest.raises(MeasurementPending) as caught:
-                m.results([measure])
-            assert caught.value.job_ids == ("101",)
-        assert not submitted
-
-    adopt(original)
-    adopt(replace(original))  # a second process sees the same durable state
-
-    # Interrupt after slot selection, before reading the result/querying the job.
-    interrupted = replace(original)
-    boundary = "_settled" if state == "completed" else "_job_name"
-
-    def interrupt(m):
-        assert interrupted._ev(m).name == "eval-" + identity["slot"]
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(interrupted, boundary, interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        interrupted.results([measure])
-    adopt(replace(original))
-    assert before == {
-        p.relative_to(run_dir): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()
-    }
-    if state == "inflight":
-        # The old job finishes at its original path after the upgrade.
-        ev = run_dir / ("eval-" + identity["slot"])
-        (ev / "stdout").write_text('{"metric": "r2", "value": 0.42}\n')
-        (ev / "exit-code").write_text("0\n")
-        assert replace(original).results([measure]) == {"candidate": 0.42}
-        assert not submitted
-
-
-@pytest.mark.parametrize("state", ["completed", "inflight"])
-def test_current_slot_precedes_legacy_run(legacy_eval_run, state):
-    from dataclasses import replace
-
-    run_dir, identity = legacy_eval_run(state)
-    submitted: list = []
-    m = _measurer(run_dir, submitted, live={identity["job_name"]: "101"})
-    measure = Measure("candidate", "a" * 40, "cmd", "r2", (("SEED", "7"),), 1)
-    # Write a new-format record in isolation, then place it alongside the old one.
-    fresh = replace(m, run_dir=run_dir / "fresh")
-    _land(fresh, measure, 0.9)
-    fresh._ev(measure).rename(run_dir / fresh._ev(measure).name)
-    assert m.results([measure]) == {"candidate": 0.9}
-    assert not submitted
-
-
-def test_legacy_eval_is_not_adopted_across_runs(legacy_eval_run):
-    run_dir, _ = legacy_eval_run("completed")
-    submitted: list = []
-    m = _measurer(run_dir.parent / "another-run", submitted)
+    live = {identity["job_name"]: "old-job"} if state == "inflight" else {}
+    m = _measurer(run_dir, submitted, live=live)
     m.gpu_partition = "gpu"
+    m.gpu_type = "type-a"
     measure = Measure("candidate", "a" * 40, "cmd", "r2", (("SEED", "7"),), 1)
-    with pytest.raises(MeasurementPending):
-        m.results([measure])
-    assert len(submitted) == 1
+    assert m._slot(measure) != identity["slot"]
+    assert m._job_name(measure) != identity["job_name"]
 
+    if interrupt:
+        # Die after sbatch accepts the new job, before its marker is written.
+        write_text = Path.write_text
 
-def test_legacy_live_job_without_submit_marker_is_adopted(legacy_eval_run):
-    run_dir, identity = legacy_eval_run("inflight")
-    (run_dir / ("eval-" + identity["slot"]) / "submitted").unlink()
-    submitted: list = []
-    measure = Measure("candidate", "a" * 40, "cmd", "r2", (("SEED", "7"),), 1)
-    for _ in range(2):
-        m = _measurer(run_dir, submitted, live={identity["job_name"]: "101"})
+        def interrupted_write(path, *args, **kwargs):
+            if path == m._ev(measure) / "submitted":
+                raise KeyboardInterrupt
+            return write_text(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_text", interrupted_write)
+            with pytest.raises(KeyboardInterrupt):
+                m.results([measure])
+        assert not (m._ev(measure) / "submitted").exists()
+    else:
         with pytest.raises(MeasurementPending) as caught:
             m.results([measure])
         assert caught.value.job_ids == ("101",)
-    assert not submitted
+    assert len(submitted) == 1
+    assert Path(submitted[0][-1]) == m._ev(measure) / "job.sh"
+
+    live[m._job_name(measure)] = "101"
+    resumed = _measurer(run_dir, submitted, live=live)
+    resumed.gpu_partition = "gpu"
+    resumed.gpu_type = "type-a"
+    for _ in range(2):
+        with pytest.raises(MeasurementPending) as caught:
+            replace(resumed).results([measure])
+        assert caught.value.job_ids == ("101",)
+        assert len(submitted) == 1
+    assert before == {p.name: p.read_bytes() for p in legacy.iterdir() if p.is_file()}
+
+    # Only the new slot supplies a result, even alongside a completed old slot.
+    _land(resumed, measure, 0.9)
+    assert replace(resumed).results([measure]) == {"candidate": 0.9}
+    assert len(submitted) == 1

@@ -5,9 +5,12 @@
   before GPU count/type entered the determinant. A fake Slurm submit returned
   job `101`; the completed variant adds the job's exit-code and metric stdout.
   Both use a synthetic repo/image, one GPU, and `SEED=7`. `identity.json`
-  records that kernel's slot and scheduler name. The new reader preserves the
-  directories (including when interrupted), so old jobs can finish writing and
-  rollback can still read adopted records. Newly dispatched GPU-aware slots
+  records that kernel's slot and scheduler name. The new reader ignores and
+  preserves the directories (including when interrupted), so old jobs can
+  finish writing and
+  rollback can still read the old records. Legacy slots are cache misses; the
+  new kernel dispatches once under the GPU-aware key without charging the
+  resumed gate again. Newly dispatched GPU-aware slots
   are not readable by the old kernel without re-measurement. Cross-run legacy
   baseline entries remain misses.
 
