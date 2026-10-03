@@ -34,8 +34,8 @@ from outerloop.brief import BudgetState, distill_lessons
 from outerloop.compute import LocalCompute
 from outerloop.contract import (
     Benchmark,
-    Contract,
     BenchmarkNotFoundError,
+    Contract,
     contract_text_in_tree,
     load_contract,
 )
