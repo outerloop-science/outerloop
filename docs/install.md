@@ -608,6 +608,11 @@ job-name, output, error, wrap, parsable, chdir) is rejected, since sbatch lets t
 later flag win; so are unknown keys and malformed JSON.
 These are cluster settings, not target contract fields.
 
+GPU evals and author launches request at least 8 cores and 64 GB of host
+memory per GPU. On nodes with less per GPU, set `OUTERLOOP_EVAL_CPUS_PER_GPU`
+and `OUTERLOOP_EVAL_MEM_GB_PER_GPU` to what one GPU's share of a node offers;
+otherwise Slurm rejects the job as an unsatisfiable node configuration.
+
 `OUTERLOOP_AUTHOR_OVERRIDES` optionally selects an author for individual targets
 and agent slots, without changing judges or other targets:
 

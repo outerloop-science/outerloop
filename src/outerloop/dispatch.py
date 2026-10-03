@@ -73,6 +73,32 @@ EVAL_CPUS_PER_GPU = 8
 EVAL_MEM_GB_PER_GPU = 64
 
 
+def _per_gpu_setting(name: str, default: int) -> int:
+    """An operator override for GPU job sizing, for nodes leaner than the
+    default (e.g. a cloud GPU VM with fewer cores per GPU). Unset or invalid
+    keeps the default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+    if value < 1:
+        log.warning("%s=%r must be positive; using %d", name, raw, default)
+        return default
+    return value
+
+
+def eval_cpus_per_gpu() -> int:
+    return _per_gpu_setting("OUTERLOOP_EVAL_CPUS_PER_GPU", EVAL_CPUS_PER_GPU)
+
+
+def eval_mem_gb_per_gpu() -> int:
+    return _per_gpu_setting("OUTERLOOP_EVAL_MEM_GB_PER_GPU", EVAL_MEM_GB_PER_GPU)
+
+
 def effective_eval_minutes(eval_minutes: int | None) -> int:
     """The contract hint clamped into [1, ceiling]; None means in-job."""
     if eval_minutes is None:
@@ -570,17 +596,18 @@ def eval_job_spec(
     not create a longer Slurm job than the ceiling allows. `gpus` is the
     benchmark's contract field; the caller has already placed the job on
     the GPU lane (DispatchSettings.placement) when it is nonzero, and the
-    job is sized for it: a GPU eval gets at least EVAL_CPUS_PER_GPU cores
-    and EVAL_MEM_GB_PER_GPU GB per GPU (a training eval's data loading and
+    job is sized for it: a GPU eval gets at least eval_cpus_per_gpu() cores
+    and eval_mem_gb_per_gpu() GB per GPU (a training eval's data loading and
     torch.compile workers do not fit the CPU eval's 4 cores / 8 GB). `nice`
     lowers the job's priority below the kernel's evals (the launcher sets it)."""
     if gpus > 0:
-        cpus = max(cpus, EVAL_CPUS_PER_GPU * gpus)
+        cpus = max(cpus, eval_cpus_per_gpu() * gpus)
         given = _mem_gb(mem)
+        mem_per_gpu = eval_mem_gb_per_gpu()
         # an explicit request is never SHRUNK: only a parseable value below
         # the per-GPU floor is raised; anything unparseable passes through
-        if given is not None and given < EVAL_MEM_GB_PER_GPU * gpus:
-            mem = f"{EVAL_MEM_GB_PER_GPU * gpus}G"
+        if given is not None and given < mem_per_gpu * gpus:
+            mem = f"{mem_per_gpu * gpus}G"
     return JobSpec(
         job_name=job_name,
         account=account,
