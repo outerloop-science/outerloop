@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- GPU job sizing is an operator setting: `OUTERLOOP_EVAL_CPUS_PER_GPU` and
+  `OUTERLOOP_EVAL_MEM_GB_PER_GPU` (defaults 8 and 64) set the per-GPU core and
+  memory floor for GPU evals and author launches, for nodes with fewer cores or
+  less memory per GPU. Upgrading: no action; unset keeps the defaults.
 - Bump the pinned Codex CLI from 0.130.0 to 0.160.0 and update its Linux
   archive digest. All contained Codex roles bind a kernel-owned, read-only
   managed-hooks-only policy; uncontained sessions disable lifecycle hooks and

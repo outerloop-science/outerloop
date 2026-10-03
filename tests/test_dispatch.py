@@ -400,6 +400,27 @@ def test_gpu_jobs_get_nv_and_gpus(tmp_path):
     assert spec.time_minutes == 250  # a 4h GPU eval fits under the raised ceiling
 
 
+def test_gpu_eval_sizing_follows_operator_settings(tmp_path, monkeypatch, caplog):
+    """Lean GPU nodes (fewer cores or less RAM per GPU than the default) set
+    the per-GPU floor; invalid values keep the default."""
+    from outerloop.dispatch import EVAL_CPUS_PER_GPU
+
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("OUTERLOOP_EVAL_CPUS_PER_GPU", "6")
+    monkeypatch.setenv("OUTERLOOP_EVAL_MEM_GB_PER_GPU", "40")
+    one = eval_job_spec(script, job_name="e", account="", partition="gpu", eval_minutes=30, gpus=1)
+    assert (one.cpus, one.mem) == (6, "40G")
+    two = eval_job_spec(script, job_name="e", account="", partition="gpu", eval_minutes=30, gpus=2)
+    assert (two.cpus, two.mem) == (12, "80G")
+    cpu = eval_job_spec(script, job_name="e", account="", partition="p", eval_minutes=30)
+    assert (cpu.cpus, cpu.mem) == (4, "8G")  # CPU evals are untouched
+    monkeypatch.setenv("OUTERLOOP_EVAL_CPUS_PER_GPU", "0")
+    bad = eval_job_spec(script, job_name="e", account="", partition="gpu", eval_minutes=30, gpus=1)
+    assert bad.cpus == EVAL_CPUS_PER_GPU
+    assert "must be positive" in caplog.text
+
+
 def test_gpu_evals_are_sized_per_gpu(tmp_path):
     """A GPU eval trains: it gets cores and host RAM per GPU (compile workers
     and data loading OOM-kill at the CPU eval's 4 cores / 8 GB); CPU evals
