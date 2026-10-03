@@ -60,6 +60,8 @@ INSTRUCTION_FILES = (
     ".cursorrules",
     ".cursor",
     ".claude",
+    # Codex project config and hooks (config.toml, hooks.json) load from here
+    ".codex",
     ".mcp.json",
 )
 SANITIZED_SUFFIX = ".pr-data"

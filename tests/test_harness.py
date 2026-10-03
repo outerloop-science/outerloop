@@ -660,7 +660,7 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path, monkeypatch, c
 
 def test_codex_command_resume_uses_bypass_not_sandbox_cd(tmp_path: Path) -> None:
     """`codex exec resume` has neither --sandbox nor --cd (passing them is an
-    argparse error, verified on 0.130.0). A fresh exec keeps --sandbox/--cd. On
+    argparse error, verified on 0.160.0). A fresh exec keeps --sandbox/--cd. On
     resume the recorded session's sandbox is inherited: the author adds the
     bypass flag (to also skip approvals), a read-only reader (the structured-
     output repair turn also resumes) adds NO sandbox flag and stays read-only by
