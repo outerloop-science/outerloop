@@ -421,6 +421,15 @@ def test_gpu_eval_sizing_follows_operator_settings(tmp_path, monkeypatch, caplog
     assert "must be positive" in caplog.text
 
 
+def test_gpu_sizing_settings_reach_the_tick() -> None:
+    """The deployment .env only reaches ticks and jobs through the allowlist
+    (the deploy script's list is kept equal to it by a parity test)."""
+    from outerloop.cli import TICK_ENV_KEYS
+
+    assert "OUTERLOOP_EVAL_CPUS_PER_GPU" in TICK_ENV_KEYS
+    assert "OUTERLOOP_EVAL_MEM_GB_PER_GPU" in TICK_ENV_KEYS
+
+
 def test_gpu_evals_are_sized_per_gpu(tmp_path):
     """A GPU eval trains: it gets cores and host RAM per GPU (compile workers
     and data loading OOM-kill at the CPU eval's 4 cores / 8 GB); CPU evals
