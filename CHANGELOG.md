@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Codex sessions never get Codex's built-in sub-agent tools
+  (`features.multi_agent=false`): multi-agent work goes through the kernel's own
+  channels. Codex 0.160's built-in web search follows `OUTERLOOP_CODEX_WEB_SEARCH`
+  (`auto` default: on for native provider sessions, off for endpoint sessions,
+  where the provider-side tool cannot run; `on`; `off`). This also fixes Codex
+  sessions on chat-only endpoints, which failed with "unsupported bridge request"
+  after the 0.160 pin. Upgrading: no action; set `OUTERLOOP_CODEX_WEB_SEARCH=off`
+  to keep search off everywhere.
 - `OUTERLOOP_TOKEN_PRICES` in the deployment `.env` now reaches ticks and the
   jobs they submit, so session cost is priced from the operator table instead of
   staying unknown. Upgrading: no action.

@@ -946,6 +946,20 @@ def _seed_codex_config(session_home: Path, config: str) -> bool:
             os.close(fd)
 
 
+def codex_web_search(endpoint: bool, env: Mapping[str, str] | None = None) -> bool:
+    """Whether a Codex session keeps its built-in web search.
+
+    OUTERLOOP_CODEX_WEB_SEARCH: `auto` (default; on for native provider
+    sessions, off for endpoint sessions, where the provider-side tool cannot
+    run), `on`, or `off`. Any other value means `off`.
+    """
+    value = (os.environ if env is None else env).get("OUTERLOOP_CODEX_WEB_SEARCH", "auto")
+    value = value.strip().lower() or "auto"
+    if value == "auto":
+        return not endpoint
+    return value == "on"
+
+
 def _codex_command(
     binary: str,
     model: str,
@@ -1320,6 +1334,13 @@ class CodexHarness:
         # runs bind our managed-only policy; bare processes disable hooks and
         # plugins (bundled cleanup hooks otherwise survive hooks=false). These
         # CLI settings follow operator extra args so project config cannot win.
+        # No built-in sub-agents: multi-agent work goes through the kernel's
+        # own channels. Web search is a provider-side tool: it works only on
+        # native sessions, so endpoint sessions drop it (it would also reach
+        # the chat bridge as a tool type it cannot translate).
+        kernel_owned: tuple[str, ...] = ("-c", "features.multi_agent=false")
+        if not codex_web_search(bool(self.endpoint)):
+            kernel_owned += ("-c", "web_search=disabled")
         codex_argv = _codex_command(
             self.CONTAINER_CODEX if self.container_image else self.binary,
             self.model,
@@ -1327,9 +1348,16 @@ class CodexHarness:
             workspace,
             last_message_path,
             resume_session_id,
-            (*self.extra_args, "-c", "features.plugins=false", "-c", "features.hooks=false")
+            (
+                *self.extra_args,
+                *kernel_owned,
+                "-c",
+                "features.plugins=false",
+                "-c",
+                "features.hooks=false",
+            )
             if not self.container_image
-            else self.extra_args,
+            else (*self.extra_args, *kernel_owned),
         )
         if bridge:
             assert self.endpoint is not None
