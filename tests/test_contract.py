@@ -377,3 +377,14 @@ def test_review_topup_rejects_out_of_bounds(knobs):
 
     with pytest.raises(ValidationError):
         ReviewTopup.model_validate(knobs)
+
+
+def test_benchmark_found_and_missing() -> None:
+    from outerloop.contract import ContractError
+
+    contract = load_contract(PILOT_CONTRACT, "owner/repo")
+    assert contract.benchmark("tsp") is contract.benchmarks[0]
+    with pytest.raises(ContractError) as error:
+        contract.benchmark("renamed")
+    assert isinstance(error.value, ValueError)
+    assert str(error.value) == "benchmark 'renamed' not in contract (['tsp', 'sokoban'])"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -847,3 +848,19 @@ def test_steward_reset_is_measured_under_self_report_policy(tmp_path, steward_re
     assert pending and pending.kind == "RESET" and pending.provenance == "measured"
     assert not github.armed
     assert "self_reported" not in json.dumps(github.prs)
+
+
+def test_steward_missing_benchmark_ends_with_names(tmp_path, steward_repo):
+    seed = tmp_path / "seed"
+    path = seed / ".outerloop.yaml"
+    path.write_text(path.read_text().replace("name: tsp", "name: renamed"))
+    _git(seed, "add", ".outerloop.yaml")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename")
+    _git(seed, "push", str(steward_repo), "main")
+    outcome, github, _ = run_steward(tmp_path, edits={})
+    record = load_record(tmp_path / "state", "steward-tsp-1")
+    assert outcome.outcome == "steward-error"
+    assert record.state == "ended" and record.ending == "aborted"
+    assert "benchmark 'tsp' not in contract (['renamed'])" in record.ending_note
+    assert "benchmark 'tsp' not in contract (['renamed'])" in Path(outcome.report_path).read_text()
+    assert not github.prs

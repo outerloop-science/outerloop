@@ -53,6 +53,10 @@ class ContractError(ValueError):
     """Base class for contract rejections."""
 
 
+class BenchmarkNotFoundError(ContractError):
+    """The run's benchmark is not in the contract (renamed or removed)."""
+
+
 class SelfTargetError(ContractError):
     """Raised when a contract names outerloop itself as the target."""
 
@@ -371,6 +375,13 @@ class Contract(_StrictModel):
     #     no-regression phase, and the panel's taste rubric all bind
     #     BEFORE publish.
     merge: Literal["manual", "auto"] = "manual"
+
+    def benchmark(self, name: str) -> Benchmark:
+        for bench in self.benchmarks:
+            if bench.name == name:
+                return bench
+        names = [bench.name for bench in self.benchmarks]
+        raise BenchmarkNotFoundError(f"benchmark {name!r} not in contract ({names})")
 
     @field_validator("benchmarks")
     @classmethod

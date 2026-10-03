@@ -15,7 +15,6 @@ from outerloop.orchestrator import (
     EvalError,
     MeasureOK,
     RunParked,
-    _benchmark,
     measure_and_decide,
     resume_attempt,
 )
@@ -88,7 +87,7 @@ def _decide(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, t
     contract = load_contract(text, "x/y")
     return measure_and_decide(
         contract,
-        _benchmark(contract, "main"),
+        contract.benchmark("main"),
         base_sha=BASE,
         candidate_sha=CAND,
         seed=seed,
@@ -284,7 +283,7 @@ def _resume(measurer, measured_paths=("src/model.py",), seed=7, suite_seed=99, t
     contract = load_contract(text, "x/y")
     return resume_attempt(
         contract,
-        _benchmark(contract, "main"),
+        contract.benchmark("main"),
         base_sha=BASE,
         candidate_sha=CAND,
         seed=seed,
@@ -364,7 +363,7 @@ def test_cached_baseline_measures_the_base_once_then_only_candidates(tmp_path):
     from outerloop.measure import read_baseline_cache
 
     contract = load_contract(CACHED_CONTRACT, "x/y")
-    bench = _benchmark(contract, "main")
+    bench = contract.benchmark("main")
 
     def decide(m, base=BASE, seed=7):
         return measure_and_decide(
@@ -500,7 +499,7 @@ def test_v021_baseline_cache_miss_retry_reuse(tmp_path, monkeypatch, interrupt):
     def decide():
         return measure_and_decide(
             contract,
-            _benchmark(contract, "main"),
+            contract.benchmark("main"),
             base_sha=BASE,
             candidate_sha=CAND,
             seed=7,

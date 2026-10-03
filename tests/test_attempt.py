@@ -8279,3 +8279,228 @@ def test_v021_sessionless_author_sleep_resumes_directly(
     assert load_record(state, run_id).stage["phase"] == "candidate"
     assert resume_run(state, run_id, **kwargs).outcome == "parked"
     assert calls == [None]
+
+
+def _rename_after_lookup(monkeypatch, successful_lookups):
+    """Reach a later lookup by renaming after the earlier checks succeeded."""
+    from outerloop.contract import Contract
+
+    original = Contract.benchmark
+    remaining = successful_lookups
+
+    def lookup(self, name):
+        nonlocal remaining
+        bench = original(self, name)
+        remaining -= 1
+        if remaining == 0:
+            self.benchmarks[:] = [b.model_copy(update={"name": "renamed"}) for b in self.benchmarks]
+        return bench
+
+    monkeypatch.setattr(Contract, "benchmark", lookup)
+
+
+@pytest.mark.parametrize("site", ["verification", "budget", "lines", "eval"])
+def test_live_missing_benchmark_stops_at_lookup(tmp_path, monkeypatch, site):
+    from unittest.mock import Mock
+
+    if site == "verification":
+        _seed_target(tmp_path, monkeypatch, CONTRACT_GPU.replace("name: tsp", "name: renamed"))
+        boundary = Mock(side_effect=AssertionError("restored budget after missing benchmark"))
+        monkeypatch.setattr("outerloop.tick.list_pendings", boundary)
+    else:
+        _seed_target(tmp_path, monkeypatch, CONTRACT_GPU)
+        _rename_after_lookup(monkeypatch, {"budget": 1, "lines": 2, "eval": 3}[site])
+        boundary = Mock(side_effect=AssertionError("continued after missing benchmark"))
+        monkeypatch.setattr(
+            climb_mod,
+            {
+                "budget": "BudgetState",
+                "lines": "_fetch_research_reports",
+                "eval": "should_dispatch",
+            }[site],
+            boundary,
+        )
+    outcome, github = run_live(tmp_path, None, edits={}, values=[])
+    record = load_record(tmp_path / "state", "tsp-1")
+    assert outcome.outcome == "attempt-error"
+    assert record.state == "ended" and record.ending == "aborted"
+    assert "benchmark 'tsp' not in contract (['renamed'])" in record.ending_note
+    assert "benchmark 'tsp' not in contract (['renamed'])" in Path(outcome.report_path).read_text()
+    boundary.assert_not_called()
+    assert not github.prs
+
+
+@pytest.mark.parametrize("phase", ["candidate", "author-sleep"])
+def test_wake_current_benchmark_renamed_ends_once(tmp_path, monkeypatch, phase):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from outerloop.github import Workspace
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, contract=CONTRACT_GPU)
+    record = load_record(state, run_id)
+    save_record(state, replace(record, stage={**record.stage, "phase": phase}), 1_000_001.0)
+    bare = tmp_path / f"origin-{run_id}.git"
+    editor = tmp_path / "editor"
+    _git(tmp_path, "clone", "-q", str(bare), str(editor))
+    path = editor / ".outerloop.yaml"
+    path.write_text(path.read_text().replace("name: tsp", "name: renamed"))
+    _git(editor, "add", ".outerloop.yaml")
+    _git(editor, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename")
+    _git(editor, "push", "origin", "main")
+    budget = Mock(side_effect=AssertionError("restored budget after missing benchmark"))
+    monkeypatch.setattr(climb_mod, "_reconcile_launch_hours", budget)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    record = load_record(state, run_id)
+    assert outcome.outcome == "attempt-error"
+    assert record.state == "ended" and record.ending == "aborted"
+    assert record.ending_note == "benchmark 'tsp' not in contract (['renamed'])"
+    clone = Mock(side_effect=AssertionError("ended run woke again"))
+    monkeypatch.setattr(Workspace, "clone", clone)
+    assert (
+        resume_run(
+            state,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_200.0,
+        ).outcome
+        == "aborted"
+    )
+    clone.assert_not_called()
+    budget.assert_not_called()
+
+
+def test_wake_with_an_unreadable_current_contract_stays_parked(tmp_path, monkeypatch):
+    """A broken contract on the base branch is a maintainer's typo to fix, not a
+    missing benchmark: the wake fails and the run stays parked to retry."""
+    from outerloop.contract import BenchmarkNotFoundError, ContractError
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch, contract=CONTRACT_GPU)
+    bare = tmp_path / f"origin-{run_id}.git"
+    editor = tmp_path / "editor"
+    _git(tmp_path, "clone", "-q", str(bare), str(editor))
+    (editor / ".outerloop.yaml").write_text("benchmarks: [\n")
+    _git(editor, "add", ".outerloop.yaml")
+    _git(editor, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "typo")
+    _git(editor, "push", "origin", "main")
+    with pytest.raises(ContractError) as error:
+        resume_run(
+            state,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=CommentingGitHub(),  # type: ignore[arg-type]
+            bot_auth=NoAuth(),
+            now=1_000_100.0,
+        )
+    assert not isinstance(error.value, BenchmarkNotFoundError)
+    assert load_record(state, run_id).state == "parked"
+
+
+@pytest.mark.parametrize("site", ["sealed", "eval"])
+def test_wake_missing_benchmark_stops_before_measurement(tmp_path, monkeypatch, site):
+    from unittest.mock import Mock
+
+    from outerloop.measure import DispatchSettings
+
+    state, run_id = _write_parked_candidate(tmp_path, monkeypatch)
+    if site == "sealed":
+        original = climb_mod.load_contract
+        calls = 0
+
+        def contract(text, target):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                text = text.replace("name: tsp", "name: renamed")
+            return original(text, target)
+
+        monkeypatch.setattr(climb_mod, "load_contract", contract)
+        config = Mock(side_effect=AssertionError("configured a missing benchmark"))
+        monkeypatch.setattr(climb_mod, "RunConfig", config)
+    else:
+        _rename_after_lookup(monkeypatch, 2)
+    measure = Mock(side_effect=AssertionError("measured after missing benchmark"))
+    monkeypatch.setattr(DispatchSettings, "measurer", measure)
+    outcome = resume_run(
+        state,
+        run_id,
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),  # type: ignore[arg-type]
+        bot_auth=NoAuth(),
+        now=1_000_100.0,
+    )
+    record = load_record(state, run_id)
+    assert outcome.outcome == "attempt-error"
+    assert record.state == "ended" and record.ending == "aborted"
+    assert record.ending_note == "benchmark 'tsp' not in contract (['renamed'])"
+    measure.assert_not_called()
+
+
+@pytest.mark.parametrize("site", ["entry", "pinned", "publish", "current"])
+def test_publish_missing_benchmark_records_outcome(tmp_path, target_repo, monkeypatch, site):
+    original_publish = climb_mod.publish
+
+    def publish(**kwargs):
+        contract = kwargs["contract"]
+
+        def rename():
+            contract.benchmarks[:] = [
+                b.model_copy(update={"name": "renamed"}) for b in contract.benchmarks
+            ]
+
+        if site == "entry":
+            rename()
+        elif site == "publish":
+            original_signature = climb_mod._publish_signature
+            calls = 0
+
+            def signature(bench):
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    rename()
+                return original_signature(bench)
+
+            monkeypatch.setattr(climb_mod, "_publish_signature", signature)
+        else:
+            original_at = climb_mod.contract_at
+
+            def contract_at(ws, ref):
+                text = original_at(ws, ref)
+                if (site == "pinned" and ref == kwargs["base_sha"]) or (
+                    site == "current" and ref == "origin/main"
+                ):
+                    return text.replace("name: tsp", "name: renamed")
+                return text
+
+            monkeypatch.setattr(climb_mod, "contract_at", contract_at)
+        return original_publish(**kwargs)
+
+    monkeypatch.setattr(climb_mod, "publish", publish)
+    outcome, github = run_live(
+        tmp_path,
+        target_repo,
+        edits={"src/pilot/solvers/tsp.py": "def solve(): return 'better'\n"},
+        values=[13.876, 10.84],
+    )
+    record = load_record(tmp_path / "state", "tsp-1")
+    if site == "current":
+        from outerloop.inbox import pending
+
+        assert outcome.outcome == "publish-refused"
+        messages = pending(tmp_path / "state" / "runs" / "tsp-1", 0)
+        assert any("measurement signature changed" in str(m.payload) for m in messages)
+    else:
+        assert outcome.outcome == ("publish-error" if site == "publish" else "attempt-error")
+        assert record.state == "ended" and record.ending == "aborted"
+        assert "benchmark 'tsp' not in contract (['renamed'])" in record.ending_note
+    assert not github.prs

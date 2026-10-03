@@ -330,6 +330,8 @@ Operator actions (everything else needs no action; details in each entry):
 
 ### Changed
 
+- A run whose benchmark is missing from its contract now stops with a clear message instead of continuing on default settings.
+
 - Upgrading: legacy Codex archive-only markers and Hermes runtimes without interpreter digests are reinstalled on upgrade; legacy Hermes runtimes remain launchable. Existing retry records remain readable, and corrupt records are treated as empty. Run state and in-flight PRs are unchanged; rollback leaves the additional digest files unused.
 
 - Upgrading: version overrides now require matching SHA-256 settings; legacy Codex installs without hash markers are reprovisioned. New retry state and hash markers are ignored by older kernels; the first successfully synced tick verifies configured harnesses and records new paths only when needed. Legacy `.env` paths and Hermes runtimes remain readable; old artifacts are retained. See `docs/install.md` for rollback across kernel pins.

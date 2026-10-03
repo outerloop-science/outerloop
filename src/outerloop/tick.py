@@ -296,7 +296,7 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
 
 
 def _benchmark_gpus(contract: Any, benchmark: str) -> int:
-    bench = next((b for b in getattr(contract, "benchmarks", []) if b.name == benchmark), None)
+    bench = contract.benchmark(benchmark)
     return int(getattr(bench, "gpus", 0) or 0)
 
 

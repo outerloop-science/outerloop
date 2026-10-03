@@ -447,9 +447,7 @@ def live_steward(
             raise ValueError(
                 "the contract declares no steward scope; stewardship is not enabled on this target"
             )
-        bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
-        if bench is None:
-            raise ValueError(f"benchmark {config.benchmark!r} not in contract")
+        bench = contract.benchmark(config.benchmark)
         record = dc_replace(
             record,
             channels=contract.channels.model_dump(exclude_defaults=True),

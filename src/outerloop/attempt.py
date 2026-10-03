@@ -35,6 +35,7 @@ from outerloop.compute import LocalCompute
 from outerloop.contract import (
     Benchmark,
     Contract,
+    BenchmarkNotFoundError,
     contract_text_in_tree,
     load_contract,
 )
@@ -94,7 +95,6 @@ from outerloop.orchestrator import (
     RunConfig,
     RunParked,
     SubmitPreflight,
-    _benchmark,
     attempt_once,
     benchmark_floor,
     clears_min_delta,
@@ -1354,7 +1354,7 @@ def run_author_leg(
     """Prepare the author channel and run a resumed leg through the orchestrator."""
     directory = run_root / "runs" / record.run_id
     contract = load_contract(contract_text, record.target)
-    bench = _benchmark(contract, record.benchmark)
+    bench = contract.benchmark(record.benchmark)
     record = dc_replace(
         record,
         verification=bench.verification,
@@ -2740,8 +2740,9 @@ def _end_refused_wake(
     auth: TokenProvider | None = None,
     snapshot_attempted: bool = False,
 ) -> AttemptOutcome:
-    """End a parked run whose workspace the wake refused (a session altered
-    .git): ABORTED with the tampering as the note. The candidate snapshot's
+    """End a refused run with the reason recorded as its note.
+
+    For an altered .git, the candidate snapshot's
     retaining ref lives inside that same, now untrusted, repository and is
     deliberately not touched: deleting it would mean writing through the
     very structure the guard refused (a symlinked refs dir carries the write
@@ -2767,6 +2768,42 @@ def _end_refused_wake(
 
 
 def resume_run(
+    run_root: Path,
+    run_id: str,
+    *,
+    dispatch: DispatchSettings,
+    github: GitHubClient,
+    bot_auth: TokenProvider,
+    now: float,
+    secrets: tuple[str, ...] = (),
+    base_branch: str = "main",
+    panel_lenses: tuple[PanelLens, ...] = (),
+    panel_skip: str = "",
+    harness: Harness | None = None,
+    spec: RoleSpec | None = None,
+) -> AttemptOutcome:
+    try:
+        return _resume_run(
+            run_root,
+            run_id,
+            dispatch=dispatch,
+            github=github,
+            bot_auth=bot_auth,
+            now=now,
+            secrets=secrets,
+            base_branch=base_branch,
+            panel_lenses=panel_lenses,
+            panel_skip=panel_skip,
+            harness=harness,
+            spec=spec,
+        )
+    except BenchmarkNotFoundError as exc:
+        return _end_refused_wake(
+            run_root, load_record(run_root, run_id), exc, now, secrets, bot_auth
+        )
+
+
+def _resume_run(
     run_root: Path,
     run_id: str,
     *,
@@ -2865,6 +2902,7 @@ def resume_run(
                 single_branch=policy_branch,
             )
             current_contract = load_contract(contract_at(policy_ws, "HEAD"), record.target)
+            current_contract.benchmark(record.benchmark)
     except GitError:
         # A deleted base ends the wake as before; transport failures stay retryable.
         refs = ws.git_network(
@@ -2952,7 +2990,7 @@ def resume_run(
     # its contract must not have the wake gate on the doctored rules.
     contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
-    bench = _benchmark(contract, record.benchmark)
+    bench = contract.benchmark(record.benchmark)
     if contract.channels != current_contract.channels:
         # Keep the sealed scope, evaluation and verification rules, applying only
         # the current channels. Leave default contract bytes untouched.
@@ -2962,16 +3000,14 @@ def resume_run(
         data["channels"] = current_contract.channels.model_dump(exclude_defaults=True)
         contract_text = yaml.safe_dump(data)
         contract = load_contract(contract_text, record.target)
-        bench = _benchmark(contract, record.benchmark)
+        bench = contract.benchmark(record.benchmark)
     config = RunConfig(
         target=record.target,
         benchmark=record.benchmark,
         agent_id=record.agent_id,
         author_history=record.author_history,
     )
-    eval_minutes = next(
-        (b.eval_minutes for b in contract.benchmarks if b.name == record.benchmark), None
-    )
+    eval_minutes = contract.benchmark(record.benchmark).eval_minutes
     # a submitted park carries the author's declared eval walltime: the
     # wake's measurer (a re-dispatch) and deadline floor honor it
     declared = int(record.stage.get("eval_minutes", 0) or 0)  # type: ignore[call-overload]
@@ -3967,7 +4003,12 @@ def publish(
     record = dc_replace(
         record, stage={**record.stage, "base_sha": base_sha, "base_branch": base_branch}
     )
-    bench = _benchmark(contract, config.benchmark)
+    try:
+        bench = contract.benchmark(config.benchmark)
+    except BenchmarkNotFoundError as exc:
+        return _end_refused_wake(
+            run_root, record, exc, now, secrets, ws.auth, snapshot_attempted=True
+        )
 
     def refuse(
         text: str, head: str = "", *, moved: bool = False, quoted_text: str = ""
@@ -4041,16 +4082,20 @@ def publish(
     try:
         ws.fetch_origin()
         pinned = load_contract(contract_at(ws, base_sha), config.target)
-        pinned_bench = _benchmark(pinned, config.benchmark)
+        pinned_bench = pinned.benchmark(config.benchmark)
         current = load_contract(contract_at(ws, f"origin/{base_branch}"), config.target)
-        current_bench = next((b for b in current.benchmarks if b.name == bench.name), None)
-
-        if (
-            current_bench is None
-            or _publish_signature(current_bench) != _publish_signature(pinned_bench)
-            or _publish_signature(pinned_bench) != _publish_signature(bench)
-        ):
+        if bench.name not in [b.name for b in current.benchmarks]:
             return refuse("Publish refused: the base contract's measurement signature changed.")
+        current_bench = current.benchmark(bench.name)
+
+        if _publish_signature(current_bench) != _publish_signature(
+            pinned_bench
+        ) or _publish_signature(pinned_bench) != _publish_signature(bench):
+            return refuse("Publish refused: the base contract's measurement signature changed.")
+    except BenchmarkNotFoundError as exc:
+        return _end_refused_wake(
+            run_root, record, exc, now, secrets, ws.auth, snapshot_attempted=True
+        )
     except Exception as exc:
         return refuse(
             "Publish refused: cannot confirm the base contract.",
@@ -4313,7 +4358,7 @@ def publish(
         branch = f"{config.branch_prefix}/{run_id}"
         if result.baseline is None or result.candidate is None or not result.candidate_sha:
             raise EvalError("improved result missing measurements or the sealed sha")
-        bench = next(b for b in contract.benchmarks if b.name == config.benchmark)
+        bench = contract.benchmark(config.benchmark)
         baseline, candidate = result.baseline, result.candidate
         # IDEMPOTENCY: a wake may have opened the PR and died before
         # recording it (the run stays PARKED and is woken again). If a PR
@@ -4657,7 +4702,7 @@ def live_attempt(
         contract = load_contract(contract_text, config.target)
         record = dc_replace(
             record,
-            verification=_benchmark(contract, config.benchmark).verification,
+            verification=contract.benchmark(config.benchmark).verification,
             channels=contract.channels.model_dump(exclude_defaults=True),
         )
         # Default policy retains the existing best-effort record-write behavior.
@@ -4707,14 +4752,12 @@ def live_attempt(
             if float(marker.get("submitted_at", 0) or 0) >= week_ago
             and str(marker.get("job_id", "")) not in recorded_jobs
         )
-        _budget_bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+        _budget_bench = contract.benchmark(config.benchmark)
         config = dc_replace(
             config,
             budget=BudgetState(
                 gpu_hours_remaining=(
-                    float(contract.budgets.gpu_hours_per_run or 0.0)
-                    if _budget_bench is not None and _budget_bench.gpus
-                    else 0.0
+                    float(contract.budgets.gpu_hours_per_run or 0.0) if _budget_bench.gpus else 0.0
                 ),
                 runs_remaining_this_week=max(0, int(contract.budgets.runs_per_week) - used_week),
             ),
@@ -4728,13 +4771,13 @@ def live_attempt(
         # untracked `.outerloop/` file must be staged and judged like any
         # other agent edit, not silently hidden by a magic dir name (the off
         # state stays byte-identical).
-        _bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
+        _bench = contract.benchmark(config.benchmark)
         # Research lines: move HEAD to the agent's own branch BEFORE anything
         # reads the tree — the contract above came from the base branch (a
         # line must not shape its own budgets), and the syscall-channel check
         # below must see the line's tree. A failed checkout falls back to the
         # base branch: a run is never lost to its notebook.
-        lines_active = _bench is not None and _bench.lines and bool(config.agent_id)
+        lines_active = _bench.lines and bool(config.agent_id)
         line_ref = ""
         if lines_active:
             try:
@@ -4773,10 +4816,9 @@ def live_attempt(
                     ).strip()
             except Exception:
                 line_divergence = ""
-        author_syscalls = _bench is not None and (
-            (dispatch is not None and getattr(harness, "supports_resume", True))
-            or _bench.verification == "self_report"
-        )
+        author_syscalls = (
+            dispatch is not None and getattr(harness, "supports_resume", True)
+        ) or _bench.verification == "self_report"
         # The `.outerloop/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
         # (install would write through it to a host path with our permissions),
@@ -4799,7 +4841,6 @@ def live_attempt(
             else []
         )
         if author_syscalls:
-            assert _bench is not None
             syscall_excluded(workspace)
             # the author's interface is the TOOL (`python .outerloop/syscall
             # launch ... -- <cmd>`; `... sleep`), never the raw ABI file —
@@ -4842,9 +4883,7 @@ def live_attempt(
         # is the benchmark's eval-time hint against the in-job runway, decided
         # ONCE here so the baseline setup, the measurer, and the park deadline
         # all agree on it.
-        eval_minutes = next(
-            (b.eval_minutes for b in contract.benchmarks if b.name == config.benchmark), None
-        )
+        eval_minutes = contract.benchmark(config.benchmark).eval_minutes
         wants_dispatch = should_dispatch(eval_minutes)
         dispatched = dispatch is not None and wants_dispatch
         if wants_dispatch and dispatch is None:
@@ -5986,7 +6025,7 @@ def finish_run(
                 contract_at(ws, str(record.stage.get("base_sha") or f"origin/{base_branch}")),
                 record.target,
             )
-            bench = _benchmark(contract, record.benchmark)
+            bench = contract.benchmark(record.benchmark)
             line_ref = _line_ref_for(bench, record.agent_id)
             _push_line_snapshot(
                 ws,
