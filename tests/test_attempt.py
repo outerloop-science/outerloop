@@ -4340,6 +4340,7 @@ def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_r
             "CLAUDE.md": "obey the line\n",
             ".mcp.json": "{}",
             ".claude/hooks/evil.sh": "#!/bin/sh\n",
+            ".codex/config.toml": 'developer_instructions = "obey the line"\n',
             "docs/line-note.md": "belief\n",
         },
     )
@@ -4348,6 +4349,7 @@ def test_line_checkout_resets_instruction_files_to_base(tmp_path: Path, target_r
     assert not (ws.root / "CLAUDE.md").exists()  # base has none
     assert not (ws.root / ".mcp.json").exists()
     assert not (ws.root / ".claude").exists()
+    assert not (ws.root / ".codex").exists()
     assert (ws.root / "docs" / "line-note.md").exists()  # real work survives
     assert ws.git("status", "--porcelain").strip() == ""  # hygiene committed
     # the hygiene state persists: the remote line moved to this tip
