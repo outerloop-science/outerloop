@@ -104,7 +104,7 @@ def test_every_launch_has_hook_guard(
     i = command.index("features.multi_agent=false")
     assert command.index("features.hooks=true") < i
     # the provider-side web search is dropped exactly for endpoint sessions
-    assert ("web_search=disabled" in command) is endpoint
+    assert ('web_search="disabled"' in command) is endpoint
     assert seen["env"]["CODEX_HOME"] == str(config.parent)
     if contained:
         source = Path(harness_mod.__file__).with_name("codex_requirements.toml").resolve()
@@ -266,10 +266,10 @@ def test_real_project_hook_mutation_and_config_discovery(
 
 
 @pytest.mark.parametrize("endpoint", [False, True])
-@pytest.mark.parametrize("setting", ["", "auto", "on", "off"])
+@pytest.mark.parametrize("setting", ["", "auto", "off", "bogus"])
 def test_codex_web_search_setting(endpoint: bool, setting: str) -> None:
     from outerloop.harness import codex_web_search
 
     env = {"OUTERLOOP_CODEX_WEB_SEARCH": setting} if setting else {}
-    expected = {"": not endpoint, "auto": not endpoint, "on": True, "off": False}[setting]
+    expected = {"": not endpoint, "auto": not endpoint, "off": False, "bogus": False}[setting]
     assert codex_web_search(endpoint, env) is expected

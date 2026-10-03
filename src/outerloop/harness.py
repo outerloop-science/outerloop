@@ -949,15 +949,13 @@ def _seed_codex_config(session_home: Path, config: str) -> bool:
 def codex_web_search(endpoint: bool, env: Mapping[str, str] | None = None) -> bool:
     """Whether a Codex session keeps its built-in web search.
 
-    OUTERLOOP_CODEX_WEB_SEARCH: `auto` (default; on for native provider
-    sessions, off for endpoint sessions, where the provider-side tool cannot
-    run), `on`, or `off`. Any other value means `off`.
+    OUTERLOOP_CODEX_WEB_SEARCH: `auto` (default) keeps Codex's own setting on
+    native provider sessions and turns it off on endpoint sessions, where the
+    provider-side tool cannot run; `off` turns it off everywhere. Any other
+    value means `off`.
     """
     value = (os.environ if env is None else env).get("OUTERLOOP_CODEX_WEB_SEARCH", "auto")
-    value = value.strip().lower() or "auto"
-    if value == "auto":
-        return not endpoint
-    return value == "on"
+    return (value.strip().lower() or "auto") == "auto" and not endpoint
 
 
 def _codex_command(
@@ -1340,7 +1338,7 @@ class CodexHarness:
         # the chat bridge as a tool type it cannot translate).
         kernel_owned: tuple[str, ...] = ("-c", "features.multi_agent=false")
         if not codex_web_search(bool(self.endpoint)):
-            kernel_owned += ("-c", "web_search=disabled")
+            kernel_owned += ("-c", 'web_search="disabled"')
         codex_argv = _codex_command(
             self.CONTAINER_CODEX if self.container_image else self.binary,
             self.model,
