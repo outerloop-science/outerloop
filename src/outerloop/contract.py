@@ -154,6 +154,7 @@ class Benchmark(_StrictModel):
     # base branch's reviewed versions. Off (default) = today's fork-main-only
     # behavior; the branch substrate is inert until a contract opts in.
     lines: bool = False
+    verification: Literal["gate", "self_report"] = "gate"
 
     # Pure loop-steering dials: how often/deep the fleet iterates and how a
     # number renders. Everything else — the command, metric, seed, GPUs,
@@ -167,6 +168,9 @@ class Benchmark(_StrictModel):
         so a future field joins the signature by default and the base-sync
         skip fails toward re-measuring."""
         data = self.model_dump()
+        # Preserve existing gate ledger signatures across the schema addition.
+        if self.verification == "gate":
+            data.pop("verification")
         return tuple(sorted((k, repr(v)) for k, v in data.items() if k not in self._WORKFLOW_DIALS))
 
     @field_validator("seed_env")
@@ -335,7 +339,17 @@ class StewardScope(_StrictModel):
     allowed: list[str] = Field(min_length=1)
 
 
+class Channels(_StrictModel):
+    """Kernel-mediated context sharing; all channels default to enabled."""
+
+    siblings: bool = True
+    messages: bool = True
+    shared_reports: bool = True
+    branches: bool = True
+
+
 class Contract(_StrictModel):
+    channels: Channels = Field(default_factory=Channels)
     benchmarks: list[Benchmark] = Field(min_length=1)
     budgets: Budgets
     scope: Scope

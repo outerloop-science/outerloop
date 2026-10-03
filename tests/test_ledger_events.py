@@ -103,7 +103,9 @@ def test_observe_uses_published_tree_without_local_measured_commit(same_tree, mo
     monkeypatch.setattr(fake, "put_files", lambda *args, **kwargs: False)
     with pytest.raises(LedgerWriteError):
         observe_target(github, "org/repo", {})
-    assert json.loads(fake.ledger_files[pending().path]) == asdict(pending())
+    from outerloop.progress import parse_pending
+
+    assert parse_pending(fake.ledger_files[pending().path]) == pending()
     monkeypatch.setattr(fake, "put_files", original)
 
     expected = set() if same_tree else {1}

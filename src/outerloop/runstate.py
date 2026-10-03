@@ -122,6 +122,11 @@ class RunRecord:
     task_title: str
     state: str
     agent_id: str = "agent-01"
+    verification: str = "gate"
+    # Empty on legacy records; absent channel keys mean enabled.
+    channels: dict[str, bool] = field(default_factory=dict)
+    claimed_value: float | None = None
+    claimed_baseline: float | None = None
     experiment_job_id: str = ""
     run_job_id: str = ""  # slurm job running the attempt itself; lets the
     # sweep end records whose job was KILLED (walltime/preemption/node
@@ -309,6 +314,14 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
     # same tmp file before the atomic replace
     tmp = directory / f".{RECORD_NAME}.{os.getpid()}.tmp"
     payload = asdict(stamped)
+    payload["channels"] = {k: v for k, v in stamped.channels.items() if not v}
+    if not payload["channels"]:
+        payload.pop("channels")
+    if stamped.verification == "gate":
+        payload.pop("verification")
+    for key in ("claimed_value", "claimed_baseline"):
+        if payload[key] is None:
+            payload.pop(key)
     if not stamped.author_history:
         payload.pop("author_history")
     if not stamped.author_rebind_id:

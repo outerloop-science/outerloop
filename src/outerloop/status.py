@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from outerloop.contract import CONTRACT_NAME, MAX_CONTRACT_BYTES, load_contract
+from outerloop.contract import CONTRACT_NAME, MAX_CONTRACT_BYTES, Channels, load_contract
 from outerloop.rebind import request_status
 from outerloop.runstate import RunRecord, list_runs, run_dir
 from outerloop.session_evidence import session_totals
@@ -45,6 +45,14 @@ def collect_status(root: Path) -> dict[str, Any]:
                 "target": record.target,
                 "agent": record.agent_id,
                 "state": record.state,
+                **(
+                    {
+                        "verification": record.verification,
+                        "channels": Channels.model_validate(record.channels).model_dump(),
+                    }
+                    if record.channels or record.verification != "gate"
+                    else {}
+                ),
                 "phase": stage.get("phase", ""),
                 "author_backend": record.author_backend or "claude",
                 "author_model": record.author_model,
@@ -93,6 +101,8 @@ def render_text(status: dict[str, Any]) -> str:
             f"overridden={'yes' if run['author_overridden'] else 'no'} "
             f"GPU-hours={run['gpu_hours_used']}/{budget if budget is not None else 'unknown'}"
         )
+        if run.get("verification") == "self_report":
+            line += " verification=self_report (self-reported)"
         cost = run.get("session_cost_usd")
         line += f" session-cost={'$' + format(cost, '.4f') if cost is not None else 'unknown'}"
         if not run.get("verified", False):

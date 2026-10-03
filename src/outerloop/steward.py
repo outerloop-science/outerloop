@@ -433,7 +433,14 @@ def live_steward(
 
     tree_hashes: list[str] = []
     try:
-        ws = Workspace.clone(f"https://github.com/{config.target}.git", workspace, auth=bot_auth)
+        ws = Workspace.clone_for_channels(
+            f"https://github.com/{config.target}.git",
+            workspace,
+            config.target,
+            base_branch,
+            STEWARD_AGENT_ID,
+            auth=bot_auth,
+        )
         contract_text = contract_text_in_tree(workspace)
         contract = load_contract(contract_text, config.target)
         if contract.steward is None:
@@ -443,6 +450,18 @@ def live_steward(
         bench = next((b for b in contract.benchmarks if b.name == config.benchmark), None)
         if bench is None:
             raise ValueError(f"benchmark {config.benchmark!r} not in contract")
+        record = dc_replace(
+            record,
+            channels=contract.channels.model_dump(exclude_defaults=True),
+            verification=bench.verification,
+        )
+        if record.channels or record.verification != "gate":
+            save_record(run_root, record, now)
+        from outerloop.syscall import ensure_excluded, write_policy
+
+        if record.channels or bench.verification != "gate":
+            ensure_excluded(workspace)
+        write_policy(workspace, bench.verification, record.channels)
         if not spec.scope:
             # manifest truth: the spec run_role receives carries the steward's
             # real territory; enforcement stays steward_out_of_scope below
@@ -612,11 +631,16 @@ def live_steward(
                     measured_sha,
                     created,
                     kind="RESET",
+                    provenance="measured",
                 ),
                 contract,
                 now,
             )
-        if pr_number.isdigit() and getattr(contract, "merge", "manual") != "auto":
+        if (
+            pr_number.isdigit()
+            and bench.verification != "self_report"
+            and getattr(contract, "merge", "manual") != "auto"
+        ):
             _best_effort(
                 "auto-merge arming",
                 lambda: github.arm_auto_merge_when_review_required(config.target, int(pr_number)),

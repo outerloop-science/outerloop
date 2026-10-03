@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import asdict, replace
+from dataclasses import replace
 from functools import cmp_to_key
 from pathlib import Path
 from typing import Any, cast
@@ -24,6 +24,7 @@ from outerloop.progress import (
     LeaderEntry,
     PendingSubmission,
     confirm,
+    ledger_record,
     parse_leader,
     parse_pending,
     record_pending,
@@ -62,6 +63,7 @@ def measurement_pending(
     timestamp: str,
     *,
     kind: str,
+    provenance: str = "measured",
 ) -> PendingSubmission:
     signature = json.dumps(bench.measurement_signature(), separators=(",", ":"))
     # Ruler identity includes harness contents, not just its command. Solver
@@ -88,6 +90,7 @@ def measurement_pending(
         published_head,
         timestamp,
         kind=kind,
+        provenance=provenance,
         min_delta=bench.min_delta or 0.0,
         min_delta_rel=bench.min_delta_rel or 0.0,
     )
@@ -104,7 +107,7 @@ def queue_pending(
     """Save intent before the API write. Keep failed intents through park cleanup."""
     queue = dict(cast(dict[str, Any], record.stage.get(LEDGER_RETRY) or {}))
     queue[pending.path] = {
-        "pending": asdict(pending),
+        "pending": ledger_record(pending),
         "digits": {b.name: b.display_digits for b in contract.benchmarks if b.display_digits},
     }
     record = replace(
@@ -216,7 +219,7 @@ def observe_target(github: GitHubClient, target: str, digits: dict[str, int]) ->
             if pending.path in current:
                 leader = confirm(leader, pending, sha, is_ancestor=ancestor)
                 patch.update(reject(pending))
-        patch[LEADER_FILE] = json.dumps({k: asdict(v) for k, v in leader.items()})
+        patch[LEADER_FILE] = json.dumps({k: ledger_record(v) for k, v in leader.items()})
         return patch
 
     write_ledger(github, target, head, edit, digits=digits)

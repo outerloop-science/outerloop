@@ -286,13 +286,29 @@ def reply_to_seq(message: Message, messages: list[Message]) -> int | None:
     return next((m.seq for m in messages if key and m.key == key), None)
 
 
+def channel_messages(messages: list[Message], enabled: bool) -> list[Message]:
+    """Keep operator/thread traffic and reminders when agent sharing is off."""
+    if enabled:
+        return messages
+    return [
+        m for m in messages if m.kind != "agent-message" or (bool(m.origin) and m.origin == m.to)
+    ]
+
+
 def write_messages(
-    workspace: Path, run_dir: Path, thread: str = "", secrets: tuple[str, ...] = ()
+    workspace: Path,
+    run_dir: Path,
+    thread: str = "",
+    secrets: tuple[str, ...] = (),
+    *,
+    messages_enabled: bool = True,
 ) -> None:
     """Refresh the bounded view the author tool reads at every leg."""
     from outerloop.syscall import _channel_fd, _write_channel, channel_dir
 
-    messages = sorted(_keys(run_dir).values(), key=lambda m: m.seq)
+    messages = channel_messages(
+        sorted(_keys(run_dir).values(), key=lambda m: m.seq), messages_enabled
+    )
     rows = []
     for m in messages[-200:]:
         rows.append(

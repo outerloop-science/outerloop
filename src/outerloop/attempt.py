@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
@@ -401,7 +402,9 @@ def _bless_decision(
     """Decide once; share the reason between the record, PR and log."""
     head, reason, revision = "", "", "not read"
     merge = getattr(contract, "merge", "manual")
-    if panel_skip or result.panel_rounds <= 0:
+    if getattr(result, "provenance", "measured") == "self_reported":
+        reason = "self-reported claim"
+    elif panel_skip or result.panel_rounds <= 0:
         reason = "panel did not run"
     elif result.panel_blocking_open or result.panel_degraded:
         reason = "panel blocking or degraded"
@@ -1168,6 +1171,11 @@ def deliver_messages(
             if not isinstance(text, str) or not text.strip() or len(text) > MAX_REPLY_CHARS:
                 refuse(index, "invalid message text")
                 continue
+            if destination not in ("thread", "self", record.agent_id) and not record.channels.get(
+                "messages", True
+            ):
+                refuse(index, "inter-agent messages disabled by channels.messages")
+                continue
             reference = ""
             n = item.get("reply_to")
             if n is not None:
@@ -1204,6 +1212,9 @@ def deliver_messages(
                 recipient = matches[0] if matches else None
             if recipient is None:
                 refuse(index, "no live run on this target (absent or ended)")
+                continue
+            if recipient.run_id != record.run_id and not recipient.channels.get("messages", True):
+                refuse(index, "recipient has inter-agent messages disabled by channels.messages")
                 continue
             key = f"agent-msg:{record.run_id}:{entry['counter']}"
             entry["recipient"] = recipient.run_id
@@ -1252,6 +1263,17 @@ def deliver_messages(
                     if message.kind == "agent-message" and recipient.state not in (RUNNING, PARKED):
                         item = entry["item"]
                         refuse(index, "no live run on this target (absent or ended)")
+                        append(run_dir, Message(**entry["message"]))
+                    elif (
+                        message.kind == "agent-message"
+                        and recipient.run_id != record.run_id
+                        and (
+                            not recipient.channels.get("messages", True)
+                            or not load_record(root, record.run_id).channels.get("messages", True)
+                        )
+                    ):
+                        item = entry["item"]
+                        refuse(index, "inter-agent messages disabled by channels.messages")
                         append(run_dir, Message(**entry["message"]))
                     elif (
                         recipient.run_id != record.run_id
@@ -1331,6 +1353,15 @@ def run_author_leg(
 ) -> AttemptResult:
     """Prepare the author channel and run a resumed leg through the orchestrator."""
     directory = run_root / "runs" / record.run_id
+    contract = load_contract(contract_text, record.target)
+    bench = _benchmark(contract, record.benchmark)
+    record = dc_replace(
+        record,
+        verification=bench.verification,
+        channels=contract.channels.model_dump(exclude_defaults=True),
+    )
+    save_record(run_root, record, time.time())
+    ws.configure_channels(record.channels, record.agent_id)
     replies_posted = deliver_messages(record, github, (), secrets, directory)
 
     def outbox_ids() -> set[str]:
@@ -1344,8 +1375,6 @@ def run_author_leg(
         nonlocal replies_posted
         replies_posted += deliver_messages(record, github, messages, secrets, directory)
 
-    contract = load_contract(contract_text, record.target)
-    bench = _benchmark(contract, record.benchmark)
     # the channel must be the kernel's: a path the target ships (a symlink, a
     # tracked directory) disables the syscalls for this leg, loudly, the same
     # rule as a fresh climb
@@ -1370,7 +1399,14 @@ def run_author_leg(
                 thread_for(record),
                 time.time(),
                 f"tool:{record.resume_session_id}:{record.inbox_seq}",
-                {"text": tool_update_note(channel_dir(workspace))},
+                {
+                    "text": tool_update_note(
+                        channel_dir(workspace),
+                        messages=contract.channels.messages,
+                        siblings=contract.channels.siblings,
+                        verification=bench.verification,
+                    )
+                },
                 origin=record.run_id,
             ),
         )
@@ -1381,7 +1417,10 @@ def run_author_leg(
     if owned:
         _best_effort(
             "sibling refresh",
-            lambda: syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id)),
+            lambda: syscall_write_siblings(
+                workspace,
+                _sibling_entries(ws, config.agent_id) if contract.channels.siblings else [],
+            ),
         )
     if record.agent_id.startswith("steward"):
         kwargs.setdefault("scope_validator", steward_out_of_scope)
@@ -2022,12 +2061,27 @@ MAX_ARCHIVED_REPORTS = 30  # materialized for the session to read; newest first
 MAX_ARCHIVED_REPORT_CHARS = 100_000  # per report; branch content is remote-controlled
 
 
+def _isolated_research_read(ws: Workspace, reader: Callable[[Workspace], Any]) -> Any:
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="outerloop-research-") as directory:
+        root = Path(directory)
+        subprocess.run(["git", "init", "--quiet", str(root)], check=True, capture_output=True)
+        isolated = Workspace(root=root, auth=ws.auth, url=ws.url or ws.remote_url())
+        return reader(isolated)
+
+
 def _fetch_research_reports(ws: Workspace, count: int) -> list[tuple[str, str]]:
     """The newest `count` reports from the target's research-log branch, as
     (name, text), newest first — the shared memory of every attempt on this
     target, wherever it ran. Fail-soft: a target with no research log yet
     (or an unreachable remote) is an empty memory, never a dead attempt."""
     try:
+        if getattr(ws, "channels", None) and not ws._offered_branch(RESEARCH_LOG_BRANCH):
+            return _isolated_research_read(
+                ws, lambda reader: _fetch_research_reports(reader, count)
+            )
         ws.fetch_branch(RESEARCH_LOG_BRANCH)
         listing = ws.git("ls-tree", "-r", "--name-only", "FETCH_HEAD", "reports/")
         # only direct children (the publisher's layout): a nested path would
@@ -2589,6 +2643,8 @@ def _sibling_entries(ws: Workspace, self_agent: str) -> list[dict]:
     bounded — the branch is bot-written but never trusted with unbounded
     memory. Any failure means no siblings known, never a crash."""
     try:
+        if getattr(ws, "channels", None) and not ws._offered_branch(RESEARCH_LOG_BRANCH):
+            return _isolated_research_read(ws, lambda reader: _sibling_entries(reader, self_agent))
         ws.fetch_branch(RESEARCH_LOG_BRANCH)
         blob = "FETCH_HEAD:climb/status.json"
         if int(ws.git("cat-file", "-s", blob).strip()) > 1_000_000:
@@ -2764,7 +2820,13 @@ def resume_run(
     # the session could have rewritten that config to exfil the bot token / code
     # to another remote. Passing `url` here means `Workspace.push` uses it
     # instead of reading `remote.origin.url`.
-    ws = Workspace(root=workspace, auth=bot_auth, url=target_clone_url(record.target))
+    ws = Workspace(
+        root=workspace,
+        auth=bot_auth,
+        url=target_clone_url(record.target),
+        channels=record.channels,
+        self_agent=record.agent_id,
+    )
     # A session reshaped .git (symlinked object store, gitdir file, FIFO) is
     # refused BEFORE anything writes through it: the exclude below opens
     # .git/info/exclude, and every ws.git call re-checks. The refusal ENDS
@@ -2775,6 +2837,43 @@ def resume_run(
         ensure_regular_git_dir(workspace)
     except GitError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
+    # Discover CURRENT policy outside the author's object store before fetching
+    # any refs into it. The saved contract and dirty working tree can both be
+    # stale; only the canonical base branch can authorize sharing on this wake.
+    policy_branch = str(stage.get("base_branch") or base_branch)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".wake-policy-", dir=run_dir) as directory:
+            policy_ws = Workspace.clone(
+                target_clone_url(record.target),
+                Path(directory) / "ws",
+                auth=bot_auth,
+                single_branch=policy_branch,
+            )
+            current_contract = load_contract(contract_at(policy_ws, "HEAD"), record.target)
+    except GitError:
+        # A deleted base ends the wake as before; transport failures stay retryable.
+        refs = ws.git_network(
+            "ls-remote",
+            "--heads",
+            ws.url or target_clone_url(record.target),
+            f"refs/heads/{policy_branch}",
+        )
+        if not refs.strip():
+            return _end_refused_wake(
+                run_root, record, ScopeHistoryError(policy_branch), now, secrets, ws.auth
+            )
+        raise
+    # Channels follow the current contract at once (tightening isolation must
+    # not wait for the next run); verification stays what the run started with,
+    # so a parked gate candidate is never re-labelled mid-flight.
+    channels = current_contract.channels.model_dump(exclude_defaults=True)
+    if any(
+        record.channels.get(name, True) != enabled
+        for name, enabled in current_contract.channels.model_dump().items()
+    ):
+        record = dc_replace(record, channels=channels)
+        save_record(run_root, record, now)
+    ws.configure_channels(channels, record.agent_id)
     # Re-establish the merge-artifact exclude on the wake too: the workspace
     # persisted across the park, but a session could have removed the exclude,
     # and this wake's changed_paths / seal run `git add -A`. Idempotent.
@@ -2838,6 +2937,16 @@ def resume_run(
     contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
+    if contract.channels != current_contract.channels:
+        # Keep the sealed scope, evaluation and verification rules, applying only
+        # the current channels. Leave default contract bytes untouched.
+        import yaml
+
+        data = yaml.safe_load(contract_text)
+        data["channels"] = current_contract.channels.model_dump(exclude_defaults=True)
+        contract_text = yaml.safe_dump(data)
+        contract = load_contract(contract_text, record.target)
+        bench = _benchmark(contract, record.benchmark)
     config = RunConfig(
         target=record.target,
         benchmark=record.benchmark,
@@ -3734,12 +3843,27 @@ def _ledger_comparison(
     return prior, floor_note
 
 
-def _measured_note(bench: Any, candidate: float, candidate_sha: str) -> str:
-    """The number, named by the sealed tree it was measured on."""
+def _measured_note(
+    bench: Any, candidate: float, candidate_sha: str, provenance: str = "measured"
+) -> str:
+    """The number, named by the sealed tree and its verification mode."""
+    if provenance == "self_reported":
+        return (
+            f"**Self-reported (`self_reported`): `{bench.metric}` = "
+            f"{fmt_metric(candidate, bench.display_digits)}** "
+            f"(sealed `{candidate_sha[:12]}`; no evaluation or panel)."
+        )
     return (
         f"**Re-measured after this change: `{bench.metric}` = "
         f"{fmt_metric(candidate, bench.display_digits)}** (sealed `{candidate_sha[:12]}`)."
     )
+
+
+def _publish_signature(bench: Any) -> tuple:
+    """A benchmark's measurement signature for the publish-time check. A run
+    keeps the verification mode it started with, so a mode change alone is
+    not a measurement change."""
+    return bench.model_copy(update={"verification": "gate"}).measurement_signature()
 
 
 def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha: str) -> bool:
@@ -3750,7 +3874,8 @@ def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha
     except Exception as exc:
         log.warning("measured-note lookup failed for %s#%s: %s", target, number, exc)
         return False  # posting twice beats never posting
-    tag = f"(sealed `{sha[:12]}`)"
+    # self-reported notes extend the parenthesis ("; no evaluation or panel")
+    tag = f"(sealed `{sha[:12]}`"
     return any(
         str(c.get("body", "")).lstrip().startswith(REPLY_MARKER) and tag in str(c.get("body", ""))
         for c in comments
@@ -3788,6 +3913,11 @@ def publish(
         if k in ("launches_used", "sleeps_used", "gpu_hours_used")
     }
     record = dc_replace(record, stage={**_message_stage(run_root, record), **meter})
+    if result.provenance == "self_reported":
+        record = dc_replace(
+            record, claimed_value=result.candidate, claimed_baseline=result.baseline
+        )
+        save_record(run_root, record, now)
     report = result.report(config, redact_secrets=secrets)
     record = dc_replace(
         record,
@@ -3879,7 +4009,7 @@ def publish(
     if record.pr_url and result.candidate is not None:
         number = int(record.pr_url.rstrip("/").split("/")[-1])
         if not _measured_note_on_thread(github, record.target, number, result.candidate_sha):
-            note = _measured_note(bench, result.candidate, result.candidate_sha)
+            note = _measured_note(bench, result.candidate, result.candidate_sha, result.provenance)
             prior = display_leader(github, config.target).get(bench.name)
             if prior is not None and (
                 result.candidate < prior.best
@@ -3898,10 +4028,11 @@ def publish(
         pinned_bench = _benchmark(pinned, config.benchmark)
         current = load_contract(contract_at(ws, f"origin/{base_branch}"), config.target)
         current_bench = next((b for b in current.benchmarks if b.name == bench.name), None)
+
         if (
             current_bench is None
-            or current_bench.measurement_signature() != pinned_bench.measurement_signature()
-            or pinned_bench.measurement_signature() != bench.measurement_signature()
+            or _publish_signature(current_bench) != _publish_signature(pinned_bench)
+            or _publish_signature(pinned_bench) != _publish_signature(bench)
         ):
             return refuse("Publish refused: the base contract's measurement signature changed.")
     except Exception as exc:
@@ -4047,6 +4178,7 @@ def publish(
                     pushed_sha,
                     date,
                     kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+                    provenance=result.provenance,
                 ),
                 contract,
                 now,
@@ -4062,7 +4194,7 @@ def publish(
                 "so the recorded measurement stands."
             )
         else:
-            note = _measured_note(bench, result.candidate, result.candidate_sha)
+            note = _measured_note(bench, result.candidate, result.candidate_sha, result.provenance)
             note = note.removesuffix(".") + f", pushed as `{pushed_sha}`."
             note += (
                 " Worse than the previous number; the ledger row is unchanged."
@@ -4077,6 +4209,12 @@ def publish(
             )
             or ""
         )
+        if result.provenance == "self_reported":
+            note = (
+                f"Self-reported candidate: {result.candidate}; "
+                f"self-reported baseline: {result.baseline}. "
+                "No evaluation or panel ran (self_reported)."
+            )
         if panel_skip:
             note += f"\n\npanel read skipped: {panel_skip}"
         if not measured_before:
@@ -4211,7 +4349,8 @@ def publish(
                 config.target,
                 # short precision in the title; full precision lives in the
                 # PR body table and the ledger
-                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}",
+                title=f"[agent] {config.benchmark}: {_title_pair(baseline, candidate)}"
+                + (" (self-reported)" if result.provenance == "self_reported" else ""),
                 head=branch,
                 base=base_branch,
                 body=body,
@@ -4251,11 +4390,12 @@ def publish(
                     published_head,
                     date,
                     kind="RESET" if record.agent_id.startswith("steward") else "SOLVER",
+                    provenance=result.provenance,
                 ),
                 contract,
                 now,
             )
-        if pr_number.isdigit() and not draft:
+        if pr_number.isdigit() and not draft and result.provenance != "self_reported":
             _arm_unless_base_moved(
                 github,
                 ws,
@@ -4483,7 +4623,14 @@ def live_attempt(
     # exception path cannot rely on names bound inside the try
     salvage: dict[str, object] = {}
     try:
-        ws = Workspace.clone(target_clone_url(config.target), workspace, auth=bot_auth)
+        ws = Workspace.clone_for_channels(
+            target_clone_url(config.target),
+            workspace,
+            config.target,
+            base_branch,
+            config.agent_id,
+            auth=bot_auth,
+        )
         # Build ON the requested PR base: the clone checks out the remote
         # DEFAULT branch, which need not be `base_branch` — the session must
         # edit, and the gate must measure, the tree the PR will land on.
@@ -4492,6 +4639,17 @@ def live_attempt(
         _exclude_merge_artifacts(workspace)
         contract_text = contract_text_in_tree(workspace)
         contract = load_contract(contract_text, config.target)
+        record = dc_replace(
+            record,
+            verification=_benchmark(contract, config.benchmark).verification,
+            channels=contract.channels.model_dump(exclude_defaults=True),
+        )
+        # Default policy retains the existing best-effort record-write behavior.
+        # Nondefault trust/sharing must be durable before the author starts.
+        if record.verification == "gate" and all(record.channels.values()):
+            _best_effort("run policy record", lambda: save_record(run_root, record, now), secrets)
+        else:
+            save_record(run_root, record, now)
         if (stored := bound_limits(record.author_limits)) is not None:
             # Direct climbs learn the trusted contract only after cloning. Queued
             # climbs already carry its clamp; neither path rereads operator settings.
@@ -4599,10 +4757,9 @@ def live_attempt(
                     ).strip()
             except Exception:
                 line_divergence = ""
-        author_syscalls = (
-            dispatch is not None
-            and getattr(harness, "supports_resume", True)
-            and _bench is not None
+        author_syscalls = _bench is not None and (
+            (dispatch is not None and getattr(harness, "supports_resume", True))
+            or _bench.verification == "self_report"
         )
         # The `.outerloop/` channel must be KERNEL-OWNED. In a fresh clone,
         # anything already at that path was committed by the TARGET — a symlink
@@ -4620,7 +4777,11 @@ def live_attempt(
                 (workspace / shipped).is_symlink(),
             )
             author_syscalls = False
-        reports = _fetch_research_reports(ws, MAX_ARCHIVED_REPORTS)
+        reports = (
+            _fetch_research_reports(ws, MAX_ARCHIVED_REPORTS)
+            if contract.channels.shared_reports
+            else []
+        )
         if author_syscalls:
             assert _bench is not None
             syscall_excluded(workspace)
@@ -4635,7 +4796,10 @@ def live_attempt(
             # research-log's status.json (the SAME branch the reports came
             # from, so it works across clusters) and best-effort throughout:
             # a missing or malformed snapshot just means no siblings known
-            syscall_write_siblings(workspace, _sibling_entries(ws, config.agent_id))
+            syscall_write_siblings(
+                workspace,
+                _sibling_entries(ws, config.agent_id) if contract.channels.siblings else [],
+            )
 
         def changed_paths() -> list[str]:
             return submission_paths(
@@ -4749,8 +4913,7 @@ def live_attempt(
         # symlink, tracked request, or any other pre-existing form — has
         # disabled the feature for this run).
         launcher = None
-        if author_syscalls:
-            assert dispatch is not None  # folded into author_syscalls above
+        if author_syscalls and dispatch is not None:
             launcher = _make_launcher(
                 dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
             )
@@ -4781,10 +4944,12 @@ def live_attempt(
                 task_hypothesis=task_hypothesis,
                 recent_reports=tuple(text for _name, text in reports),
                 lessons=distill_lessons(reports),
-                report_archive=author_syscalls,
+                report_archive=author_syscalls and contract.channels.shared_reports,
                 spec=spec,
                 panel_runner=panel_runner,
-                brief_baseline=prior_best.best if prior_best else None,
+                brief_baseline=(
+                    prior_best.best if prior_best and prior_best.provenance == "measured" else None
+                ),
                 inbox_dir=run_dir,
                 inbox_seq=record.inbox_seq,
                 on_inbox_delivered=acknowledge,
@@ -5061,6 +5226,8 @@ def main() -> int:
     import os
     from datetime import UTC, datetime
 
+    from outerloop.runstate import load_record
+
     arm_sigterm_containment()
 
     parser = argparse.ArgumentParser(description="One live attempt on one benchmark.")
@@ -5265,8 +5432,6 @@ def main() -> int:
     # and re-enter the decision. The wake job the WakeDispatcher submits runs
     # exactly this.
     if args.resume:
-        from outerloop.runstate import load_record
-
         # a wake that is not the lease holder is a straggler (a replacement was
         # dispatched after it was cancelled, or it was armed and then lost):
         # it must not touch the run beside the holder
@@ -5474,7 +5639,15 @@ def main() -> int:
             # immediately eligible for the next sweep instead of waiting out the
             # TTL reap. Idempotent (no-op if no lease file).
             _release_own_lease(args.run_root, args.resume)
-        print(f"outcome={resumed.outcome} pr={resumed.pr_url or '-'} report={resumed.report_path}")
+        label = (
+            " self-reported"
+            if getattr(_wake_record, "verification", "gate") == "self_report"
+            else ""
+        )
+        print(
+            f"outcome={resumed.outcome}{label} pr={resumed.pr_url or '-'} "
+            f"report={resumed.report_path}"
+        )
         return 0
 
     if not (args.target and args.benchmark):
@@ -5610,7 +5783,15 @@ def main() -> int:
             return 3
     finally:
         _signal.alarm(0)
-    print(f"outcome={outcome.outcome} pr={outcome.pr_url or '-'} report={outcome.report_path}")
+    label = ""
+    try:
+        if getattr(load_record(args.run_root, run_id), "verification", "gate") == "self_report":
+            label = " self-reported"
+    except FileNotFoundError:
+        pass
+    print(
+        f"outcome={outcome.outcome}{label} pr={outcome.pr_url or '-'} report={outcome.report_path}"
+    )
     return 0
 
 
@@ -5772,6 +5953,8 @@ def finish_run(
             root=directory / "ws",
             auth=auth if auth is not None else getattr(github, "auth", None),
             url=target_clone_url(record.target),
+            channels=record.channels,
+            self_agent=record.agent_id,
         )
     if ref and ws is not None:
         _best_effort(
