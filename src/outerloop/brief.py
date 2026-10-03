@@ -75,6 +75,8 @@ def distill_lessons(reports: Sequence[tuple[str, str]]) -> str:
         agent = who[-1] if who else ("steward" if "steward" in name else "")
         kernel = _KERNEL_OUTCOME.search(text)
         outcome = kernel.group(1) if kernel else fields.get("Outcome", "")
+        if "Verification: self_report; provenance: self_reported" in text:
+            outcome += " (self-reported)"
         line = (
             "- "
             + " ".join(p for p in (date, agent) if p)
@@ -137,6 +139,8 @@ class SessionBrief:
     budget: BudgetState
     created: str  # ISO timestamp, supplied by the caller (builder stays pure)
     report_archive: bool = False  # the syscall tool + full archive are installed
+    channels: dict[str, bool] = field(default_factory=dict)
+    verification: str = "gate"
     # Author-syscall budgets (research-loop.md, "one syscall"): >0 advertises the
     # launch/sleep tool to the author; 0 (the default) means the feature is off
     # for this run and the brief never mentions it.
@@ -159,7 +163,13 @@ class SessionBrief:
     line_divergence: str = ""
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), indent=2, sort_keys=True)
+        payload = asdict(self)
+        payload["channels"] = {k: v for k, v in self.channels.items() if not v}
+        if not payload["channels"]:
+            payload.pop("channels")
+        if self.verification == "gate":
+            payload.pop("verification")
+        return json.dumps(payload, indent=2, sort_keys=True)
 
     @classmethod
     def from_json(cls, raw: str) -> SessionBrief:
@@ -171,6 +181,8 @@ class SessionBrief:
             lessons=data["lessons"],
             recent_reports=tuple(data["recent_reports"]),
             report_archive=bool(data.get("report_archive", False)),
+            channels=data.get("channels", {}),
+            verification=data.get("verification", "gate"),
             budget=BudgetState(**data["budget"]),
             created=data["created"],
             launch_budget=data.get("launch_budget", 0),
@@ -195,6 +207,8 @@ class BriefInputs:
     lessons: str = ""
     recent_reports: tuple[str, ...] = field(default_factory=tuple)
     report_archive: bool = False  # the syscall tool + full archive are installed
+    channels: dict[str, bool] = field(default_factory=dict)
+    verification: str = "gate"
     budget: BudgetState = field(default_factory=lambda: BudgetState(0.0, 0))
     launch_budget: int = 0  # launches the author may make; 0 = no launch section
     syscalls: bool = False  # the tool is offered at all (end, message, submit)
@@ -230,9 +244,13 @@ def build_brief(inputs: BriefInputs, created: str) -> SessionBrief:
         ),
         contract_text=cap(inputs.contract_text, MAX_CONTRACT_CHARS),
         ruler=cap(inputs.ruler, MAX_RULER_CHARS),
-        lessons=cap(inputs.lessons, MAX_LESSONS_CHARS),
-        recent_reports=reports,
-        report_archive=inputs.report_archive,
+        lessons=cap(inputs.lessons, MAX_LESSONS_CHARS)
+        if inputs.channels.get("shared_reports", True)
+        else "",
+        recent_reports=reports if inputs.channels.get("shared_reports", True) else (),
+        report_archive=inputs.report_archive and inputs.channels.get("shared_reports", True),
+        channels={k: v for k, v in inputs.channels.items() if not v},
+        verification=inputs.verification,
         budget=inputs.budget,
         created=created,
         launch_budget=inputs.launch_budget,
@@ -310,7 +328,7 @@ def render(brief: SessionBrief) -> str:
             "it; read those files from your checkout when needed. The next session "
             "gets this file, the inbox, and on a resume its own context.",
         ]
-    if brief.lessons:
+    if brief.lessons and brief.channels.get("shared_reports", True):
         fence = code_fence(brief.lessons)
         parts += [
             "",
@@ -320,7 +338,7 @@ def render(brief: SessionBrief) -> str:
             brief.lessons,
             fence,
         ]
-    if brief.recent_reports:
+    if brief.recent_reports and brief.channels.get("shared_reports", True):
         parts += ["", "# Recent run reports (newest first, including failures)", _DATA_NOTE]
         parts += [
             "These are what past attempts on this benchmark tried and found — "
@@ -357,7 +375,7 @@ def render(brief: SessionBrief) -> str:
         f"GPU-hours remaining: {brief.budget.gpu_hours_remaining}",
         f"Runs remaining this week: {brief.budget.runs_remaining_this_week}",
     ]
-    if brief.syscalls:
+    if brief.syscalls and brief.channels.get("messages", True):
         parts += [
             "",
             "# Messages",
@@ -387,15 +405,29 @@ def render(brief: SessionBrief) -> str:
             "needs must live under the contract's allowed paths. "
             "Your git remote refs (origin/*) are refreshed at every wake, so "
             "after a sleep you can read the current state of the base branch "
-            "and sibling branches locally; `sync` refreshes them mid-session "
+            + (
+                "and sibling branches locally; "
+                if brief.channels.get("branches", True)
+                else "locally; "
+            )
+            + "`sync` refreshes them mid-session "
             "instead, waiting for the kernel's next cycle (up to ~35 min) "
             "inside your own session time — it costs no budget:",
             "",
             f"    python {_CHANNEL}/syscall launch --name <handle> "
             '--minutes <N> [--array <N>] [--concurrency <K>] [--why "one line"] '
             "--artifact <repo-relative file> -- <command>",
-            f"    python {_CHANNEL}/syscall submit [--report <file>] [--minutes <N>]",
-            f"    python {_CHANNEL}/syscall siblings",
+            (
+                f"    python {_CHANNEL}/syscall submit [--report <file>] [--minutes <N>]"
+                if brief.verification == "gate"
+                else f"    python {_CHANNEL}/syscall submit --claimed-value <number> "
+                "--claimed-baseline <number> [--report <file>]"
+            ),
+            *(
+                [f"    python {_CHANNEL}/syscall siblings"]
+                if brief.channels.get("siblings", True)
+                else []
+            ),
             f"    python {_CHANNEL}/syscall queue",
             f"    python {_CHANNEL}/syscall history",
             f"    python {_CHANNEL}/syscall sync",
@@ -418,12 +450,13 @@ def render(brief: SessionBrief) -> str:
                     "this run.",
                     "",
                 ]
-                if brief.gpu_hour_budget > 0
+                if brief.gpu_hour_budget > 0 and brief.verification == "gate"
                 else []
             ),
             "`status` shows staged launches and remaining budget; `queue` shows "
-            "the kernel's jobs in the cluster queue right now — every agent's, "
-            "each launch with its `--why` — and `history` this run's launches and "
+            "the kernel's jobs in the cluster queue right now — "
+            + ("every agent's, " if brief.channels.get("siblings", True) else "your own, ")
+            + "each launch with its `--why` — and `history` this run's launches and "
             "how each ended, both within seconds while you work. `--artifact` must "
             "name a file your command actually writes, anywhere under the repo "
             f"tree — the `{_CHANNEL}/` channel does not exist in the job, so "
@@ -442,20 +475,30 @@ def render(brief: SessionBrief) -> str:
             "sleeps (a `sleep` with nothing staged is a checkpoint that "
             "refreshes your session clock and costs one sleep). Spend them as "
             "your judgment says; they are generous, not a target to exhaust. "
-            "The sibling view is refreshed at every wake; `siblings` shows it. "
-            "Check it before choosing a direction and again before a submit, "
-            "and prefer a direction no sibling is on unless you have a distinct angle.",
+            + (
+                "The sibling view is refreshed at every wake; `siblings` shows it. "
+                "Check it before choosing a direction and again before a submit, "
+                "and prefer a direction no sibling is on unless you have a distinct angle."
+                if brief.channels.get("siblings", True)
+                else ""
+            ),
             "",
-            "Stage `submit [--report <file>]` and then `sleep` to seal the tree, "
-            "run the paired gate and panel, and receive their verdicts. A credited "
-            "verdict opens a PR or fast-forwards its head. Submit needs no prior "
-            "launch. The optional report becomes the PR's research report. "
-            "The repo's own CI runs on the PR, a failed check comes back as a message, "
-            "and running the repo's checks before a submit avoids that round trip.",
-            "A submit spends a sleep and its gate's GPU-hours, but no launch count. "
-            "Stopping without a submit ends unmeasured; with a PR open it returns "
-            "to review. An edit in review is measured and pushed only on submit. "
-            'Withdraw a superseded open PR with `end --withdraw "<reason>"`.',
+            *(
+                [
+                    "Stage `submit [--report <file>]` and then `sleep` to seal the tree, "
+                    "run the paired gate and panel, and receive their verdicts. A credited "
+                    "verdict opens a PR or fast-forwards its head. Submit needs no prior "
+                    "launch. The optional report becomes the PR's research report. "
+                    "The repo's own CI runs on the PR, a failed check comes back as a message, "
+                    "and running the repo's checks before a submit avoids that round trip.",
+                    "A submit spends a sleep and its gate's GPU-hours, but no launch count. "
+                    "Stopping without a submit ends unmeasured; with a PR open it returns "
+                    "to review. An edit in review is measured and pushed only on submit. "
+                    'Withdraw a superseded open PR with `end --withdraw "<reason>"`.',
+                ]
+                if brief.verification == "gate"
+                else []
+            ),
         ]
     parts += [
         "",
@@ -472,12 +515,20 @@ def render(brief: SessionBrief) -> str:
         "head; if it conflicts, resolve and stage the files, then finish that "
         "same merge with `git commit --no-edit`, taking the base's version of "
         "BENCHMARKS.md and results/leader.json. When your session ends, the "
-        "orchestrator scope-checks your working tree, re-measures the "
-        "benchmark itself, and publishes the branch and PR. "
-        "The records live on the research-log branch in BENCHMARKS.md and "
-        "results/leader.json. A merged result appears there after the PR is "
-        "merged and the kernel observes the merge. "
-        "When done (or blocked), write a short research report: hypothesis, "
+        + (
+            "orchestrator scope-checks your working tree, re-measures the "
+            "benchmark itself, and publishes the branch and PR. "
+            if brief.verification == "gate"
+            else "orchestrator scope-checks your working tree and publishes a self-reported claim. "
+        )
+        + (
+            "The records live on the research-log branch in BENCHMARKS.md and "
+            "results/leader.json. A merged result appears there after the PR is "
+            "merged and the kernel observes the merge. "
+            if brief.channels.get("shared_reports", True)
+            else ""
+        )
+        + "When done (or blocked), write a short research report: hypothesis, "
         "what you did, outcome with numbers, takeaways, and the most "
         "promising next step. A negative result reported clearly is a "
         "success, and so is an idea with a clear mechanism that does not yet "
@@ -490,6 +541,17 @@ def render(brief: SessionBrief) -> str:
         "# How to write",
         PLAIN_STYLE,
     ]
+    if brief.verification == "self_report":
+        parts += [
+            f"Use `python {_CHANNEL}/syscall submit --claimed-value <number> "
+            "--claimed-baseline <number> [--report <file>]`, then `sleep`. "
+            "Self-reported mode: submit requires finite candidate and baseline values. "
+            "Both are self-reported, never kernel measurements. The improvement threshold "
+            "and min_delta/min_delta_rel apply to this claimed pair. Scope is enforced; "
+            "evaluation, suite checks and panel are skipped. Submit then sleep; this costs "
+            "one sleep and no evaluation GPU-hours. Launches still consume their usual budget. "
+            "A passing claim opens a PR labelled self-reported and never arms automatic merging."
+        ]
     return "\n".join(parts)
 
 

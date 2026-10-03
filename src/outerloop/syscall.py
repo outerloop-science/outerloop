@@ -167,6 +167,8 @@ class SyscallRequest:
     # wake returns verdict + gate result to the author (published directly when
     # it clears cleanly). Costs the sleep it rides on, nothing else.
     submit: bool = False
+    claimed_value: float | None = None
+    claimed_baseline: float | None = None
     # the author's optional report at submit or end: at submit it becomes the pull
     # request's research report and the panel reads it against the diff
     report: str = ""
@@ -300,6 +302,8 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         "launches",
         "submit",
         "eval_minutes",
+        "claimed_value",
+        "claimed_baseline",
         "report",
         "messages",
         "withdraw",
@@ -339,6 +343,17 @@ def read_request(workspace: Path) -> SyscallRequest | None:
     submit = data.get("submit", False)
     if not isinstance(submit, bool):
         raise SyscallError("submit must be a boolean")
+    claims = {}
+    for key in ("claimed_value", "claimed_baseline"):
+        value = data.get(key)
+        if value is not None:
+            import math
+
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise SyscallError(f"{key} must be a finite number")
+            if not submit:
+                raise SyscallError(f"{key} only applies to a submit")
+        claims[key] = value
     eval_minutes = data.get("eval_minutes")
     if eval_minutes is not None:
         if not isinstance(eval_minutes, int) or isinstance(eval_minutes, bool) or eval_minutes < 1:
@@ -423,6 +438,7 @@ def read_request(workspace: Path) -> SyscallRequest | None:
         end=data["type"] == "end",
         problem=problem,
         submit=submit,
+        **claims,
         eval_minutes=eval_minutes,
         report=report.strip(),
         withdraw=withdraw.strip(),
@@ -655,11 +671,13 @@ def install_tool(workspace: Path) -> None:
     tool.chmod(0o755)
 
 
-def tool_update_note(channel: str) -> str:
+def tool_update_note(
+    channel: str, *, messages: bool = True, siblings: bool = True, verification: str = "gate"
+) -> str:
     """What a session that started under an older kernel is told at a wake
     whose tool refresh replaced its tool; `channel` is this workspace's channel
     dir name."""
-    return (
+    note = (
         "Your syscall tool was updated. `message <text>` or `message --file <path>` stages "
         "a public message on your PR or issue; use --to self for a reminder, --to agent-NN "
         "for a sibling, or --show <n> for a chain. Once a public message is staged the "
@@ -676,6 +694,18 @@ def tool_update_note(channel: str) -> str:
         "`--concurrency K`. `queue` shows every agent's jobs; `history` shows your "
         f"launches this run. `python {channel}/syscall <verb> --help` has the details."
     )
+
+    if not messages:
+        note = note.replace(", --to agent-NN for a sibling", "")
+    if not siblings:
+        note = note.replace("every agent's jobs", "your own jobs")
+    if verification == "self_report":
+        note = (
+            "Your syscall tool was updated. Self-reported submissions require "
+            "--claimed-value and --claimed-baseline. Scope and floors apply; "
+            "no evaluation or panel runs."
+        )
+    return note
 
 
 def refresh_tool(workspace: Path) -> bool:
@@ -791,6 +821,25 @@ def write_run_budget(
         review_topup=budgets.review_topup.note(review_topup),
         open_pr=open_pr,
     )
+
+
+def write_policy(workspace: Path, verification: str, channels: dict[str, bool]) -> None:
+    channels = {k: v for k, v in channels.items() if not v}
+    if verification == "gate" and not channels:
+        # Missing policy is the legacy default; clear any earlier restriction.
+        (workspace / channel_dir(workspace) / "policy.json").unlink(missing_ok=True)
+        return
+    d = workspace / channel_dir(workspace)
+    d.mkdir(parents=True, exist_ok=True)
+    fd = _channel_fd(workspace)
+    try:
+        _write_channel(
+            fd,
+            "policy.json",
+            json.dumps({"verification": verification, "channels": channels}).encode(),
+        )
+    finally:
+        os.close(fd)
 
 
 def write_siblings(workspace: Path, entries: list[dict[str, Any]]) -> None:

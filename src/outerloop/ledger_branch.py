@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import asdict
 
 from outerloop.github import GitHubClient, GitHubError
 from outerloop.progress import (
@@ -14,6 +13,7 @@ from outerloop.progress import (
     LeaderEntry,
     LedgerReadError,
     PendingSubmission,
+    ledger_record,
     parse_leader,
     parse_pending,
     render_markdown,
@@ -133,7 +133,9 @@ def write_ledger(
         if LEADER_FILE in patch:
             leader = parse_leader(patch[LEADER_FILE])
         patch[LEADER_FILE] = (
-            json.dumps({name: asdict(entry) for name, entry in sorted(leader.items())}, indent=2)
+            json.dumps(
+                {name: ledger_record(entry) for name, entry in sorted(leader.items())}, indent=2
+            )
             + "\n"
         )
         patch[PROGRESS_FILE] = render_markdown(leader, target, digits)

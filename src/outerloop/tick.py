@@ -2196,6 +2196,7 @@ def service_syncs(
                 ),
                 url=target_clone_url(record.target),
             )
+            ws.configure_channels(record.channels, record.agent_id)
             ws.fetch_origin()
             mark_synced(workspace, requested_at)
             log.info("synced origin refs for %s", record.run_id)

@@ -26,6 +26,7 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1547,6 +1548,8 @@ class Workspace:
     auth: TokenProvider | None = None
     dry_run: bool = False
     url: str | None = None
+    channels: dict[str, bool] | None = None
+    self_agent: str = ""
 
     def git(self, *args: str) -> str:
         """Run a local git subcommand: no credential, no child-spawning config,
@@ -1585,12 +1588,62 @@ class Workspace:
         dest: Path,
         auth: TokenProvider | None = None,
         dry_run: bool = False,
+        single_branch: str = "",
     ) -> Workspace:
         token = auth.token() if auth is not None else None
         _run_git_with_credential(
-            ["git", "clone", "--quiet", *SAFE_GIT_FLAGS, url, str(dest)], token
+            [
+                "git",
+                "clone",
+                "--quiet",
+                *SAFE_GIT_FLAGS,
+                *(
+                    ["--single-branch", "--branch", single_branch, "--no-tags", "--no-local"]
+                    if single_branch
+                    else []
+                ),
+                url,
+                str(dest),
+            ],
+            token,
         )
         return cls(root=dest, auth=auth, dry_run=dry_run, url=url)
+
+    @classmethod
+    def clone_for_channels(
+        cls,
+        url: str,
+        dest: Path,
+        target: str,
+        base_branch: str,
+        self_agent: str,
+        auth: TokenProvider | None = None,
+    ) -> Workspace:
+        """Discover policy in a kernel checkout before exposing an author tree.
+
+        Defaults use the original full clone, with no subsequent fetch. Restricted
+        authors get a fresh base-only clone: hidden objects never enter their tree.
+        """
+        from outerloop.contract import contract_text_in_tree, load_contract
+
+        with tempfile.TemporaryDirectory(
+            prefix=".outerloop-bootstrap-", dir=dest.parent
+        ) as directory:
+            bootstrap = cls.clone(url, Path(directory) / "ws", auth=auth)
+            bootstrap.git("checkout", "-q", "-B", base_branch, f"origin/{base_branch}")
+            contract = load_contract(contract_text_in_tree(bootstrap.root), target)
+            channels = contract.channels.model_dump(exclude_defaults=True)
+            if all(channels.get(k, True) for k in ("branches", "siblings", "shared_reports")):
+                bootstrap.root.rename(dest)
+                bootstrap.root = dest
+                ws = bootstrap
+            else:
+                ws = cls.clone(url, dest, auth=auth, single_branch=base_branch)
+                ws.configure_channels(channels, self_agent)
+                ws.fetch_origin()
+            if channels:
+                ws.configure_channels(channels, self_agent)
+            return ws
 
     def branch(self, name: str) -> None:
         self.git("switch", "-c", name)
@@ -1629,6 +1682,37 @@ class Workspace:
             message,
         )
 
+    def configure_channels(self, channels: dict[str, bool], self_agent: str) -> None:
+        self.channels = channels
+        self.self_agent = self_agent
+        unrestricted = all(
+            channels.get(k, True) for k in ("branches", "siblings", "shared_reports")
+        )
+        if unrestricted:
+            # Restore normal clone fetch/tag defaults after the base-only bootstrap.
+            self.git(
+                "config",
+                "--replace-all",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            )
+            self.git("config", "--replace-all", "remote.origin.tagOpt", "")
+        # Remove old advertised refs too, including workspaces resumed after an upgrade.
+        if not unrestricted:
+            refs = self.git("for-each-ref", "--format=%(refname)", "refs/remotes/origin/")
+            for ref in refs.splitlines():
+                branch = ref.removeprefix("refs/remotes/origin/")
+                if not self._offered_branch(branch):
+                    self.git("update-ref", "-d", ref)
+
+    def _offered_branch(self, branch: str) -> bool:
+        channels = self.channels or {}
+        if branch == "research-log":
+            return channels.get("shared_reports", True) and channels.get("siblings", True)
+        if branch.startswith("agents/") and not channels.get("branches", True):
+            return branch == f"agents/{self.self_agent}"
+        return True
+
     def fetch_origin(self) -> None:
         """Refresh refs/remotes/origin/* from the URL captured at clone time —
         never the "origin" remote, whose url and uploadpack live in
@@ -1641,7 +1725,26 @@ class Workspace:
             log.info("[dry-run] fetch into %s", self.root)
             return
         target = self.url or self.remote_url()
-        self.git_network("fetch", "--prune", target, "--", "+refs/heads/*:refs/remotes/origin/*")
+        if self.channels is None or all(
+            self.channels.get(k, True) for k in ("branches", "siblings", "shared_reports")
+        ):
+            self.git_network(
+                "fetch", "--prune", target, "--", "+refs/heads/*:refs/remotes/origin/*"
+            )
+        else:
+            refs = self.git_network("ls-remote", "--heads", target)
+            offered = [
+                line.split()[1].removeprefix("refs/heads/")
+                for line in refs.splitlines()
+                if len(line.split()) == 2
+            ]
+            specs = [
+                f"+refs/heads/{b}:refs/remotes/origin/{b}"
+                for b in offered
+                if self._offered_branch(b)
+            ]
+            if specs:
+                self.git_network("fetch", "--no-tags", target, "--", *specs)
 
     def fetch_branch(self, branch: str) -> None:
         """Fetch one branch into FETCH_HEAD from the canonical URL (resolved

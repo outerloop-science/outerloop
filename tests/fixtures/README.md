@@ -30,3 +30,14 @@ The other fixtures carry their originating kernel commit in their filenames.
 - `author_route_missing_model.json` and `author_route_missing_route.json`: synthetic
   derivatives of `author_route_legacy.json` with model or all route fields omitted,
   exercising pre-field writers through load/save and the new kernel wake entry point.
+
+`pre_contract_switches.json` contains a run record, brief, pending submission and
+leader row without verification, channels or provenance fields. Readers default
+to gated verification, enabled channels and measured provenance without backfill.
+
+`default_contract_head.json` captures serialized run, brief, pending and leader
+records plus rendered brief, ledger and board text from HEAD `9716372`, using
+the inputs in `pre_contract_switches.json`. Its pending field list preserves
+the strict HEAD reader shape: a newly serialized default submission must
+construct that shape without extra keys. Default output is compared byte for
+byte; explicit claims continue to carry provenance.

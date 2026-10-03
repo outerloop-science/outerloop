@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import re
-from dataclasses import asdict, replace
+from dataclasses import replace
 
 from outerloop.appauth import resolve_bot_auth
 from outerloop.cli import env_file_values
@@ -16,6 +16,7 @@ from outerloop.progress import (
     LEADER_FILE,
     PROGRESS_FILE,
     LedgerReadError,
+    ledger_record,
     parse_leader,
     render_markdown,
 )
@@ -49,7 +50,7 @@ def migrate_ledger(
     table = render_markdown(entries, target)
     patch = {
         LEADER_FILE: json.dumps(
-            {name: asdict(entry) for name, entry in sorted(entries.items())}, indent=2
+            {name: ledger_record(entry) for name, entry in sorted(entries.items())}, indent=2
         )
         + "\n",
         PROGRESS_FILE: table,

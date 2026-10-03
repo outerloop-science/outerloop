@@ -1,0 +1,51 @@
+{
+  "run": {
+    "run_id": "legacy",
+    "target": "owner/repo",
+    "task_title": "improve tsp",
+    "state": "parked"
+  },
+  "pending": {
+    "benchmark": "tsp",
+    "metric": "length",
+    "direction": "min",
+    "baseline": 10,
+    "candidate": 9,
+    "run_id": "legacy",
+    "run_seed": 0,
+    "ruler": "ruler",
+    "measurement_signature": "[]",
+    "measured_sha": "abc",
+    "pr_number": 1,
+    "published_head": "abc",
+    "timestamp": "2026-01-01"
+  },
+  "leader": {
+    "tsp": {
+      "benchmark": "tsp",
+      "metric": "length",
+      "direction": "min",
+      "baseline": 10,
+      "best": 9,
+      "best_run": "legacy",
+      "updated": "2026-01-01"
+    }
+  },
+  "brief": {
+    "task": {
+      "hypothesis": "h",
+      "benchmark": "tsp",
+      "expected_effect": "e",
+      "done_criteria": "d"
+    },
+    "contract_text": "contract",
+    "ruler": "ruler",
+    "lessons": "",
+    "recent_reports": [],
+    "budget": {
+      "gpu_hours_remaining": 1,
+      "runs_remaining_this_week": 1
+    },
+    "created": "2026-01-01"
+  }
+}

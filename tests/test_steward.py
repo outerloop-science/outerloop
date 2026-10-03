@@ -229,8 +229,10 @@ def steward_repo(tmp_path, monkeypatch):
 
     real_clone = Workspace.clone
 
-    def fake_clone(url, dest, auth=None, dry_run=False):
-        return real_clone(str(bare), dest, auth=None, dry_run=dry_run)
+    def fake_clone(url, dest, auth=None, dry_run=False, single_branch=""):
+        return real_clone(
+            bare.as_uri(), dest, auth=None, dry_run=dry_run, single_branch=single_branch
+        )
 
     monkeypatch.setattr(steward_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
@@ -774,3 +776,74 @@ def test_steward_auto_publish_does_not_arm(tmp_path, steward_repo, monkeypatch):
     )
     assert outcome.outcome == "stewarded"
     assert not github.armed
+
+
+@pytest.mark.parametrize("channel", ["branches", "siblings", "shared_reports"])
+def test_steward_startup_applies_channels(tmp_path, steward_repo, monkeypatch, channel):
+    from outerloop.github import Workspace
+
+    seed = tmp_path / "seed"
+    path = seed / ".outerloop.yaml"
+    path.write_text(CONTRACT + f"\nchannels: {{{channel}: false}}\n")
+    _git(seed, "add", ".")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "policy")
+    _git(seed, "push", str(steward_repo), "main")
+    hidden = {}
+    for branch in ("agents/agent-02", "research-log"):
+        _git(seed, "checkout", "-b", branch, "main")
+        (seed / "hidden").write_text(branch)
+        _git(seed, "add", ".")
+        _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hidden")
+        _git(seed, "push", str(steward_repo), branch)
+        hidden[branch] = _git(seed, "rev-parse", "HEAD").strip()
+
+    original = EnvEditingHarness.run
+
+    def inspect(self, brief_text, workspace, resume_session_id=None):
+        import json
+
+        ws = Workspace(workspace)
+        refs = ws.git("for-each-ref", "--format=%(refname)", "refs/remotes")
+        blocked = "agents/agent-02" if channel == "branches" else "research-log"
+        assert "origin/" + blocked not in refs
+        from outerloop.github import GitError
+
+        with pytest.raises(GitError):
+            ws.git("cat-file", "-e", hidden[blocked])
+        record = load_record(tmp_path / "state", "steward-tsp-1")
+        assert record.channels == {channel: False}
+        assert json.loads((workspace / ".outerloop/policy.json").read_text())["channels"] == {
+            channel: False
+        }
+        return original(self, brief_text, workspace, resume_session_id)
+
+    monkeypatch.setattr(EnvEditingHarness, "run", inspect)
+    outcome, _, _ = run_steward(tmp_path, edits={})
+    assert outcome.outcome == "no-change"
+
+
+def test_steward_reset_is_measured_under_self_report_policy(tmp_path, steward_repo):
+    import json
+
+    seed = tmp_path / "seed"
+    (seed / ".outerloop.yaml").write_text(
+        CONTRACT.replace("direction: min", "direction: min\n    verification: self_report")
+    )
+    _git(seed, "add", ".")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "policy")
+    _git(seed, "push", str(steward_repo), "main")
+    outcome, github, evaluator = run_steward(
+        tmp_path, edits={"src/pilot/instances.py": "POOL_SEED = 'per-run'\n"}
+    )
+    assert outcome.outcome == "stewarded"
+    assert evaluator.checks and evaluator.values == []
+    from outerloop.progress import parse_pending
+
+    pending = next(
+        parse_pending(v)
+        for k, v in github.ledger_files.items()
+        if k.startswith("results/submissions/")
+    )
+    assert pending and pending.kind == "RESET" and pending.provenance == "measured"
+    assert not github.armed
+    assert "self_reported" not in json.dumps(github.prs)

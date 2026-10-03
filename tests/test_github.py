@@ -807,7 +807,9 @@ def test_ledger_cas_recomputes_and_bounds_retries(provider, monkeypatch, conflic
     assert seen[0] == {} and seen[1] == {"other": concurrent}
     assert writes[1][0] == "head-1"
     assert writes[1][1][PROGRESS_FILE] == render_markdown({"other": concurrent}, "org/repo")
-    assert json.loads(writes[1][1][LEADER_FILE])["other"] == asdict(concurrent)
+    from outerloop.progress import parse_leader
+
+    assert parse_leader(writes[1][1][LEADER_FILE])["other"] == concurrent
 
 
 @pytest.mark.parametrize("head", ["existing", ""])

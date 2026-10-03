@@ -258,6 +258,10 @@ def cmd_message(root: Path, args: argparse.Namespace) -> str:
         return _show_chain(root, args.show)
     if args.to not in ("thread", "self") and not re.fullmatch(r"agent-\d{2,}", args.to):
         raise ToolError("invalid message destination")
+    if args.to not in ("thread", "self") and not _policy(root).get("channels", {}).get(
+        "messages", True
+    ):
+        raise ToolError("inter-agent messages disabled by channels.messages")
     if args.reply_to is not None and not any(m["seq"] == args.reply_to for m in _messages(root)):
         raise ToolError(f"unknown inbox message #{args.reply_to}")
     if (args.text is None) == (args.file is None):
@@ -334,6 +338,13 @@ def _show_chain(root: Path, number: int) -> str:
     return f"{fence}\n{body}\n{fence}"
 
 
+def _policy(root: Path) -> dict:
+    try:
+        return json.loads((root / DIR / "policy.json").read_text())
+    except FileNotFoundError:
+        return {}
+
+
 def cmd_submit(root: Path, args: argparse.Namespace) -> str:
     _check_end(root, "submit")
     report = ""
@@ -357,6 +368,19 @@ def cmd_submit(root: Path, args: argparse.Namespace) -> str:
                 "measured, and why this should merge"
             )
     staged = _load_staged(root)
+    claimed = getattr(args, "claimed_value", None)
+    baseline = getattr(args, "claimed_baseline", None)
+    trust = _policy(root).get("verification") == "self_report"
+    import math
+
+    if trust and (claimed is None or baseline is None):
+        raise ToolError("self_report requires --claimed-value and --claimed-baseline")
+    for key, value in (("claimed_value", claimed), ("claimed_baseline", baseline)):
+        if value is not None and not math.isfinite(value):
+            raise ToolError(f"{key} must be finite")
+        staged.pop(key, None)
+        if value is not None:
+            staged[key] = value
     staged["submit"] = True
     staged["report"] = report
     minutes = getattr(args, "minutes", None)
@@ -365,6 +389,11 @@ def cmd_submit(root: Path, args: argparse.Namespace) -> str:
             raise ToolError("--minutes must be a positive integer")
         staged["eval_minutes"] = min(minutes, MAX_EVAL_MINUTES)
     _save_staged(root, staged)
+    if trust:
+        return (
+            f"staged self-reported submit: {baseline} -> {claimed}; scope and improvement "
+            "floors apply, no gate evals or panel run. Use sleep to submit."
+        )
     declared = staged.get("eval_minutes")
     walltime = (
         f"each paired eval gets {declared} min of walltime (your declaration; "
@@ -394,6 +423,9 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     if staged["submit"]:
         # The optional report rides the submit.
         payload["report"] = str(staged.get("report") or "")
+        for key in ("claimed_value", "claimed_baseline"):
+            if key in staged:
+                payload[key] = staged[key]
     abi = _dir(root) / ABI
     if abi.exists():
         payload["messages"] = json.loads(abi.read_text()).get("messages", [])
@@ -402,7 +434,11 @@ def cmd_sleep(root: Path, _args: argparse.Namespace) -> str:
     n = len(staged["launches"])
     what = f"{n} launch(es)" if n else "a checkpoint (no launches)"
     if staged["submit"]:
-        what += " + a submit (seal, gate, panel)"
+        what += (
+            " + a self-reported submit (scope and floors)"
+            if _policy(root).get("verification") == "self_report"
+            else " + a submit (seal, gate, panel)"
+        )
     return (
         f"committed {what}. END YOUR TURN NOW to hibernate — you will be woken "
         "with the results. (If you keep working, the sleep still triggers when "
@@ -490,7 +526,11 @@ def cmd_status(root: Path, _args: argparse.Namespace) -> str:
             if la.get("why"):
                 lines.append(f"      why: {la['why']}")
         if staged["submit"]:
-            lines.append("  submit staged: `sleep` seals this tree for the gate + panel")
+            lines.append(
+                "  self-reported submit staged: scope and floors, no gate or panel"
+                if _policy(root).get("verification") == "self_report"
+                else "  submit staged: `sleep` seals this tree for the gate + panel"
+            )
             if staged.get("report"):
                 lines.append(f"  report: {len(staged['report'])} chars")
     if staged["findings"]:
@@ -559,6 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Seal and measure this tree; a credited verdict publishes it. The session ends here."
         ),
     )
+    su.add_argument("--claimed-value", type=float, help="self-reported candidate metric")
+    su.add_argument("--claimed-baseline", type=float, help="self-reported comparison baseline")
     su.add_argument(
         "--report",
         default="",
@@ -706,6 +748,8 @@ def cmd_reports(root: Path, args) -> str:
     """The research-report archive the kernel fetched for this run. With no
     names: one summary line per report, newest first. With names: those
     reports in full, in the order asked."""
+    if not _policy(root).get("channels", {}).get("shared_reports", True):
+        raise ToolError("shared reports disabled by channels.shared_reports")
     archive = root / "reports"
     if not archive.is_dir():
         return "no report archive in this run (a first attempt on the target, or fetch failed)"

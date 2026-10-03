@@ -34,6 +34,15 @@ class LeaderEntry:
     measurement_signature: str = ""
     reset_commit: str = ""
     ruler: str = ""
+    provenance: str = "measured"
+
+
+def ledger_record(entry: LeaderEntry | PendingSubmission) -> dict:
+    """Keep measured records readable by kernels predating provenance."""
+    payload = asdict(entry)
+    if entry.provenance == "measured":
+        payload.pop("provenance")
+    return payload
 
 
 class LedgerReadError(ValueError):
@@ -58,6 +67,8 @@ def parse_leader(content: str) -> dict[str, LeaderEntry]:
                         raise ValueError("invalid seed")
                 elif not isinstance(value, str):
                     raise ValueError("invalid text field")
+            if entry.provenance not in {"measured", "self_reported"}:
+                raise ValueError("invalid provenance")
             if entry.benchmark != name or entry.direction not in {"min", "max"}:
                 raise ValueError("invalid benchmark identity or direction")
             entries[name] = entry
@@ -104,6 +115,7 @@ class PendingSubmission:
     status: str = "PENDING"
     min_delta: float = 0.0
     min_delta_rel: float = 0.0
+    provenance: str = "measured"
 
     @property
     def path(self) -> str:
@@ -126,6 +138,8 @@ def parse_pending(content: str) -> PendingSubmission | None:
                     raise ValueError("invalid integer")
             elif not isinstance(value, str) or not value:
                 raise ValueError("missing identity")
+        if pending.provenance not in {"measured", "self_reported"}:
+            raise ValueError("invalid provenance")
         if pending.direction not in {"min", "max"} or pending.kind not in {"SOLVER", "RESET"}:
             raise ValueError("invalid direction or kind")
         for part in (pending.run_id, pending.published_head):
@@ -145,7 +159,7 @@ def parse_pending(content: str) -> PendingSubmission | None:
 
 def record_pending(pending: PendingSubmission) -> dict[str, str]:
     """Return the file patch for a validated submission; does not advance a leader."""
-    content = json.dumps(asdict(pending), indent=2, allow_nan=False) + "\n"
+    content = json.dumps(ledger_record(pending), indent=2, allow_nan=False) + "\n"
     parse_pending(content)
     return {pending.path: content}
 
@@ -173,6 +187,8 @@ def confirm(
     if not main_commit:
         raise ValueError("confirmation requires a merge commit")
     old = entries.get(pending.benchmark)
+    if old is not None and old.provenance != pending.provenance and pending.kind != "RESET":
+        return dict(entries)  # a trust claim cannot silently replace a measured series
     if old and old.reset_commit and is_ancestor(main_commit, old.reset_commit):
         return dict(entries)
     if old and old.reset_commit and not is_ancestor(old.reset_commit, main_commit):
@@ -238,6 +254,7 @@ def confirm(
         measurement_signature=pending.measurement_signature,
         reset_commit=reset_commit,
         ruler=pending.ruler,
+        provenance=pending.provenance,
     )
     return result
 
@@ -270,8 +287,12 @@ def render_markdown(
         "# Benchmark progress",
         "",
         f"Autonomous improvement record for `{target}`.",
-        "Confirmed results are measured by the orchestrator; "
-        "imported rows have provenance unknown.",
+        (
+            "Confirmed results are measured by the orchestrator unless labelled self-reported; "
+            if any(e.provenance == "self_reported" for e in entries.values())
+            else "Confirmed results are measured by the orchestrator; "
+        )
+        + "imported rows have provenance unknown.",
         "Published results are pending until the kernel observes their PR merge.",
         "",
         "| benchmark | metric | baseline | best | progress | last improved | by run | "
@@ -289,6 +310,8 @@ def render_markdown(
         )
         if e.main_commit and not e.measured_sha:
             provenance += " (imported; provenance unknown)"
+        if e.provenance == "self_reported":
+            provenance += " (self-reported baseline and best; self_reported)"
         lines.append(
             f"| {e.benchmark} | `{e.metric}` {arrow} | {fmt_metric(e.baseline, d)} | "
             f"{fmt_metric(e.best, d)} | {_delta(e)} | {e.updated} | `{e.best_run}` | {provenance} |"
@@ -312,6 +335,6 @@ def write_progress(
     leader_path.parent.mkdir(parents=True, exist_ok=True)
     # the ledger keeps FULL precision — it feeds comparisons, never eyes
     leader_path.write_text(
-        json.dumps({name: asdict(e) for name, e in sorted(entries.items())}, indent=2) + "\n"
+        json.dumps({name: ledger_record(e) for name, e in sorted(entries.items())}, indent=2) + "\n"
     )
     (workspace / PROGRESS_FILE).write_text(render_markdown(entries, target, digits))

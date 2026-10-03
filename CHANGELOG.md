@@ -6,6 +6,24 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Add benchmark `verification: self_report` for explicitly labelled author claims,
+  with required candidate and baseline values at submit, scope enforcement and
+  improvement floors, without evaluation or panel work. Self-reported PRs never
+  arm automatic merging. Add contract channel switches for sibling views,
+  inter-agent messages, shared reports and other agents' line branches. Defaults
+  retain gated verification and all sharing. Document the existing explicit
+  backend/model panel setting for fixed judges.
+- Upgrading: run records, briefs, board rows and submission/leader ledger rows
+  gain optional policy or provenance fields. Missing fields retain gate mode,
+  enabled channels and measured provenance. Default records and rendered text
+  retain their previous bytes; measured ledger rows omit provenance and remain
+  readable by older strict readers. Default startup adds no fetch. No backfill
+  is needed; legacy and HEAD-output fixtures cover compatibility.
+  Start fresh runs for channel isolation because earlier context and Git objects
+  cannot be removed reliably. Keep the updated kernel while self-reported claims
+  exist: older strict ledger readers cannot read explicit self-reported
+  provenance, and older kernels cannot enforce the new contract settings.
+
 - Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: An eval dispatched by the previous kernel and still in flight at upgrade is measured again once under the new cache key (no extra budget charge). To avoid the extra run, upgrade when no evals are in flight: `touch <root>/PAUSE` (stops wakes, so no new evals are dispatched), wait until no eval jobs remain in the queue, upgrade, then `rm <root>/PAUSE` and run `outerloop start`.
 
 - Park launch capacity refusals in capacity wait when an immediate resume is

@@ -59,11 +59,12 @@ class ClimbRow:
     gpu_hours: float
     hypothesis: str
     pr_url: str
+    verification: str = "gate"
     report: str = ""  # reports/<file>.md when the ledger has archived it
     note: str = ""  # the gate's own verdict sentence, when it recorded one
 
 
-_NUM = re.compile(r"^(Baseline|Candidate): ([-+0-9.e]+)", re.M)
+_NUM = re.compile(r"^(Baseline|Candidate)(?: \(self-reported\))?: ([-+0-9.e]+)", re.M)
 
 
 def _report_fields(text: str) -> tuple[float | None, float | None, str]:
@@ -215,6 +216,7 @@ def collect_rows(
                 agent=record.agent_id,
                 ended=ended.strftime("%Y-%m-%d %H:%M:%S"),
                 outcome=outcome,
+                verification=record.verification,
                 baseline=baseline,
                 candidate=candidate,
                 gpu_hours=round(float(stage.get("gpu_hours_used") or 0.0), 2),  # type: ignore[arg-type]
@@ -250,7 +252,10 @@ def merge_rows(existing_json: str | None, fresh: list[ClimbRow]) -> list[dict[st
             log.warning("unreadable board JSON; rebuilding from local records")
     for row in fresh:
         if row.run_id not in seen:
-            rows.append(asdict(row))
+            payload = asdict(row)
+            if row.verification == "gate":
+                payload.pop("verification")
+            rows.append(payload)
             seen.add(row.run_id)
     rows.sort(key=lambda r: str(r.get("ended", "")))
     # the board is a bounded VIEW, by rows and by bytes (the contents API
@@ -302,12 +307,17 @@ def render_md(
         # number (owner decision: per-run declared bases confused more than
         # they informed as a headline)
         start = (starts or {}).get(benchmark)
+        claim_label = (
+            " (includes self-reported values)"
+            if any(r.get("verification") == "self_report" for r in rows)
+            else ""
+        )
         start_chip = f" · baseline (start): **{_fmt(start)}**" if start is not None else ""
         lines += [
             "",
             f"## {benchmark}",
             "",
-            f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate: "
+            f"Attempts: **{len(rows)}** ({len(improved)} improved) · best candidate{claim_label}: "
             f"**{_fmt(best)}** ({direction}){start_chip} · GPU-hours: **{gpu:.1f}**",
         ]
         if (
@@ -339,7 +349,9 @@ def render_md(
             report = f"[report]({r['report']})" if r.get("report") else ""
             lines.append(
                 f"| {ended} | {r.get('agent', '')} | {hyp} | {outcome} "
-                f"| {_fmt(r.get('candidate'))} | {_fmt(r.get('gpu_hours'))} | {report} |"
+                f"| {_fmt(r.get('candidate'))}"
+                + (" (self-reported)" if r.get("verification") == "self_report" else "")
+                + f" | {_fmt(r.get('gpu_hours'))} | {report} |"
             )
     return "\n".join(lines) + "\n"
 
@@ -544,8 +556,15 @@ def render_html(
         "  const wins = rows.filter(r => won.has(r.outcome)).length;\n"
         "  const gpu = rows.reduce((a, r) => a + (r.gpu_hours || 0), 0);\n"
         "  const el = document.getElementById('charts');\n"
-        "  const h = document.createElement('h2'); h.textContent = b; el.append(h);\n"
-        "  const chips = document.createElement('div'); chips.className = 'chips';\n"
+        + (
+            "  const trust = rows.some(r => r.verification === 'self_report');\n"
+            "  const h = document.createElement('h2');\n"
+            "  h.textContent = b + (trust ? ' (includes self-reported values)' : ''); "
+            "el.append(h);\n"
+            if any(r.get("verification") == "self_report" for rows in boards.values() for r in rows)
+            else "  const h = document.createElement('h2'); h.textContent = b; el.append(h);\n"
+        )
+        + "  const chips = document.createElement('div'); chips.className = 'chips';\n"
         "  const chip = (label, value) => {\n"
         "    const c = document.createElement('span'); c.className = 'chip';\n"
         "    const strong = document.createElement('b'); strong.textContent = value;\n"
@@ -1112,6 +1131,8 @@ def collect_status(
         runs.append(
             {
                 "run_id": record.run_id,
+                **({"verification": record.verification} if record.verification != "gate" else {}),
+                **({"channels": record.channels} if record.channels else {}),
                 "agent": record.agent_id,
                 "author_backend": record.author_backend or "claude",
                 "author_model": record.author_model,
@@ -1121,7 +1142,8 @@ def collect_status(
                 "state": record.state,
                 "phase": "configuration-blocked" if blocked else stage.get("phase", ""),
                 # the agent's own headline: what it says it is working on
-                "direction": blocked or _phrase(hyp or note.replace("\n", " ")),
+                "direction": (blocked or _phrase(hyp or note.replace("\n", " ")))
+                + (" (self-reported)" if record.verification == "self_report" else ""),
                 "hypothesis": hyp,
                 "since": record.updated or record.created,
                 # a run that never launched HAS used zero — absent keys must

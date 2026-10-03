@@ -718,9 +718,11 @@ def _seed_target(tmp_path: Path, monkeypatch, contract: str) -> Path:
 
     real_clone = Workspace.clone
 
-    def fake_clone(url, dest, auth=None, dry_run=False):
+    def fake_clone(url, dest, auth=None, dry_run=False, single_branch=""):
         # Preserve kernel auth: ending snapshots refuse unauthenticated workspaces.
-        return real_clone(str(bare), dest, auth=auth, dry_run=dry_run)
+        return real_clone(
+            bare.as_uri(), dest, auth=auth, dry_run=dry_run, single_branch=single_branch
+        )
 
     monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(fake_clone))
     return bare
@@ -961,6 +963,17 @@ def test_improvement_produces_branch_commit_and_pr(tmp_path, target_repo) -> Non
         if k.startswith("results/submissions/")
     )
     assert pending["candidate"] == 13.1 and pending["baseline"] == 13.876
+    # A real default gate publication must still fit the older strict reader,
+    # which passed every JSON key directly to its PendingSubmission dataclass.
+    from dataclasses import make_dataclass
+
+    head_fixture = json.loads(
+        (Path(__file__).parent / "fixtures/default_contract_head.json").read_text()
+    )
+    HeadPending = make_dataclass("HeadPending", head_fixture["pending_fields"])
+    assert HeadPending(**pending).candidate == 13.1
+    stored = json.loads((tmp_path / "state/runs/tsp-1/state.json").read_text())
+    assert not {"verification", "channels", "claimed_value", "claimed_baseline"} & stored.keys()
     assert json.loads(github.ledger_files["results/leader.json"]) == {}
     pr = github.prs[0]
     assert "blob/research-log/BENCHMARKS.md" in pr["body"]
@@ -1379,7 +1392,7 @@ def test_clone_crash_ends_record_and_reports_to_issue(tmp_path, monkeypatch) -> 
     """A crash BEFORE the contained call (clone/contract/claim) must end the
     record and surface on the issue — not strand `running`."""
 
-    def exploding_clone(url, dest, auth=None, dry_run=False):
+    def exploding_clone(url, dest, auth=None, dry_run=False, single_branch=""):
         raise OSError(122, "Disk quota exceeded")
 
     monkeypatch.setattr(climb_mod.Workspace, "clone", staticmethod(exploding_clone))

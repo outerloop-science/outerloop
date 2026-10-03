@@ -142,6 +142,14 @@ class SessionWatcher:
             ]
         except Exception as exc:
             error = str(exc)[:200]
+        from outerloop.runstate import load_record
+
+        try:
+            channels = load_record(ctx.run_root, ctx.run_id).channels
+        except FileNotFoundError:
+            channels = {}
+        if not channels.get("siblings", True):
+            rows = [r for r in rows if r.get("run_id") == ctx.run_id]
         labels: dict[str, dict[str, Any]] = {}
         for rid in {str(r.get("run_id") or "") for r in rows} - {""}:
             labels.update(why_by_job(run_dir(ctx.run_root, rid)))
