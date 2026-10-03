@@ -6,6 +6,17 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- Upgrading: labels and comment markers are recognized only under the
+  `outerloop:` prefix. Rename any `autoresearch:*` labels on target repos
+  (`gh label edit autoresearch:review --name outerloop:review`), update
+  workflow `if:` conditions that match the old label, and change an open
+  research-log issue's `<!-- autoresearch:research-log -->` marker to
+  `<!-- outerloop:research-log -->`, or the kernel opens a new one.
+
+### Added
+
 - Add optional per-benchmark `regression` allowances with a free tolerance,
   exclusive hard cap, and optional measured climbed-gain requirement, in
   relative or absolute units. Suite rows and reports identify the applied rule.

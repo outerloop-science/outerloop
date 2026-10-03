@@ -89,8 +89,7 @@ That's the whole setup. Notes:
   `with:` — otherwise your fork's changes never run.
 - **Pin the version in production**: `reviewer_ref: v0.1.0` (or a commit SHA).
   The default `main` moves.
-- Silence it on one PR with the `outerloop:no-review` label. (A repo that already
-  uses the `autoresearch:*` labels keeps working — both prefixes are recognized.)
+- Silence it on one PR with the `outerloop:no-review` label.
 - Fork PRs are skipped by design: they must not reach your API key.
 - Nothing from the pull request is ever executed. The workflow checks out the
   reviewer, not your PR's code.
