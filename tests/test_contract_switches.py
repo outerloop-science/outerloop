@@ -764,3 +764,27 @@ def test_wake_reads_current_contract_before_fetch(tmp_path, monkeypatch, disable
     assert fetch_policies == [("gate", {disabled: False}, {disabled: False})]
     with pytest.raises(GitError):
         Workspace(wsroot).git("cat-file", "-e", hidden)
+
+
+def test_publish_signature_ignores_only_the_verification_mode():
+    from outerloop.attempt import _publish_signature
+
+    contract = load_contract(CONTRACT, "owner/repo")
+    gate = contract.benchmarks[0]
+    trust = gate.model_copy(update={"verification": "self_report"})
+    longer = gate.model_copy(update={"eval_minutes": (gate.eval_minutes or 10) + 5})
+    assert _publish_signature(gate) == _publish_signature(trust)
+    assert _publish_signature(gate) != _publish_signature(longer)
+
+
+def test_self_reported_note_is_recognized_on_retry():
+    from outerloop.attempt import REPLY_MARKER, _measured_note_on_thread
+
+    sha = "a" * 40
+
+    class Thread:
+        def list_comments(self, target, number):
+            body = f"{REPLY_MARKER}\nSelf-reported (sealed `{sha[:12]}`; no evaluation or panel)"
+            return [{"body": body}]
+
+    assert _measured_note_on_thread(Thread(), "owner/repo", 1, sha)

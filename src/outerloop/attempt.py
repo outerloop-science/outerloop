@@ -3859,6 +3859,13 @@ def _measured_note(
     )
 
 
+def _publish_signature(bench: Any) -> tuple:
+    """A benchmark's measurement signature for the publish-time check. A run
+    keeps the verification mode it started with, so a mode change alone is
+    not a measurement change."""
+    return bench.model_copy(update={"verification": "gate"}).measurement_signature()
+
+
 def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha: str) -> bool:
     """Whether this sealed tree's measured note is already on the PR thread —
     a retry after the record write that follows the comment failed."""
@@ -3867,7 +3874,8 @@ def _measured_note_on_thread(github: GitHubClient, target: str, number: int, sha
     except Exception as exc:
         log.warning("measured-note lookup failed for %s#%s: %s", target, number, exc)
         return False  # posting twice beats never posting
-    tag = f"(sealed `{sha[:12]}`)"
+    # self-reported notes extend the parenthesis ("; no evaluation or panel")
+    tag = f"(sealed `{sha[:12]}`"
     return any(
         str(c.get("body", "")).lstrip().startswith(REPLY_MARKER) and tag in str(c.get("body", ""))
         for c in comments
@@ -4020,10 +4028,11 @@ def publish(
         pinned_bench = _benchmark(pinned, config.benchmark)
         current = load_contract(contract_at(ws, f"origin/{base_branch}"), config.target)
         current_bench = next((b for b in current.benchmarks if b.name == bench.name), None)
+
         if (
             current_bench is None
-            or current_bench.measurement_signature() != pinned_bench.measurement_signature()
-            or pinned_bench.measurement_signature() != bench.measurement_signature()
+            or _publish_signature(current_bench) != _publish_signature(pinned_bench)
+            or _publish_signature(pinned_bench) != _publish_signature(bench)
         ):
             return refuse("Publish refused: the base contract's measurement signature changed.")
     except Exception as exc:
