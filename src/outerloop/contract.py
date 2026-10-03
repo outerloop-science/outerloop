@@ -88,6 +88,42 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Regression(_StrictModel):
+    """Sibling regression allowance, in one unit family per block.
+
+    free_rel: fraction of the sibling's absolute baseline always allowed;
+    defaults to its min_delta_rel (or zero). max_rel: optional exclusive
+    hard cap. requires_gain_rel: climbed benchmark's minimum relative gain
+    to unlock the interval above free_rel; requires max_rel. The absolute
+    twins free/max/requires_gain use sibling/climbed metric units respectively.
+    Without a cap, free is the entire allowance. All values must be finite
+    and nonnegative; fractions may exceed one for unbounded metrics.
+    """
+
+    free_rel: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_rel: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    requires_gain_rel: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    free: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    requires_gain: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _bounds(self) -> Regression:
+        relative = any(v is not None for v in (self.free_rel, self.max_rel, self.requires_gain_rel))
+        absolute = any(v is not None for v in (self.free, self.max, self.requires_gain))
+        if relative and absolute:
+            raise ValueError("regression must use either relative or absolute units, not both")
+        for free, cap, gain in (
+            (self.free_rel, self.max_rel, self.requires_gain_rel),
+            (self.free, self.max, self.requires_gain),
+        ):
+            if gain is not None and cap is None:
+                raise ValueError("regression requires_gain requires max in the same units")
+            if free is not None and cap is not None and free > cap:
+                raise ValueError("regression free must be <= max")
+        return self
+
+
 class Benchmark(_StrictModel):
     # Slug shape only: the name reaches branch names, ledger keys, and log
     # labels — contract text must not shape refs or paths beyond a slug.
@@ -172,6 +208,8 @@ class Benchmark(_StrictModel):
         so a future field joins the signature by default and the base-sync
         skip fails toward re-measuring."""
         data = self.model_dump()
+        if self.regression is None:
+            data.pop("regression")
         # Preserve existing gate ledger signatures across the schema addition.
         if self.verification == "gate":
             data.pop("verification")
@@ -212,6 +250,23 @@ class Benchmark(_StrictModel):
                 "min_delta_rel (> 0) from a seed-variance calibration"
             )
         return self
+
+    @model_validator(mode="after")
+    def _regression_defaults(self) -> Benchmark:
+        r = self.regression
+        if r is not None and r.free is None and r.free_rel is None:
+            absolute = r.max is not None or r.requires_gain is not None
+            relative = r.max_rel is not None or r.requires_gain_rel is not None
+            if relative or (not absolute and self.min_delta_rel is not None):
+                defaults = {"free_rel": self.min_delta_rel or 0.0}
+            else:
+                defaults = {"free": self.min_delta or 0.0}
+            self.regression = Regression.model_validate(r.model_dump() | defaults)
+        return self
+
+    # Optional sibling-only policy; never changes this benchmark's win floor.
+    # Omission preserves the legacy gate and measurement signature.
+    regression: Regression | None = None
 
     # Cross-seed noise floor. A comparison against the RECORDED best was
     # measured under a different seed, so a delta inside the floor is noise,

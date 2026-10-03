@@ -6,6 +6,24 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- A run whose benchmark is no longer in its contract (renamed or removed)
+  stops with one clear message naming the benchmarks the contract has,
+  instead of continuing on default settings (no GPU budget, default eval
+  walltime, research lines off). A contract that fails to load still leaves
+  parked runs parked until it is fixed.
+
+### Added
+
+- Add optional per-benchmark `regression` allowances with a free tolerance,
+  exclusive hard cap, and optional measured climbed-gain requirement, in
+  relative or absolute units. Suite rows and reports identify the applied rule.
+  Upgrading: no action for existing contracts; their gate behavior and measurement
+  signatures are unchanged. Legacy suite rows without `rule` default to
+  `legacy-floor`; the new row field is additive. Contracts using the new block
+  require this kernel version and must remove it before rolling back.
+
 ### Upgrading
 
 Operator actions (everything else needs no action; details in each entry):
@@ -329,8 +347,6 @@ Operator actions (everything else needs no action; details in each entry):
 - Read-only `outerloop limits` reports operator ceilings and fleet-owned running/pending GPU usage.
 
 ### Changed
-
-- A run whose benchmark is missing from its contract now stops with a clear message instead of continuing on default settings.
 
 - Upgrading: legacy Codex archive-only markers and Hermes runtimes without interpreter digests are reinstalled on upgrade; legacy Hermes runtimes remain launchable. Existing retry records remain readable, and corrupt records are treated as empty. Run state and in-flight PRs are unchanged; rollback leaves the additional digest files unused.
 
