@@ -598,3 +598,56 @@ def test_intake_pending_lands_only_on_its_own_job(tmp_path):
     record = RunRecord("run", TARGET, "work", "running", created=1000, run_job_id="100")
     assert tick._pending_landed(markers[0][1], [record], TARGET)
     assert not tick._pending_landed(markers[1][1], [record], TARGET)
+
+
+def test_v021_job_layout_and_pending_retry(tmp_path, rc1_record, monkeypatch):
+    import shutil
+
+    from outerloop.climbboard import queue_rows
+    from outerloop.operator_limits import usage
+
+    directory, source = rc1_record()
+    queue = json.loads((source / "queue.json").read_text())
+    backend = compute()
+    backend.gpu_jobs.return_value = [(row["name"], row["gpus"]) for row in queue]
+    before = (directory / "state.json").read_bytes()
+    for _ in range(2):
+        assert usage(tmp_path, backend) == {TARGET: 3}
+        assert {row["run_id"] for row in queue_rows(tmp_path, TARGET, queue)} == {"one"}
+        assert (directory / "state.json").read_bytes() == before
+    shutil.copytree(source / "pending", tmp_path / "pending")
+    pending_before = {p.name: p.read_bytes() for p in (tmp_path / "pending").iterdir()}
+    service = tick.ServiceSpec("", "", tmp_path, "", tmp_path, target=TARGET)
+    contract = load_contract(CONTRACT, TARGET)
+    limits(tmp_path, "[defaults]\nmax_active_attempts=1\n")
+    pick = Mock(return_value=None)
+    monkeypatch.setattr("outerloop.intake.pick_issue", pick)
+    for now in (1000000, 1000001):
+        tick.service_intake(tmp_path, Mock(), backend, service, now, contract=contract, records=[])
+        pick.assert_not_called()
+    assert {p.name: p.read_bytes() for p in (tmp_path / "pending").iterdir()} == pending_before
+    backend.status.return_value = "COMPLETED"
+    # Terminal legacy markers no longer reserve capacity; interruption during
+    # the next marker's atomic publication leaves both old markers intact.
+    original = tick.os.replace
+
+    def fail_replace(source, destination):
+        if destination.name == "owner__repo@intake-9.json":
+            raise KeyboardInterrupt
+        return original(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tick.os, "replace", fail_replace)
+        with pytest.raises(KeyboardInterrupt):
+            tick.write_pending(tmp_path, TARGET, "bench", "109", 1000002, agent="intake-9")
+    assert {p.name: p.read_bytes() for p in (tmp_path / "pending").glob("*.json")} == pending_before
+    for now in (1000003, 1000004):
+        tick.service_intake(tmp_path, Mock(), backend, service, now, contract=contract, records=[])
+    assert pick.call_count == 2
+    for _ in range(2):
+        tick.write_pending(tmp_path, TARGET, "bench", "109", 1000002, agent="intake-9")
+    assert len(tick.list_pendings(tmp_path, TARGET)) == 3
+    backend.status.return_value = "PENDING"
+    tick.service_intake(tmp_path, Mock(), backend, service, 1000005, contract=contract, records=[])
+    assert pick.call_count == 2
+    backend.submit.assert_not_called()

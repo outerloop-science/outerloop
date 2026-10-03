@@ -454,3 +454,81 @@ def test_baseline_cache_missing_resource_fields_is_a_miss(tmp_path, missing):
         del data[key]
     path.write_text(json.dumps(data))
     assert read_baseline_cache(tmp_path, "main", BASE) is None
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_baseline_cache_miss_retry_reuse(tmp_path, monkeypatch, interrupt):
+    import json
+    import shutil
+    from unittest.mock import Mock
+
+    from outerloop.measure import DispatchedMeasurer, read_baseline_cache
+
+    source = Path(__file__).parent / "fixtures/rc1_v021/baselines"
+    cache = tmp_path / "baselines"
+    shutil.copytree(source, cache)
+    path = cache / f"main@{BASE}.json"
+    old = path.read_bytes()
+    assert "gpu_type" not in json.loads(old)
+    assert (
+        read_baseline_cache(
+            cache, "main", BASE, image="/img.sif", command="run main", metric="score"
+        )
+        is None
+    )
+    backend = Mock(has_lanes=False)
+    backend.job_id_for_name.return_value = ""
+    backend.status.return_value = "COMPLETED"
+    m = DispatchedMeasurer(
+        backend, tmp_path / "run", tmp_path / "repo", "/img.sif", "", "", 1, baseline_cache=cache
+    )
+    measured = []
+
+    def submit(spec):
+        # Synchronous compute: the real dispatched reader owns persistent results.
+        directory = Path(spec.script).parent
+        measured.append(directory.name)
+        (directory / "exit-code").write_text("0\n")
+        (directory / "stdout").write_text(
+            json.dumps({"metric": "score", "value": 0.5 if "baseline" in directory.name else 0.6})
+        )
+        return str(len(measured))
+
+    backend.submit.side_effect = submit
+    contract = load_contract(CACHED_CONTRACT, "x/y")
+
+    def decide():
+        return measure_and_decide(
+            contract,
+            _benchmark(contract, "main"),
+            base_sha=BASE,
+            candidate_sha=CAND,
+            seed=7,
+            suite_seed=0,
+            measured_paths=("src/model.py",),
+            measurer=m,
+            min_relative_improvement=0.005,
+        )
+
+    if interrupt:
+        original = Path.replace
+
+        def fail(p, target):
+            if target == path:
+                raise KeyboardInterrupt
+            return original(p, target)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "replace", fail)
+            with pytest.raises(KeyboardInterrupt):
+                decide()
+        assert path.read_bytes() == old
+        assert len(measured) == 2
+    first = decide()
+    assert isinstance(first, MeasureOK) and first.baseline == 0.5
+    assert len(measured) == 2  # old 0.1 never accepted; retry reads completed new slots
+    saved = path.read_bytes()
+    second = decide()
+    assert isinstance(second, MeasureOK) and second.baseline == 0.5
+    assert second.baseline_note
+    assert len(measured) == 2 and path.read_bytes() == saved
