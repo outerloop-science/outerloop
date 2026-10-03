@@ -100,6 +100,11 @@ def test_every_launch_has_hook_guard(
     harness.run("fixture", ws, resume)
     command = seen["command"]
     assert "--dangerously-bypass-hook-trust" not in command
+    # sub-agents always off, after the operator's own args (cannot be re-enabled)
+    i = command.index("features.multi_agent=false")
+    assert command.index("features.hooks=true") < i
+    # the provider-side web search is dropped exactly for endpoint sessions
+    assert ('web_search="disabled"' in command) is endpoint
     assert seen["env"]["CODEX_HOME"] == str(config.parent)
     if contained:
         source = Path(harness_mod.__file__).with_name("codex_requirements.toml").resolve()
@@ -258,3 +263,13 @@ def test_real_project_hook_mutation_and_config_discovery(
     assert unguarded.session_id
     assert '"type":"turn.completed"' in Path(unguarded.transcript_path).read_text()
     assert marker.exists(), "mutation must execute the planted hook; absence alone proves nothing"
+
+
+@pytest.mark.parametrize("endpoint", [False, True])
+@pytest.mark.parametrize("setting", ["", "auto", "off", "bogus"])
+def test_codex_web_search_setting(endpoint: bool, setting: str) -> None:
+    from outerloop.harness import codex_web_search
+
+    env = {"OUTERLOOP_CODEX_WEB_SEARCH": setting} if setting else {}
+    expected = {"": not endpoint, "auto": not endpoint, "off": False, "bogus": False}[setting]
+    assert codex_web_search(endpoint, env) is expected
