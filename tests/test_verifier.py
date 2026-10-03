@@ -78,7 +78,7 @@ def test_population_is_the_reviewers_inverse() -> None:
 
 
 def test_opt_out_and_empty_diff_still_skip() -> None:
-    assert verify_skip_reason(make_pr(labels=("autoresearch:no-review",)), BOT) is not None
+    assert verify_skip_reason(make_pr(labels=("outerloop:no-review",)), BOT) is not None
     assert verify_skip_reason(make_pr(diff="  \n"), BOT) is not None
 
 
