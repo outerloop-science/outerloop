@@ -280,29 +280,18 @@ def test_benchmark_name_must_be_a_slug() -> None:
         load_contract(bad, "org/pilot")
 
 
-def test_climb_job_minutes_is_a_transitional_alias_for_attempt_job_minutes() -> None:
+def test_climb_job_minutes_is_rejected_as_an_unknown_field() -> None:
     from outerloop.contract import load_contract
 
-    base = """
+    contract = """
 benchmarks:
   - {name: reach, command: c, metric: m, direction: max}
-budgets: {gpu_hours_per_run: 1, runs_per_week: 3, %s: 180}
+budgets: {gpu_hours_per_run: 1, runs_per_week: 3, climb_job_minutes: 180}
 scope: {allowed: [src/]}
 roadmap: docs/roadmap.md
 """
-    # the new name and the legacy alias both populate the same field
-    assert load_contract(base % "attempt_job_minutes", "o/r").budgets.attempt_job_minutes == 180
-    assert load_contract(base % "climb_job_minutes", "o/r").budgets.attempt_job_minutes == 180
-    # a mid-migration contract with BOTH keys does not fail — the new name
-    # wins (terra #158 r1: the old alias must not read as an extra field)
-    both = """
-benchmarks:
-  - {name: reach, command: c, metric: m, direction: max}
-budgets: {gpu_hours_per_run: 1, runs_per_week: 3, attempt_job_minutes: 120, climb_job_minutes: 180}
-scope: {allowed: [src/]}
-roadmap: docs/roadmap.md
-"""
-    assert load_contract(both, "o/r").budgets.attempt_job_minutes == 120
+    with pytest.raises(ValueError, match="climb_job_minutes"):
+        load_contract(contract, "o/r")
 
 
 def test_merge_mode_defaults_manual_and_validates() -> None:

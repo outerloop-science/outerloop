@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- Upgrading: the contract budget key `climb_job_minutes` is no longer read; a
+  contract that still uses it fails validation. Rename it to
+  `attempt_job_minutes` before upgrading.
+
+### Added
+
 - Add optional per-benchmark `regression` allowances with a free tolerance,
   exclusive hard cap, and optional measured climbed-gain requirement, in
   relative or absolute units. Suite rows and reports identify the applied rule.
