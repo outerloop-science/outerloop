@@ -13,9 +13,10 @@ Versions follow [SemVer](https://semver.org).
   `OUTERLOOP_EVAL_MEM_GB_PER_GPU` (defaults 8 and 64) set the per-GPU core and
   memory floor for GPU evals and author launches, for nodes with fewer cores or
   less memory per GPU. Upgrading: no action; unset keeps the defaults.
-- Apply current contract verification and channel settings before wake message
-  delivery or workspace fetches. Allow measured results to replace an earlier
-  self-reported leader without inheriting its claimed baseline.
+- Apply the current contract's channel settings before wake message delivery or
+  workspace fetches; a run keeps the verification mode it started with, so a
+  contract change applies to runs that start after it. Allow measured results to
+  replace an earlier self-reported leader without inheriting its claimed baseline.
 
 - Bump the pinned Codex CLI from 0.130.0 to 0.160.0 and update its Linux
   archive digest. All contained Codex roles bind a kernel-owned, read-only
