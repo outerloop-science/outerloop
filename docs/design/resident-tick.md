@@ -1,8 +1,9 @@
 # The resident tick
 
-*Design note, 2026-09-02. Status: built as the opt-in mode
-(`OUTERLOOP_RESIDENT=1`, `scripts/tick_resident.sh`); the chain restarts of
-2026-09-02 are the evidence.*
+*Design note, 2026-09-02. Status: built, and the default for Slurm
+deployments: `outerloop start` submits a 360-minute resident job
+(`scripts/tick_resident.sh`). Two other tick hosts exist: the foreground local
+loop, and the login-host loop described under [Tick hosts](#tick-hosts).*
 
 ## The problem
 
@@ -10,13 +11,12 @@ The tick chain schedules **one Slurm job per cadence**: each tick maintains two
 queued successors (`--dependency=singleton`, `--begin` on the cadence grid) and
 exits.
 That is 48 scheduling events a day, each one an opportunity for the scheduler
-to do something we cannot control. On Torch, 2026-09-02, it did:
+to do something we cannot control. On one site, 2026-09-02, it did:
 
-- Under `cpu_short` congestion the site **moved eligible pending jobs into the
-  lower-tier catch-all partition `all`**, where they starved for hours. Our
-  jobs may request only `cpu_short`; `all` and `cpu_prem` are rejected at
-  submit, and `scontrol update Partition` is refused. We cannot route around
-  the move.
+- Under congestion the site **moved eligible pending jobs into a lower-tier
+  catch-all partition**, where they starved for hours. Our jobs could not
+  request that partition or move themselves back (`scontrol update Partition`
+  is refused), so we could not route around the move.
 - A moved successor never starts and never ends, so its twin waits on
   `singleton` forever: **the chain stopped for five hours** until a human
   cancelled the moved job.
@@ -36,13 +36,13 @@ job every thirty minutes.
 
 **One long-lived tick job that loops** — deploy, tick, sleep to the next slot —
 so the chain needs a handful of scheduling events per *day*, not one per
-cadence. `cpu_short` accepts at most six hours (`sbatch --test-only`: 06:00:00
-accepted, 06:01:00 rejected — the partition's QoS), so a resident job lives
-six hours and hands over four times a day: twelve times fewer scheduling
-events than the 48 per-cadence jobs.
+cadence. The partition we used accepts at most six hours, so a resident job
+lives six hours and hands over four times a day: twelve times fewer
+scheduling events than the 48 per-cadence jobs. `OUTERLOOP_RESIDENT_MINUTES`
+sets the walltime for partitions with a different limit.
 
 ```
-resident job (cpu_short, --time=06:00:00 passed at start, singleton)
+resident job (--time=<resident minutes> passed at start, singleton)
   submit ONE successor: --dependency=afterany:<self>,singleton   # continuity
   loop until 20 minutes before walltime:
     if the pause sentinel is set: cancel the successor, exit     # no resubmit
@@ -77,7 +77,7 @@ resident job (cpu_short, --time=06:00:00 passed at start, singleton)
 - **Logs.** The loop reopens `logs/tick-YYYYMMDD.log` per iteration, so the
   daily files keep their shape and the watchdog keeps its heartbeat.
 
-Starting it is `autoresearch start` (`src/autoresearch/cli.py`): it fills in the
+Starting it is `outerloop start` (`src/outerloop/cli.py`): it fills in the
 walltime, job name, placement, and exports from flags, the environment, or
 `~/.config/outerloop/.env`, and refuses to submit beside a live resident.
 
@@ -85,34 +85,23 @@ walltime, job name, placement, and exports from flags, the environment, or
 
 If the resident job itself is pending (first start, or a handover during
 congestion) the chain is down until it starts — the same exposure as today,
-four times a day instead of 48. `cpu_short` has `PreemptMode=OFF`, so a running
-resident job is not preempted. A dead node kills the job; the successor
-covers it.
+four times a day instead of 48. Use a partition without preemption for the
+resident job; a dead node kills the job and the successor covers it.
 
-## Rollout
+## Tick hosts
 
-1. Opt-in mode in `scripts/tick_chain.sbatch`: `OUTERLOOP_RESIDENT=1` in
-   the chain's environment selects the loop; unset keeps the per-cadence
-   chain. The walltime is fixed by Slurm before the script runs, so the
-   resident chain is STARTED with an explicit walltime and its own job name:
+`outerloop start` picks where the loop runs:
 
-   ```
-   sbatch --time=360 --job-name=outerloop-resident --dependency=singleton \
-     --account=… --partition=cpu_short \
-     --export=ALL,OUTERLOOP_RESIDENT=1,OUTERLOOP_HOME=…,OUTERLOOP_ROOT=…,\
-   OUTERLOOP_ACCOUNT=…,OUTERLOOP_PARTITION=cpu_short,OUTERLOOP_PAT_FILE=… \
-     scripts/tick_chain.sbatch
-   ```
+- **Resident job** (the default when `sbatch` is on PATH): the design above.
+- **Login host** (`OUTERLOOP_TICK_HOST=login`): the same loop in the
+  foreground on a machine that can submit to Slurm, for sites where a
+  long-lived CPU job is unavailable or slow to start. Experiments and evals
+  still go to Slurm; only the tick stays on the host. It refuses to start
+  beside a live resident job.
+- **Local** (`OUTERLOOP_COMPUTE=local`, or no `sbatch`): the foreground loop
+  with local compute.
 
-   The two modes have different job names, so the switch needs no cancel:
-   the per-cadence chain stops topping up as soon as a resident job exists
-   and drains within a cadence (the resident also cancels its pending
-   successors on start; a still-running one finishes its tick, and the
-   tick's coalescing guard makes an overlap a no-op). Switching back: set the
-   pause sentinel (the resident cancels its successor and exits), clear it,
-   start a per-cadence chain.
-2. Watch a day of handovers in the tick log (four, at six-hour walltime).
-3. Make resident the default; keep the per-cadence mode as the LocalCompute /
-   dev path.
+The per-cadence chain is still in `scripts/tick_chain.sbatch` with
+`OUTERLOOP_RESIDENT` unset, and drains itself once a resident job exists.
 
 Related: `docs/design/architecture.md` (Scheduling), #234, #235/#237.
