@@ -68,6 +68,10 @@ when the PR opens; the main leader still advances only after an observed merge.
 A self-reported solver claim cannot replace an existing measured leader series
 without a ruler reset. The author gets no permission to edit the contract,
 roadmap, `.github/`, steward files or any other path outside solver scope.
+
+A run keeps the verification mode it started with; a contract change applies
+to runs that start after it. Channel switches take effect at a running attempt's
+next wake.
 Self-reported PRs never arm automatic merging, including under `merge: auto`:
 they have no clean panel blessing. With `merge: manual`, nothing merges
 without the existing human process.

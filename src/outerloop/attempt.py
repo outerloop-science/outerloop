@@ -2863,13 +2863,15 @@ def resume_run(
                 run_root, record, ScopeHistoryError(policy_branch), now, secrets, ws.auth
             )
         raise
-    current_bench = _benchmark(current_contract, record.benchmark)
+    # Channels follow the current contract at once (tightening isolation must
+    # not wait for the next run); verification stays what the run started with,
+    # so a parked gate candidate is never re-labelled mid-flight.
     channels = current_contract.channels.model_dump(exclude_defaults=True)
-    if record.verification != current_bench.verification or any(
+    if any(
         record.channels.get(name, True) != enabled
         for name, enabled in current_contract.channels.model_dump().items()
     ):
-        record = dc_replace(record, verification=current_bench.verification, channels=channels)
+        record = dc_replace(record, channels=channels)
         save_record(run_root, record, now)
     ws.configure_channels(channels, record.agent_id)
     # Re-establish the merge-artifact exclude on the wake too: the workspace
@@ -2935,19 +2937,13 @@ def resume_run(
     contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
-    if (
-        contract.channels != current_contract.channels
-        or bench.verification != current_bench.verification
-    ):
-        # Keep the sealed scope/evaluation rules, applying only current switches.
-        # Leave default contract bytes untouched.
+    if contract.channels != current_contract.channels:
+        # Keep the sealed scope, evaluation and verification rules, applying only
+        # the current channels. Leave default contract bytes untouched.
         import yaml
 
         data = yaml.safe_load(contract_text)
         data["channels"] = current_contract.channels.model_dump(exclude_defaults=True)
-        for item in data["benchmarks"]:
-            if item["name"] == record.benchmark:
-                item["verification"] = current_bench.verification
         contract_text = yaml.safe_dump(data)
         contract = load_contract(contract_text, record.target)
         bench = _benchmark(contract, record.benchmark)

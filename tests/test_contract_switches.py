@@ -745,7 +745,8 @@ def test_wake_reads_current_contract_before_fetch(tmp_path, monkeypatch, disable
     monkeypatch.setattr(Workspace, "fetch_origin", fetch)
 
     def stop(**kwargs):
-        assert kwargs["bench"].verification == "self_report"
+        # verification stays what the run started with; channels follow at once
+        assert kwargs["bench"].verification == "gate"
         assert kwargs["contract"].channels.model_dump()[disabled] is False
         raise StopWake
 
@@ -760,6 +761,6 @@ def test_wake_reads_current_contract_before_fetch(tmp_path, monkeypatch, disable
             now=2_000_000,
         )
     # Fetch failures are best-effort, so check policy and effects outside its callback.
-    assert fetch_policies == [("self_report", {disabled: False}, {disabled: False})]
+    assert fetch_policies == [("gate", {disabled: False}, {disabled: False})]
     with pytest.raises(GitError):
         Workspace(wsroot).git("cat-file", "-e", hidden)
