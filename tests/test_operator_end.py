@@ -289,3 +289,62 @@ def test_fresh_climb_without_a_lease_finishes_its_leg(tmp_path, run, monkeypatch
     report = sweep(tmp_path, compute, RecordingDispatcher(), 10, grace_s=1)
     assert not report.review_ended and "r1" not in report.running_ended
     assert load_record(tmp_path, "r1").state == RUNNING
+
+
+@pytest.mark.parametrize("kind", ["open", "merged", "ended"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_operator_end_retry(tmp_path, rc1_record, monkeypatch, kind, interrupt):
+    import outerloop.attempt as attempt
+
+    directory, source = rc1_record(kind)
+    record = load_record(tmp_path, "one")
+    before = (directory / "state.json").read_bytes()
+    for _ in range(2):
+        assert end_on_request(tmp_path, record, None, 1000001) == ""
+        assert (directory / "state.json").read_bytes() == before
+    (directory / END_REQUEST_NAME).write_bytes((source / END_REQUEST_NAME).read_bytes())
+    if kind == "ended":
+        for _ in range(2):
+            assert end_on_request(tmp_path, record, None, 1000002) == ""
+            assert (directory / "state.json").read_bytes() == before
+        return
+    if interrupt:
+        with monkeypatch.context() as patch:
+            patch.setattr(attempt, "save_record", Mock(side_effect=KeyboardInterrupt))
+            with pytest.raises(KeyboardInterrupt):
+                end_on_request(tmp_path, record, None, 1000002)
+        assert (directory / "report.md").exists()  # died mid-end, before terminal commit
+        assert (directory / "state.json").read_bytes() == before
+    assert end_on_request(tmp_path, record, None, 1000003) == "operator"
+    final = load_record(tmp_path, "one")
+    assert (final.state, final.ending, final.ending_note) == (ENDED, "operator", "operator stop")
+    assert final.pr_url == record.pr_url
+    saved = (directory / "state.json").read_bytes()
+    report = (directory / "report.md").read_bytes()
+    assert end_on_request(tmp_path, record, None, 1000004) == ""
+    save_record(tmp_path, record, 1000005)  # stale writer cannot reopen it
+    assert (directory / "state.json").read_bytes() == saved
+    assert (directory / "report.md").read_bytes() == report
+
+
+@pytest.mark.parametrize("kind", ["open", "merged", "ended"])
+def test_v021_pr_lifecycle_without_operator_request(tmp_path, rc1_record, monkeypatch, kind):
+    from outerloop.attempt import close_if_done
+
+    directory, source = rc1_record(kind)
+    states = json.loads((source / "pr-states.json").read_text())
+    github = Mock()
+    github.get_pull_request.return_value = states.get(kind, states["merged"])
+    monkeypatch.setattr("outerloop.attempt.observe_target", lambda *a: set())
+    record = load_record(tmp_path, "one")
+    before = (directory / "state.json").read_bytes()
+    expected = "merged" if kind == "merged" else ""
+    assert close_if_done(tmp_path, record, github, 1000002) == expected
+    final = load_record(tmp_path, "one")
+    if kind == "merged":
+        assert final.state == ENDED and final.ending == "merged"
+    else:
+        assert (directory / "state.json").read_bytes() == before
+    saved = (directory / "state.json").read_bytes()
+    assert close_if_done(tmp_path, final, github, 1000003) == ""
+    assert (directory / "state.json").read_bytes() == saved

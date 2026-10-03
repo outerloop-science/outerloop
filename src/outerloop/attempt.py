@@ -1570,6 +1570,16 @@ def _wake_author_sleep(
                 drop_snapshot(ws, Snapshot(commit="", tree="", ref=ref))
         return outcome
 
+    # Old jobless checkpoints can predate capacity_wait and have no native
+    # session. Their saved workspace/inbox is enough to start a fresh author.
+    sessionless_checkpoint = (
+        record.stage.get("phase") == "author-sleep"
+        and not record.resume_session_id
+        and not record.stage.get("afterany")
+        and not record.stage.get("syscall_launches")
+        and not stage_launch_job_ids(record)
+        and not record.experiment_job_id
+    )
     # A capacity park starts fresh before the first session or without resume support.
     # Other wakes NEED the author harness and saved session. Fail as a
     # named ending, not a crash: the run cannot proceed and re-waking will not
@@ -1582,8 +1592,13 @@ def _wake_author_sleep(
             not record.resume_session_id
             and not record.author_rebind_id
             and not record.stage.get("capacity_wait")
+            and not sessionless_checkpoint
         )
-        or (not getattr(harness, "supports_resume", True) and not record.stage.get("capacity_wait"))
+        or (
+            not getattr(harness, "supports_resume", True)
+            and not record.stage.get("capacity_wait")
+            and not sessionless_checkpoint
+        )
     ):
         return _end(
             AttemptResult(
