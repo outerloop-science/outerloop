@@ -787,4 +787,4 @@ def test_self_reported_note_is_recognized_on_retry():
             body = f"{REPLY_MARKER}\nSelf-reported (sealed `{sha[:12]}`; no evaluation or panel)"
             return [{"body": body}]
 
-    assert _measured_note_on_thread(Thread(), "owner/repo", 1, sha)
+    assert _measured_note_on_thread(cast(GitHubClient, Thread()), "owner/repo", 1, sha)
