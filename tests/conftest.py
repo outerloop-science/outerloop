@@ -82,3 +82,19 @@ def _no_result_settle(monkeypatch):
     tests that want the wait set it explicitly."""
     monkeypatch.setattr("outerloop.measure.RESULT_SETTLE_S", 0.0)
     monkeypatch.setattr("outerloop.measure.RESULT_POLL_S", 0.0)
+
+
+@pytest.fixture
+def rc1_record(tmp_path):
+    """Install unmodified output of the v0.2.1 record writer."""
+    from pathlib import Path
+
+    source = Path(__file__).parent / "fixtures/rc1_v021"
+
+    def install(kind="open"):
+        directory = tmp_path / "runs/one"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "state.json").write_bytes((source / f"{kind}.json").read_bytes())
+        return directory, source
+
+    return install

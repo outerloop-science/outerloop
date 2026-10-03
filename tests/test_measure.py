@@ -577,8 +577,8 @@ def test_dispatched_cache_resource_identity(tmp_path, gpus, gpu_type, reused):
         assert len(submitted) == 1
 
 
-@pytest.fixture
-def legacy_eval_run(tmp_path):
+@pytest.fixture(params=["pre_gpu", "v021"])
+def legacy_eval_run(tmp_path, request):
     """Copy durable output from the previous kernel, without new-code writers."""
     import shutil
 
@@ -587,6 +587,15 @@ def legacy_eval_run(tmp_path):
 
     def copy(state):
         run_dir = tmp_path / state
+        if request.param == "v021":
+            release = Path(__file__).parent / "fixtures/rc1_v021"
+            release_identity = json.loads((release / "identity.json").read_text())
+            shutil.copytree(release / "eval-run", run_dir)
+            if state == "inflight":
+                slot = run_dir / ("eval-" + release_identity["slot"])
+                (slot / "exit-code").unlink()
+                (slot / "stdout").unlink()
+            return run_dir, release_identity
         shutil.copytree(source / state, run_dir)
         return run_dir, identity
 

@@ -7988,7 +7988,14 @@ def test_legacy_eval_redispatch_preserves_run_gpu_meter(tmp_path, monkeypatch):
     monkeypatch.setattr(DispatchSettings, "measurer", real_measurer)
     record = load_record(state, run_id)
     record.stage.update(submitted=True, gpu_hours_used=1.0, sleeps_used=1, launches_used=0)
-    save_record(state, record, 1_000_000.0)
+    # The meter also crosses the release boundary in an actual old-writer record.
+    source = Path(__file__).parent / "fixtures/rc1_v021/open.json"
+    legacy = json.loads(source.read_text())
+    legacy.update(
+        run_id=run_id, target=record.target, pr_url="", agent_id=record.agent_id, stage=record.stage
+    )
+    (state / "runs" / run_id / "state.json").write_text(json.dumps(legacy))
+    record = load_record(state, run_id)
     run_dir = state / "runs" / run_id
     bench = load_contract(CONTRACT_GPU, "org/pilot").benchmarks[0]
     measures = plan_measures(
@@ -8046,3 +8053,229 @@ def test_legacy_eval_redispatch_preserves_run_gpu_meter(tmp_path, monkeypatch):
         assert saved.stage["afterany"] == "afterany:601:602"
         assert saved.stage["gpu_hours_used"] == 1.0
         assert saved.stage["sleeps_used"] == 1
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_line_snapshot_upgrade_retry(tmp_path, monkeypatch, interrupt):
+    from outerloop.attempt import LINE_HEAD_REF, _push_line_snapshot
+    from outerloop.github import Workspace
+
+    bundle = Path(__file__).parent / "fixtures/rc1_v021/line.bundle"
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--mirror", str(bundle), str(bare))
+    ws = Workspace.clone(str(bare), tmp_path / "ws", auth=NoAuth())
+    ws.git("checkout", "-q", "-B", "agents/agent-01", "origin/agents/agent-01")
+    parent = ws.git("rev-parse", "HEAD").strip()
+    ws.git("update-ref", LINE_HEAD_REF, parent)
+    refs = _git(bare, "for-each-ref", "--format=%(refname) %(objectname)", "refs/dispatch/")
+    assert refs  # the release's sealed candidate survives, too
+    assert ws.git("show", "HEAD:protected.txt") == "legacy unfiltered"
+    (ws.root / "src/work.py").write_text("upgraded admitted\n")
+    (ws.root / "protected.txt").write_text("new forbidden change\n")
+    (ws.root / "AGENT_MEMORY.md").write_text("upgraded memory\n")
+    contract = load_contract(CONTRACT.replace("src/pilot/solvers/", "src/"), "org/pilot")
+    original = Workspace.push
+    pushes = []
+
+    def push_then_die(self, branch):
+        original(self, branch)
+        pushes.append(branch)
+        raise KeyboardInterrupt
+
+    if interrupt:
+        with monkeypatch.context() as patch:
+            patch.setattr(Workspace, "push", push_then_die)
+            with pytest.raises(KeyboardInterrupt):
+                _push_line_snapshot(
+                    ws, "agents/agent-01", "one", "negative-result", contract=contract
+                )
+        assert pushes == ["agents/agent-01"]
+    _push_line_snapshot(ws, "agents/agent-01", "one", "negative-result", contract=contract)
+    first = _git(bare, "rev-parse", "agents/agent-01").strip()
+    assert _git(bare, "rev-parse", "agents/agent-01^").strip() == parent
+    assert _git(bare, "show", "agents/agent-01:protected.txt") == "legacy unfiltered\n"
+    assert _git(bare, "show", "agents/agent-01:src/work.py") == "upgraded admitted\n"
+    assert _git(bare, "show", "agents/agent-01:AGENT_MEMORY.md") == "upgraded memory\n"
+    _push_line_snapshot(ws, "agents/agent-01", "one", "negative-result", contract=contract)
+    assert _git(bare, "rev-parse", "agents/agent-01").strip() == first
+    assert _git(bare, "for-each-ref", "--format=%(refname) %(objectname)", "refs/dispatch/") == refs
+    assert (ws.root / "protected.txt").read_text() == "new forbidden change\n"
+
+
+@pytest.mark.parametrize("sessionless", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_capacity_refusal_park_resume(tmp_path, monkeypatch, sessionless, interrupt):
+    from unittest.mock import Mock
+
+    from outerloop.attempt import _park_run
+    from outerloop.inbox import Message, append, pending
+    from outerloop.measure import MeasurementPending
+    from outerloop.roles import author_spec
+    from outerloop.syscall import SyscallRequest
+
+    state, run_id, _wsroot, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, run_id="one", raise_exc=MeasurementPending(("701", "702"))
+    )
+    directory = state / "runs/one"
+    source = Path(__file__).parent / "fixtures/rc1_v021"
+    coordinates = load_record(state, run_id).stage
+    raw = json.loads((source / ("sessionless.json" if sessionless else "open.json")).read_text())
+    # Only test-repository coordinates change; every durable key comes from v0.2.1.
+    raw.update(target="org/pilot", pr_url="")
+    # point the real v0.2.1 record at this test repository; keep its shape
+    # (a v0.2.1 author-sleep park has no candidate_ref; the wake must tolerate it)
+    for key in ("base_sha", "candidate_sha"):
+        raw["stage"][key] = coordinates[key]
+    if "candidate_ref" in raw["stage"]:
+        raw["stage"]["candidate_ref"] = coordinates["candidate_ref"]
+    (directory / "state.json").write_text(json.dumps(raw))
+    legacy = load_record(state, run_id)
+    assert "capacity_wait" not in legacy.stage
+    assert not legacy.author_history
+    refusal = Message(
+        0,
+        "note",
+        "kernel",
+        "",
+        1000001,
+        "capacity-refusal",
+        {
+            "text": "Your syscall request was REFUSED.",
+            "quoted_text": "operator GPU limit",
+            "context_only": True,
+        },
+    )
+    park = RunParked(
+        phase="author-sleep",
+        afterany="",
+        base_sha=str(coordinates["base_sha"]),
+        candidate_sha=str(coordinates["candidate_sha"]),
+        seed=7,
+        suite_seed=9,
+        session=None if sessionless else _session(),
+        syscall=SyscallRequest(launches=()),
+        capacity_wait=True,
+        launches_used=1,
+        sleeps_used=1,
+        gpu_hours_used=0.1,
+    )
+
+    def refuse_and_park():
+        append(directory, refusal)
+        _park_run(
+            state,
+            legacy,
+            park,
+            str(coordinates["candidate_ref"]),
+            1,
+            1000002,
+            keep_wake_attempts=True,
+        )
+
+    if interrupt:
+        with monkeypatch.context() as patch:
+            patch.setattr(climb_mod, "save_record", Mock(side_effect=KeyboardInterrupt))
+            with pytest.raises(KeyboardInterrupt):
+                refuse_and_park()
+        assert "capacity_wait" not in load_record(state, run_id).stage
+    refuse_and_park()
+    saved = load_record(state, run_id)
+    refuse_and_park()
+    assert load_record(state, run_id) == saved
+    assert saved.stage["capacity_wait"] and saved.wake_attempts == 0
+    assert len([m for m in pending(directory, 0) if m.key == "capacity-refusal"]) == 1
+    calls = []
+
+    class Author(ScriptedHarness):
+        def run(self, text, workspace, resume_session_id=None):
+            calls.append(resume_session_id)
+            assert "operator GPU limit" in text
+            assert (
+                workspace / "src/pilot/solvers/tsp.py"
+            ).read_text() == "def solve(): return 'wip'\n"
+            return super().run(text, workspace, resume_session_id)
+
+    author = Author(edits={}, submit=True)
+    kwargs = dict(
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),
+        bot_auth=NoAuth(),
+        now=1000100,
+        harness=author,
+        spec=author_spec(),
+    )
+    assert resume_run(state, run_id, **kwargs).outcome == "parked"
+    assert calls == ([None] if sessionless else ["s1"])
+    first = load_record(state, run_id)
+    assert first.stage["phase"] == "candidate"
+    assert first.stage["gpu_hours_used"] == 0.1
+    assert first.stage["launches_used"] == 1
+    assert first.stage["sleeps_used"] == 2
+    assert resume_run(state, run_id, **kwargs).outcome == "parked"
+    second = load_record(state, run_id)
+    assert len(calls) == 1  # pending gate retry does not run the author/launch again
+    for key in ("gpu_hours_used", "launches_used", "sleeps_used", "afterany"):
+        assert second.stage[key] == first.stage[key]
+    assert not pending(directory, second.inbox_seq)
+
+
+@pytest.mark.parametrize("outstanding", [False, True])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_sessionless_author_sleep_resumes_directly(
+    tmp_path, monkeypatch, interrupt, outstanding
+):
+    from outerloop.measure import MeasurementPending
+    from outerloop.roles import author_spec
+
+    state, run_id, _, _ = _write_parked_author_sleep(
+        tmp_path, monkeypatch, run_id="one", raise_exc=MeasurementPending(("701", "702"))
+    )
+    path = state / "runs/one/state.json"
+    coordinates = load_record(state, run_id).stage
+    raw = json.loads((Path(__file__).parent / "fixtures/rc1_v021/sessionless.json").read_text())
+    raw["target"] = "org/pilot"
+    # point the real v0.2.1 record at this test repository; keep its shape
+    # (a v0.2.1 author-sleep park has no candidate_ref; the wake must tolerate it)
+    for key in ("base_sha", "candidate_sha"):
+        raw["stage"][key] = coordinates[key]
+    if "candidate_ref" in raw["stage"]:
+        raw["stage"]["candidate_ref"] = coordinates["candidate_ref"]
+    if outstanding:
+        raw["stage"]["afterany"] = "afterany:501"
+        raw["stage"]["syscall_launches"] = [{"name": "probe"}]
+    path.write_text(json.dumps(raw))
+    calls = []
+
+    class Author(ScriptedHarness):
+        def run(self, text, workspace, resume_session_id=None):
+            calls.append(resume_session_id)
+            return super().run(text, workspace, resume_session_id)
+
+    kwargs = dict(
+        dispatch=_fake_dispatch(),
+        github=CommentingGitHub(),
+        bot_auth=NoAuth(),
+        now=1000100,
+        harness=Author(edits={}, submit=True),
+        spec=author_spec(),
+    )
+    if outstanding:
+        assert resume_run(state, run_id, **kwargs).outcome == "session-error"
+        assert not calls
+        return
+    if interrupt:
+        from unittest.mock import Mock
+
+        before = path.read_bytes()
+        with monkeypatch.context() as patch:
+            patch.setattr(climb_mod, "run_author_leg", Mock(side_effect=KeyboardInterrupt))
+            with pytest.raises(KeyboardInterrupt):
+                resume_run(state, run_id, **kwargs)
+        assert not calls
+        assert load_record(state, run_id).state == "parked"
+        assert json.loads(path.read_bytes())["stage"] == json.loads(before)["stage"]
+    assert resume_run(state, run_id, **kwargs).outcome == "parked"
+    assert calls == [None]
+    assert load_record(state, run_id).stage["phase"] == "candidate"
+    assert resume_run(state, run_id, **kwargs).outcome == "parked"
+    assert calls == [None]

@@ -3014,3 +3014,187 @@ def test_cached_baseline_resource_identity_and_budget(tmp_path, monkeypatch, cha
         min_relative_improvement=0.005,
     )
     assert isinstance(outcome, MeasureOK)
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_v021_parked_brief_uses_current_rubric(tmp_path, rc1_record, monkeypatch, interrupt):
+    from unittest.mock import Mock
+
+    from outerloop.panel import PanelVerdict
+    from outerloop.review import PullRequest
+    from outerloop.runstate import load_record
+    from outerloop.verifier import build_verify_agent_brief, verify_result_from_data
+
+    directory, source = rc1_record()
+    record = load_record(tmp_path, "one")
+    old_brief = (source / "brief.txt").read_text()
+    history = [old_brief]
+    calls = []
+    judgments = []
+    # Owner-approved tolerance: session history is immutable; no corrected or
+    # repeated initial brief is delivered. The next judgment uses today's rubric.
+    monkeypatch.setattr(
+        "outerloop.orchestrator.build_brief",
+        Mock(side_effect=AssertionError("fresh brief on resume")),
+    )
+
+    class Author:
+        supports_resume = True
+        fail = interrupt
+
+        def run(self, text, workspace, resume_session_id=None):
+            assert resume_session_id == record.resume_session_id == "s1"
+            assert old_brief not in text and "# Task" not in text
+            calls.append(text)
+            if self.fail:
+                self.fail = False
+                raise KeyboardInterrupt
+            history.append(text)
+            return ok_session("A mixture improved the score without an ablation.")
+
+    def judge(baseline, candidate, report):
+        pr = PullRequest(
+            repo="org/pilot",
+            number=9,
+            title="research",
+            body=report,
+            diff="+new mixture",
+            author="agentic-learning-bot",
+            labels=(),
+        )
+        brief = build_verify_agent_brief(pr, CONTRACT)
+        assert "documents each change's own effect" in brief
+        assert "picture of the landscape" in brief
+        judgment = verify_result_from_data(
+            {
+                "findings": [
+                    {
+                        "summary": "Missing ablation",
+                        "category": "aggregation",
+                        "blocking": True,
+                        "confidence": "high",
+                    }
+                ],
+                "notes": "",
+            }
+        )
+        assert judgment.findings[0].category == "aggregation"
+        judgments.append(brief)
+        return PanelVerdict(
+            blocking=tuple(judgment.findings), transcript="current rubric: aggregation"
+        )
+
+    author = Author()
+    # Inline measurer retains the new slots over a retry; no second measurement.
+    evaluator = FakeEvaluator(values=[13.9, 13.0])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+
+    def resume():
+        return attempt_once(
+            CONFIG,
+            CONTRACT,
+            tmp_path,
+            author,
+            measurer,
+            "base",
+            snapshot,
+            inbox_dir=directory,
+            ruler="mean tour length",
+            resume_session_id=record.resume_session_id,
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            panel_runner=judge,
+        )
+
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            resume()
+        assert history == [old_brief] and not judgments
+    first = resume()
+    assert first.panel_blocking_open and first.outcome == "improved"
+    # A new wake on the same sealed bytes gets the same standard. Fix the
+    # snapshot seam to the candidate already measured by the first pass.
+    snapshot = lambda: first.candidate_sha
+    second = resume()
+    assert second.panel_blocking_open and second.candidate_sha == first.candidate_sha
+    assert len(evaluator.calls) == 2
+    assert len(judgments) == 2 and judgments[0] == judgments[1]
+    assert history.count(old_brief) == 1
+    assert (source / "brief.txt").read_text() == old_brief
+
+
+def test_v021_capacity_error_becomes_durable_park(tmp_path, rc1_record):
+    from outerloop.attempt import _park_run
+    from outerloop.inbox import pending
+    from outerloop.operator_limits import CapacityError
+    from outerloop.orchestrator import RunParked
+    from outerloop.runstate import load_record
+
+    directory, _ = rc1_record()
+    legacy = load_record(tmp_path, "one")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    refused = []
+
+    class Author:
+        supports_resume = True
+        retry_launch = True
+
+        def run(self, text, workspace, resume_session_id=None):
+            assert resume_session_id == "s1"
+            if self.retry_launch:
+                _write_syscall(workspace, {"launches": [{"name": "probe", "command": "true"}]})
+            else:
+                assert "Capacity may now be free" in text
+            return ok_session()
+
+    def launch(sha, request):
+        refused.append(sha)
+        raise CapacityError("operator GPU limit: full")
+
+    author = Author()
+    meters = []
+
+    def resume(record):
+        return attempt_once(
+            CONFIG,
+            DEEP_CONTRACT,
+            workspace,
+            author,
+            _wire(FakeEvaluator(), workspace)[0],
+            str(record.stage["base_sha"]),
+            lambda: str(record.stage["candidate_sha"]),
+            ruler="mean tour length",
+            changed_paths=lambda: ["src/pilot/solvers/tsp.py"],
+            inbox_dir=directory,
+            inbox_seq=record.inbox_seq,
+            resume_session_id=record.resume_session_id,
+            launcher=launch,
+            launches_used=int(record.stage["launches_used"]),
+            sleeps_used=int(record.stage["sleeps_used"]),
+            gpu_hours_used=float(record.stage["gpu_hours_used"]),
+            on_meter=lambda *args: meters.append(args),
+        )
+
+    with pytest.raises(RunParked) as caught:
+        resume(legacy)
+    park = caught.value
+    assert park.syscall is not None
+    assert park.capacity_wait and not park.afterany and not park.syscall.launches
+    assert len(refused) == 2  # one bounded in-session retry, then a durable park
+    for _ in range(2):
+        _park_run(tmp_path, legacy, park, "", 1, 1000002)
+    saved = load_record(tmp_path, "one")
+    notes = pending(directory, saved.inbox_seq)
+    capacity_notes = [m for m in notes if m.payload.get("context_only")]
+    assert len(capacity_notes) == 1 and "GPU limit" in capacity_notes[0].payload["quoted_text"]
+    assert saved.stage["capacity_wait"]
+    assert (
+        saved.stage["launches_used"],
+        saved.stage["sleeps_used"],
+        saved.stage["gpu_hours_used"],
+    ) == (1, 1, 0.1)
+    author.retry_launch = False
+    result = resume(saved)
+    assert result.outcome == "no-improvement"
+    assert len(refused) == 2
+    assert all(meter == (1, 1, 0.1) for meter in meters)
