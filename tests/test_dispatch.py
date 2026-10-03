@@ -430,6 +430,14 @@ def test_gpu_sizing_settings_reach_the_tick() -> None:
     assert "OUTERLOOP_EVAL_MEM_GB_PER_GPU" in TICK_ENV_KEYS
 
 
+def test_token_price_table_reaches_the_tick() -> None:
+    """Session cost is priced inside the attempt job, so the operator's price
+    table must survive the .env allowlist."""
+    from outerloop.cli import TICK_ENV_KEYS
+
+    assert "OUTERLOOP_TOKEN_PRICES" in TICK_ENV_KEYS
+
+
 def test_gpu_evals_are_sized_per_gpu(tmp_path):
     """A GPU eval trains: it gets cores and host RAM per GPU (compile workers
     and data loading OOM-kill at the CPU eval's 4 cores / 8 GB); CPU evals

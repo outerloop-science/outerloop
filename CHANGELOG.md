@@ -6,6 +6,9 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- `OUTERLOOP_TOKEN_PRICES` in the deployment `.env` now reaches ticks and the
+  jobs they submit, so session cost is priced from the operator table instead of
+  staying unknown. Upgrading: no action.
 - GPU job sizing is an operator setting: `OUTERLOOP_EVAL_CPUS_PER_GPU` and
   `OUTERLOOP_EVAL_MEM_GB_PER_GPU` (defaults 8 and 64) set the per-GPU core and
   memory floor for GPU evals and author launches, for nodes with fewer cores or
