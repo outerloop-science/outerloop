@@ -36,6 +36,7 @@ from outerloop.brief import BriefInputs, BudgetState, Task, build_brief, render
 from outerloop.contract import (
     Benchmark,
     Contract,
+    Regression,
     _fold,
     load_contract,
     normalize_path,
@@ -477,6 +478,7 @@ class SuiteMeasurement:
     candidate: float
     regressed: bool
     display_digits: int | None = None
+    rule: str = "legacy-floor"
 
 
 @dataclass(frozen=True)
@@ -544,7 +546,9 @@ class AttemptResult:
             lines.append(f"Candidate{label}: {self.candidate}")
         for row in self.suite:
             verdict = "REGRESSED" if row.regressed else "ok"
-            lines.append(f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict})")
+            lines.append(
+                f"Suite {row.name}: {row.baseline} -> {row.candidate} ({verdict}; {row.rule})"
+            )
         if self.panel_rounds:
             if self.panel_blocking_open:
                 state = "blocking findings OPEN at the cap"
@@ -736,19 +740,80 @@ def suite_regressed(
     direction: str,
     min_delta: float | None = None,
     min_delta_rel: float | None = None,
+    *,
+    regression: Regression | None = None,
+    climbed_gain_rel: float | Fraction | None = None,
+    climbed_gain: float | Fraction | None = None,
 ) -> bool:
-    """Did a sibling benchmark move the WRONG way beyond its own floor?
+    """Whether a sibling violates its allowance (legacy floor when omitted)."""
+    return suite_regression_verdict(
+        baseline,
+        candidate,
+        direction,
+        min_delta,
+        min_delta_rel,
+        regression=regression,
+        climbed_gain_rel=climbed_gain_rel,
+        climbed_gain=climbed_gain,
+    )[0]
 
-    Both sides are same-seed paired, so with no floor declared any wrong-way
-    move counts (paired noise is ~0 by construction); a declared floor gives
-    a stochastic eval its honest tolerance. Non-finite values fail closed —
-    an unmeasurable sibling must never read as "no regression"."""
+
+def suite_regression_verdict(
+    baseline: float,
+    candidate: float,
+    direction: str,
+    min_delta: float | None = None,
+    min_delta_rel: float | None = None,
+    *,
+    regression: Regression | None = None,
+    climbed_gain_rel: float | Fraction | None = None,
+    climbed_gain: float | Fraction | None = None,
+) -> tuple[bool, str]:
+    """Decision and rule for reports. New policy boundaries use exact decimal
+    arithmetic, like reaches_floor. A zero baseline cannot unlock relative
+    gain; relative sibling thresholds scale to zero. Hard caps win ties."""
     if not (math.isfinite(baseline) and math.isfinite(candidate)):
-        return True
-    drop = baseline - candidate if direction == "max" else candidate - baseline
-    if drop <= 0:
-        return False
-    return drop > benchmark_floor(baseline, min_delta, min_delta_rel)
+        return True, "non-finite"
+    if regression is None:
+        # Keep the original floating-point comparison for existing contracts.
+        drop = baseline - candidate if direction == "max" else candidate - baseline
+        refused = drop > 0 and drop > benchmark_floor(baseline, min_delta, min_delta_rel)
+        return refused, "legacy-floor"
+    r = regression
+    relative = any(v is not None for v in (r.free_rel, r.max_rel, r.requires_gain_rel))
+    if not relative and all(v is None for v in (r.free, r.max, r.requires_gain)):
+        relative = min_delta_rel is not None
+    free = r.free_rel if relative else r.free
+    if free is None:
+        free = (min_delta_rel if relative else min_delta) or 0.0
+    cap = r.max_rel if relative else r.max
+    required = r.requires_gain_rel if relative else r.requires_gain
+    gain = climbed_gain_rel if relative else climbed_gain
+    if not all(
+        isinstance(v, Fraction) or math.isfinite(v)
+        for v in (free, cap, required, gain)
+        if v is not None
+    ):
+        return True, "non-finite"
+    p, c = Fraction(repr(baseline)), Fraction(repr(candidate))
+    loss = p - c if direction == "max" else c - p
+    if loss <= 0:
+        return False, "no-regression"
+    scale = abs(p) if relative else Fraction(1)
+    if cap is not None and loss >= Fraction(repr(cap)) * scale:
+        return True, "hard-cap"
+    if loss <= Fraction(repr(free)) * scale:
+        return False, "free-allowance"
+    if cap is None:
+        return True, "free-exceeded"
+    if required is None:
+        return False, "unconditional-allowance"
+    if gain is None:
+        return True, "insufficient-gain"
+    exact_gain = gain if isinstance(gain, Fraction) else Fraction(repr(gain))
+    if exact_gain >= Fraction(repr(required)):
+        return False, "gain-unlocked"
+    return True, "insufficient-gain"
 
 
 def improved(baseline: float, candidate: float, direction: str, min_rel: float) -> bool:
@@ -793,8 +858,8 @@ def make_task(
             f"`{bench.command}` on a private seed to verify any improvement "
             "claim, and the PR's CI runs the repository tests"
             + (
-                "; changes touching shared paths are suite-gated, so no sibling "
-                "benchmark may regress beyond its floor"
+                "; changes touching shared paths are suite-gated, so every sibling "
+                "benchmark must satisfy its regression policy (its floor by default)"
                 if suite_gated
                 else ""
             )
@@ -1049,18 +1114,31 @@ def measure_and_decide(
             run_seed=seed,
         )
 
+    # Exact decimal gain avoids rounding an inclusive unlock boundary down.
+    main_base, main_cand = Fraction(repr(baseline)), Fraction(repr(candidate))
+    gain = main_cand - main_base if bench.direction == "max" else main_base - main_cand
+    gain_rel = gain / abs(main_base) if main_base else None
     suite_rows: list[SuiteMeasurement] = []
     for b in siblings:
         sib_base = vals[f"sib-{b.name}-base"]
         sib_cand = vals[f"sib-{b.name}-cand"]
+        refused, rule = suite_regression_verdict(
+            sib_base,
+            sib_cand,
+            b.direction,
+            b.min_delta,
+            b.min_delta_rel,
+            regression=b.regression,
+            climbed_gain_rel=gain_rel,
+            climbed_gain=gain,
+        )
         suite_rows.append(
             SuiteMeasurement(
                 name=b.name,
                 baseline=sib_base,
                 candidate=sib_cand,
-                regressed=suite_regressed(
-                    sib_base, sib_cand, b.direction, b.min_delta, b.min_delta_rel
-                ),
+                regressed=refused,
+                rule=rule,
                 display_digits=b.display_digits,
             )
         )
@@ -2526,13 +2604,13 @@ def pr_body(
         suite_lines = [
             "",
             "Shared code was touched, so every sibling benchmark was re-measured "
-            "on both sides (paired seed): none regressed beyond its floor.",
+            "on both sides (paired seed): all passed their sibling regression policies.",
             "",
-            "| suite benchmark | baseline | candidate |",
-            "| --- | --- | --- |",
+            "| suite benchmark | baseline | candidate | rule |",
+            "| --- | --- | --- | --- |",
         ] + [
             f"| {row.name} | {fmt_metric(row.baseline, row.display_digits)} "
-            f"| {fmt_metric(row.candidate, row.display_digits)} |"
+            f"| {fmt_metric(row.candidate, row.display_digits)} | {row.rule} |"
             for row in result.suite
         ]
     if result.panel_blocking_open:

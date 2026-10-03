@@ -377,3 +377,73 @@ def test_review_topup_rejects_out_of_bounds(knobs):
 
     with pytest.raises(ValidationError):
         ReviewTopup.model_validate(knobs)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {},
+        {"free_rel": 0.005, "max_rel": 0.5, "requires_gain_rel": 0.05},
+        {"free": 1, "max": 10, "requires_gain": 2},
+        {"max_rel": 0.5},
+        {"free_rel": 0.5, "max_rel": 0.5},
+        {"free_rel": 0, "max_rel": 2},
+    ],
+)
+def test_regression_schema_accepts(policy):
+    from outerloop.contract import Benchmark
+
+    b = Benchmark(
+        name="mem",
+        command="eval",
+        metric="bytes",
+        direction="min",
+        min_delta_rel=0.05,
+        regression=policy,
+    )
+    assert b.regression is not None
+    if not policy or policy == {"max_rel": 0.5}:
+        assert b.regression.free_rel == 0.05
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"typo": 0.1},
+        {"free_rel": -0.1},
+        {"max": -1},
+        {"requires_gain_rel": -1, "max_rel": 1},
+        {"free_rel": 0.6, "max_rel": 0.5},
+        {"free": 2, "max": 1},
+        {"requires_gain": 1},
+        {"requires_gain_rel": 0.05},
+        {"free": 1, "max_rel": 0.5},
+        {"free_rel": float("nan")},
+        {"max_rel": float("inf")},
+        {"max_rel": 0.01},  # inherited free_rel is 0.05
+    ],
+)
+def test_regression_schema_rejects(policy):
+    from outerloop.contract import Benchmark
+
+    with pytest.raises(ValidationError):
+        Benchmark(
+            name="mem",
+            command="eval",
+            metric="bytes",
+            direction="min",
+            min_delta_rel=0.05,
+            regression=policy,
+        )
+
+
+def test_regression_preserves_legacy_measurement_signature():
+    from outerloop.contract import Benchmark
+
+    b = Benchmark(name="mem", command="eval", metric="bytes", direction="min")
+    # Signature before this field existed, including omission of default verification.
+    legacy = b.model_dump(exclude={"regression", "verification"})
+    expected = tuple(sorted((k, repr(v)) for k, v in legacy.items() if k not in b._WORKFLOW_DIALS))
+    assert b.measurement_signature() == expected
+    changed = Benchmark.model_validate(b.model_dump() | {"regression": {"free_rel": 0.005}})
+    assert changed.measurement_signature() != expected
