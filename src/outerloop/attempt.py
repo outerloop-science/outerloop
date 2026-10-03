@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
@@ -1350,6 +1351,15 @@ def run_author_leg(
 ) -> AttemptResult:
     """Prepare the author channel and run a resumed leg through the orchestrator."""
     directory = run_root / "runs" / record.run_id
+    contract = load_contract(contract_text, record.target)
+    bench = _benchmark(contract, record.benchmark)
+    record = dc_replace(
+        record,
+        verification=bench.verification,
+        channels=contract.channels.model_dump(exclude_defaults=True),
+    )
+    save_record(run_root, record, time.time())
+    ws.configure_channels(record.channels, record.agent_id)
     replies_posted = deliver_messages(record, github, (), secrets, directory)
 
     def outbox_ids() -> set[str]:
@@ -1363,15 +1373,6 @@ def run_author_leg(
         nonlocal replies_posted
         replies_posted += deliver_messages(record, github, messages, secrets, directory)
 
-    contract = load_contract(contract_text, record.target)
-    bench = _benchmark(contract, record.benchmark)
-    record = dc_replace(
-        record,
-        verification=bench.verification,
-        channels=contract.channels.model_dump(exclude_defaults=True),
-    )
-    save_record(run_root, record, time.time())
-    ws.configure_channels(record.channels, record.agent_id)
     # the channel must be the kernel's: a path the target ships (a symlink, a
     # tracked directory) disables the syscalls for this leg, loudly, the same
     # rule as a fresh climb
@@ -2834,6 +2835,41 @@ def resume_run(
         ensure_regular_git_dir(workspace)
     except GitError as exc:
         return _end_refused_wake(run_root, record, exc, now, secrets, ws.auth)
+    # Discover CURRENT policy outside the author's object store before fetching
+    # any refs into it. The saved contract and dirty working tree can both be
+    # stale; only the canonical base branch can authorize sharing on this wake.
+    policy_branch = str(stage.get("base_branch") or base_branch)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".wake-policy-", dir=run_dir) as directory:
+            policy_ws = Workspace.clone(
+                target_clone_url(record.target),
+                Path(directory) / "ws",
+                auth=bot_auth,
+                single_branch=policy_branch,
+            )
+            current_contract = load_contract(contract_at(policy_ws, "HEAD"), record.target)
+    except GitError:
+        # A deleted base ends the wake as before; transport failures stay retryable.
+        refs = ws.git_network(
+            "ls-remote",
+            "--heads",
+            ws.url or target_clone_url(record.target),
+            f"refs/heads/{policy_branch}",
+        )
+        if not refs.strip():
+            return _end_refused_wake(
+                run_root, record, ScopeHistoryError(policy_branch), now, secrets, ws.auth
+            )
+        raise
+    current_bench = _benchmark(current_contract, record.benchmark)
+    channels = current_contract.channels.model_dump(exclude_defaults=True)
+    if record.verification != current_bench.verification or any(
+        record.channels.get(name, True) != enabled
+        for name, enabled in current_contract.channels.model_dump().items()
+    ):
+        record = dc_replace(record, verification=current_bench.verification, channels=channels)
+        save_record(run_root, record, now)
+    ws.configure_channels(channels, record.agent_id)
     # Re-establish the merge-artifact exclude on the wake too: the workspace
     # persisted across the park, but a session could have removed the exclude,
     # and this wake's changed_paths / seal run `git add -A`. Idempotent.
@@ -2897,6 +2933,22 @@ def resume_run(
     contract_text = contract_at(ws, base_sha)
     contract = load_contract(contract_text, record.target)
     bench = _benchmark(contract, record.benchmark)
+    if (
+        contract.channels != current_contract.channels
+        or bench.verification != current_bench.verification
+    ):
+        # Keep the sealed scope/evaluation rules, applying only current switches.
+        # Leave default contract bytes untouched.
+        import yaml
+
+        data = yaml.safe_load(contract_text)
+        data["channels"] = current_contract.channels.model_dump(exclude_defaults=True)
+        for item in data["benchmarks"]:
+            if item["name"] == record.benchmark:
+                item["verification"] = current_bench.verification
+        contract_text = yaml.safe_dump(data)
+        contract = load_contract(contract_text, record.target)
+        bench = _benchmark(contract, record.benchmark)
     config = RunConfig(
         target=record.target,
         benchmark=record.benchmark,

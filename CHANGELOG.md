@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Apply current contract verification and channel settings before wake message
+  delivery or workspace fetches. Allow measured results to replace an earlier
+  self-reported leader without inheriting its claimed baseline.
+
 - Bump the pinned Codex CLI from 0.130.0 to 0.160.0 and update its Linux
   archive digest. All contained Codex roles bind a kernel-owned, read-only
   managed-hooks-only policy; uncontained sessions disable lifecycle hooks and

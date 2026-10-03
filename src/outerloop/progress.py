@@ -187,7 +187,12 @@ def confirm(
     if not main_commit:
         raise ValueError("confirmation requires a merge commit")
     old = entries.get(pending.benchmark)
-    if old is not None and old.provenance != pending.provenance and pending.kind != "RESET":
+    if (
+        old is not None
+        and old.provenance != pending.provenance
+        and pending.provenance == "self_reported"
+        and pending.kind != "RESET"
+    ):
         return dict(entries)  # a trust claim cannot silently replace a measured series
     if old and old.reset_commit and is_ancestor(main_commit, old.reset_commit):
         return dict(entries)
@@ -195,6 +200,9 @@ def confirm(
         raise ValueError("merge is not on the reset ancestry")
     if old and old.main_commit == main_commit:
         return dict(entries)
+    if old and old.provenance == "self_reported" and pending.provenance == "measured":
+        # A claim supplies neither a measured baseline nor a score to beat.
+        old = None
     result = dict(entries)
     if pending.kind == "RESET":
         if old and old.main_commit and is_ancestor(main_commit, old.main_commit):

@@ -629,3 +629,137 @@ def test_claim_never_gets_merge_blessing_even_with_prior_panel_metadata():
         "base",
     )
     assert head == "" and reason == "self-reported claim"
+
+
+@pytest.mark.parametrize("direction,claim,candidate", [("min", 1, 90), ("max", 1000, 110)])
+def test_measured_merge_replaces_claim_without_inheriting_claimed_baseline(
+    direction, claim, candidate
+):
+    from outerloop.progress import confirm
+    from test_progress import ancestor, submission
+
+    claimed = submission(
+        direction=direction, baseline=500, candidate=claim, provenance="self_reported"
+    )
+    entries = confirm({}, claimed, "1", is_ancestor=ancestor)
+    measured = submission(direction=direction, baseline=100, candidate=candidate, run_id="measured")
+    promoted = confirm(entries, measured, "2", is_ancestor=ancestor)["bench"]
+    assert promoted.provenance == "measured"
+    assert (promoted.baseline, promoted.best, promoted.best_run) == (100, candidate, "measured")
+    assert confirm({"bench": promoted}, claimed, "3", is_ancestor=ancestor) == {"bench": promoted}
+
+
+def test_author_leg_applies_current_policy_before_retrying_messages(tmp_path, monkeypatch):
+    import outerloop.attempt as attempt
+    from outerloop.inbox import pending
+    from test_messages import outgoing, runs, send
+
+    sender, recipient = runs(tmp_path)
+    sender = replace(sender, benchmark="tsp")
+    save_record(tmp_path, sender, 1)
+    original = attempt.append
+
+    def interrupted(directory, message):
+        if message.kind == "agent-message":
+            raise OSError("delivery interrupted")
+        return original(directory, message)
+
+    monkeypatch.setattr(attempt, "append", interrupted)
+    send(tmp_path, sender, outgoing("agent-02", "staged sibling idea"))
+    monkeypatch.setattr(attempt, "append", original)
+    sender = load_record(tmp_path, sender.run_id)
+    contract = CONTRACT.replace("direction: min", "direction: min\n    verification: self_report")
+    contract += "\nchannels: {messages: false}\n"
+    wsroot = tmp_path / "ws"
+    wsroot.mkdir()
+    git(wsroot, "init", "-b", "main")
+
+    class StopLeg(Exception):
+        pass
+
+    def stop(_):
+        assert load_record(tmp_path, sender.run_id).verification == "self_report"
+        raise StopLeg
+
+    monkeypatch.setattr(attempt, "shipped_channel", stop)
+    with pytest.raises(StopLeg):
+        attempt.run_author_leg(
+            CONFIG,
+            contract,
+            wsroot,
+            FakeHarness(ok_session()),
+            None,
+            "base",
+            lambda: "sha",
+            pinned_tip="base",
+            run_root=tmp_path,
+            record=sender,
+            ws=Workspace(wsroot),
+            dispatch=None,
+            github=cast(GitHubClient, object()),
+            secrets=(),
+        )
+    assert not pending(tmp_path / "runs" / recipient.run_id, 0)
+    assert any(
+        "channels.messages" in str(m.payload) for m in pending(tmp_path / "runs" / sender.run_id, 0)
+    )
+
+
+@pytest.mark.parametrize("disabled", ["branches", "siblings", "shared_reports"])
+def test_wake_reads_current_contract_before_fetch(tmp_path, monkeypatch, disabled):
+    import outerloop.attempt as attempt
+    from test_attempt import (
+        CONTRACT_SYSCALLS,
+        FakeGitHub,
+        NoAuth,
+        _fake_dispatch,
+        _push_contract,
+        _push_line,
+        _write_parked_author_sleep,
+    )
+
+    root, run_id, wsroot, _ = _write_parked_author_sleep(tmp_path, monkeypatch)
+    bare = tmp_path / f"origin-{run_id}.git"
+    current = CONTRACT_SYSCALLS.replace(
+        "direction: min", "direction: min\n    verification: self_report"
+    )
+    current += f"\nchannels: {{{disabled}: false}}\n"
+    _push_contract(tmp_path, bare, current, "policy")
+    hidden_branch = "agents/agent-02" if disabled == "branches" else "research-log"
+    _push_line(tmp_path, bare, {"hidden": "new private data"}, name=hidden_branch)
+    hidden = git(bare, "rev-parse", hidden_branch)
+    original = Workspace.fetch_origin
+    fetch_policies = []
+
+    class StopWake(Exception):
+        pass
+
+    def fetch(ws):
+        saved = load_record(root, run_id)
+        fetch_policies.append((saved.verification, saved.channels, ws.channels))
+        original(ws)
+        assert hidden_branch not in ws.git("for-each-ref", "--format=%(refname)", "refs/remotes")
+        with pytest.raises(GitError):
+            ws.git("cat-file", "-e", hidden)
+
+    monkeypatch.setattr(Workspace, "fetch_origin", fetch)
+
+    def stop(**kwargs):
+        assert kwargs["bench"].verification == "self_report"
+        assert kwargs["contract"].channels.model_dump()[disabled] is False
+        raise StopWake
+
+    monkeypatch.setattr(attempt, "_wake_author_sleep", stop)
+    with pytest.raises(StopWake):
+        attempt.resume_run(
+            root,
+            run_id,
+            dispatch=_fake_dispatch(),
+            github=cast(GitHubClient, FakeGitHub()),
+            bot_auth=NoAuth(),
+            now=2_000_000,
+        )
+    # Fetch failures are best-effort, so check policy and effects outside its callback.
+    assert fetch_policies == [("self_report", {disabled: False}, {disabled: False})]
+    with pytest.raises(GitError):
+        Workspace(wsroot).git("cat-file", "-e", hidden)
