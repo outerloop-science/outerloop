@@ -11,13 +11,17 @@ caller controls that directory's lifetime.
 
 These private artifacts must never be committed, attached to PRs, or published
 (SECURITY.md). Capture applies the same **known-secret redaction** as stdout,
-including issued application tokens. This is not a general secret scanner.
+including issued application tokens and pre-launch snapshots of provisioned credential
+files (Vertex ADC, Codex auth, and mounted key contents). JSON string values,
+escaped forms, and PEM key lines are included; deleting a credential during the
+session does not remove it from the redaction set. This is not a general secret scanner.
 Artifacts use owner-only permissions. Native reads refuse symlinks and special
 files. Capture failures are logged and never change the author's outcome.
 
 A unique `<workspace>-<backend>-<invocation-id>.session.json` records backend,
 configured model, backend session ID, resume ID, start/end timestamps, turns when
-known, token counters, cost, and the SHA-256 of the incoming rendered brief.
+known, token counters, cost, and the SHA-256 of the delivered prompt before redaction, including rehydrated Hermes
+context on resume.
 The invocation ID distinguishes wakes sharing a backend session ID. Artifact
 entries record paths and SHA-256 hashes of the **stored, redacted bytes** for the
 stdout capture, delivered prompt, and native log. Missing native logs have
@@ -68,16 +72,29 @@ Uncached input is total input minus cache reads and cache writes. Each nonzero
 bucket needs a finite, nonnegative rate. Missing model/rates, malformed prices,
 or absent input/output usage leave dollars unknown. Codex also leaves invocation
 usage and dollars unknown if any completed turn lacks required counters or
-reports a different set of counters from the other turns. Explicit zero rates support
+reports a different set of counters from the other turns, or the invocation fails. Explicit zero rates support
 free/self-hosted models. This is recorded usage pricing, not invoice reconciliation;
 existing budget enforcement is unchanged.
 
 Parked records retain tokens and their session record path. Legacy numeric costs
 remain readable; absent usage stays unknown and is not backfilled. Status totals
-cover captured invocations: `known_session_cost_usd` sums priced sessions,
-`unpriced_sessions` counts unknown costs, and `session_cost_usd` is null if any
-captured session is unpriced or no sidecars exist. Pre-upgrade history has unknown
-coverage. Do not interpret the known subtotal as total historical spend.
+come exclusively from the fixed `session-index.json` in the run directory under
+the state root, never from a glob or files in the workspace or session HOME.
+Only the kernel writes this index, serializing updates and atomically replacing
+it after retaining each session record. Separate status processes and restarted
+kernels read the same persisted totals. Containment keeps this directory outside
+the author's mounts; owner-only permissions alone are not the trust boundary.
+Each record and index entry carries `verified`, true for contained invocations.
+If any indexed invocation ran uncontained, totals carry `verified: false` and
+text status labels them `unverified`. Local mode shares the operator's filesystem
+authority, so those persisted totals can be altered by the author.
+
+`known_session_cost_usd` sums priced sessions, `unpriced_sessions` counts unknown
+costs, and `session_cost_usd` is null if any captured session is unpriced or no
+indexed records exist. Missing or unreadable indexes report unknown totals and
+`verified: false`; status never reconstructs them from sidecars. Pre-upgrade
+sidecars are not imported, so history before the index has unknown coverage.
+Do not interpret the known subtotal as total historical spend.
 
 Validate fresh and resumed sessions with each pinned CLI on a real deployment,
 including timeout, native paths, actual usage fields, Hermes wrapper imports and

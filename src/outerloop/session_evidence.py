@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import fnmatch
 import hashlib
 import json
@@ -29,9 +31,52 @@ NATIVE_MAX_DEPTH = 8
 NATIVE_MAX_ENTRIES = 10_000
 NATIVE_MAX_SECONDS = 0.25
 
+# Fixed kernel index outside the workspace and HOME container mounts.
+SESSION_INDEX = "session-index.json"
+
 
 class NativeLookupLimit(OSError):
     """Discovery could not establish a unique source within its budget."""
+
+
+def provision_credential_file(path: Path) -> None:
+    """Snapshot a kernel-provisioned credential before giving the session access.
+
+    Keep whole files, JSON string values and their escaped forms: native logs
+    may serialize an echoed file or print just a key. Never rediscover secrets
+    from author-controlled files after the invocation.
+    """
+    state = active.get()
+    if state is None:
+        return
+    try:
+        content = path.read_text()
+    except FileNotFoundError:
+        return  # No file was provisioned (e.g. an ambient credential provider).
+    secrets = state.setdefault("credential_secrets", set())
+
+    def remember(value: Any) -> None:
+        if isinstance(value, str) and value:
+            secrets.add(value)
+            for ascii_only in (True, False):
+                escaped = value
+                for _ in range(3):
+                    escaped = json.dumps(escaped, ensure_ascii=ascii_only)[1:-1]
+                    secrets.add(escaped)
+            # PEM keys can be emitted one line at a time. JSON structural
+            # fragments must not be replaced inside the backend's envelope.
+            if value.startswith("-----BEGIN "):
+                secrets.update(line for line in value.splitlines() if line)
+        elif isinstance(value, dict):
+            for item in value.values():
+                remember(item)
+        elif isinstance(value, list):
+            for item in value:
+                remember(item)
+
+    remember(content)
+    with contextlib.suppress(ValueError):
+        remember(json.loads(content))
 
 
 def number(value: Any) -> float | None:
@@ -240,7 +285,7 @@ def save(
     invocation = uuid.uuid4().hex
     directory = workspace.parent
     stem = f"{workspace.name}-{backend}-{invocation}"
-    secrets = (harness.api_key, *issued_tokens())
+    secrets = (harness.api_key, *issued_tokens(), *state.get("credential_secrets", ()))
     artifacts: dict[str, Any] = {}
 
     def store(name: str, content: str, suffix: str, *, redacted: bool = False) -> str:
@@ -340,34 +385,91 @@ def save(
         "num_turns": result.num_turns or None,
         "tokens": result.tokens,
         "cost_usd": result.cost_usd,
-        "brief_sha256": hashlib.sha256(brief.encode()).hexdigest(),
+        "verified": bool(getattr(harness, "container_image", "")),
+        "brief_sha256": hashlib.sha256(state["prompt"].encode()).hexdigest(),
         "artifacts": artifacts,
     }
     record_path = _write_private(directory, stem, ".session.json", json.dumps(record, indent=2))
+    if record_path:
+        index_session(directory, invocation, record_path, record)
     return replace(result, prompt_path=prompt_path, session_record_path=record_path)
 
 
-def session_totals(directory: Path) -> dict[str, Any]:
-    """Tolerant reads: legacy runs without sidecars have unknown coverage."""
-    known = 0.0
-    unknown = 0
-    count = 0
-    for path in directory.glob("*.session.json"):
-        count += 1
+def read_index(directory: Path) -> dict[str, Any]:
+    """Read only the kernel's fixed index, never discover records from sidecars."""
+    try:
+        data = json.loads((directory / SESSION_INDEX).read_text())
+    except FileNotFoundError:
+        return {}
+    if (
+        not isinstance(data, dict)
+        or data.get("schema_version") != 1
+        or not isinstance(data.get("sessions"), dict)
+        or any(
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("verified"), bool)
+            or "cost_usd" not in entry
+            or (entry["cost_usd"] is not None and number(entry["cost_usd"]) is None)
+            for entry in data["sessions"].values()
+        )
+    ):
+        raise ValueError("invalid session index")
+    return data["sessions"]
+
+
+def index_session(
+    directory: Path, invocation: str, record_path: str, record: dict[str, Any]
+) -> None:
+    """Serialize kernel updates and atomically publish a complete snapshot.
+
+    The run directory is under the state root, outside the workspace and HOME
+    bound into contained sessions. Local mode shares the operator's filesystem
+    authority, so its entries are persisted but unverified.
+    """
+    from outerloop.harness import _write_private
+
+    fd = os.open(directory / ".session-index-lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        sessions = read_index(directory)
+        sessions[invocation] = {
+            "record_path": record_path,
+            "cost_usd": number(record["cost_usd"]),
+            "verified": record["verified"],
+        }
+        temporary = _write_private(
+            directory,
+            ".session-index-" + uuid.uuid4().hex,
+            ".tmp",
+            json.dumps({"schema_version": 1, "sessions": sessions}),
+        )
+        if not temporary:
+            raise OSError("could not write session index")
         try:
-            data = json.loads(path.read_text())
-            cost = number(data.get("cost_usd"))
-            if cost is None:
-                unknown += 1
-            else:
-                known += cost
-        except (OSError, ValueError, AttributeError):
-            unknown += 1
+            with open(temporary, "rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, directory / SESSION_INDEX)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def session_totals(directory: Path) -> dict[str, Any]:
+    """Persisted totals; containment supplies authority, not file permissions."""
+    try:
+        entries = tuple(read_index(directory).values())
+    except (OSError, ValueError):
+        log.warning("could not read session index in %s", directory, exc_info=True)
+        entries = ()
+    costs = tuple(number(entry["cost_usd"]) for entry in entries)
+    known = sum(cost for cost in costs if cost is not None)
+    unknown = sum(cost is None for cost in costs)
+    count = len(costs)
     return {
         "session_cost_usd": known if count and not unknown else None,
         "known_session_cost_usd": known,
         "unpriced_sessions": unknown,
         "captured_sessions": count,
+        "verified": bool(entries) and all(entry["verified"] for entry in entries),
     }
 
 

@@ -36,6 +36,7 @@ from outerloop.session_evidence import (
     active,
     capture_session,
     number,
+    provision_credential_file,
     read_bounded,
     usage,
 )
@@ -241,7 +242,8 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     at write time, not capture time."""
     from outerloop.appauth import issued_tokens
 
-    for secret in sorted((*secrets, *issued_tokens()), key=len, reverse=True):
+    credentials = (active.get() or {}).get("credential_secrets", ())
+    for secret in sorted((*secrets, *issued_tokens(), *credentials), key=len, reverse=True):
         if secret:
             text = text.replace(secret, "[redacted]")
     return text
@@ -793,6 +795,9 @@ class ClaudeCodeHarness:
                     # with the prefix stripped — the key travels via the
                     # environment, never argv (argv is world-readable in /proc).
                     env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
+            if self.vertex is not None and self.vertex.adc_file:
+                # Also mounted when an endpoint overrides Vertex authentication.
+                provision_credential_file(Path(self.vertex.adc_file))
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -1023,12 +1028,13 @@ def _parse_codex_result(
             if isinstance(message, str):
                 errors.append(message)
         elif etype == "turn.failed":
+            incomplete_usage = True
             saw_error = True
             err = event.get("error")
             message = err.get("message") if isinstance(err, dict) else None
             if isinstance(message, str):
                 errors.append(message)
-    if incomplete_usage:
+    if incomplete_usage or saw_error or returncode != 0:
         tokens = {}  # Partial invocation totals must never be priced as complete.
     is_error = returncode != 0 or saw_error
     detail = "; ".join(errors)[:500]
@@ -1310,6 +1316,7 @@ class CodexHarness:
             env = session_env(self.api_key, key_env, session_home)
             if self.container_image:
                 env[f"APPTAINERENV_{key_env}"] = self.api_key
+            provision_credential_file(session_home / ".codex" / "auth.json")
             process = subprocess.Popen(
                 command,
                 cwd=workspace,

@@ -14,7 +14,14 @@ Versions follow [SemVer](https://semver.org).
   and unpriced session counts. Bound native discovery by depth, entries, and
   elapsed time; withhold unresolved secret prefixes at truncation boundaries.
   Incomplete Codex turn usage remains unpriced, and final-message reads refuse
-  symlinks at every path component and apply a byte cap.
+  symlinks at every path component and apply a byte cap. Redact provisioned
+  credential file contents before retention, leave failed Codex invocations
+  unpriced, and hash Hermes's delivered resume prompt. Cost totals persist in a
+  kernel-written, atomically replaced index outside the workspace and session
+  HOME. Separate readers and restarted kernels retain totals; any uncontained
+  invocation marks them unverified, also shown in status.
+  Upgrading: legacy sidecars are not imported into cost totals; pre-index history
+  has unknown coverage.
   Upgrading: new session sidecars and stage usage fields are additive; older
   records without them remain readable, with unknown evidence coverage and no
   fabricated token backfill. Numeric legacy costs retain their meaning. New

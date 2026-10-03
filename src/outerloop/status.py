@@ -95,6 +95,8 @@ def render_text(status: dict[str, Any]) -> str:
         )
         cost = run.get("session_cost_usd")
         line += f" session-cost={'$' + format(cost, '.4f') if cost is not None else 'unknown'}"
+        if not run.get("verified", False):
+            line += " (unverified)"
         line += f" unpriced-sessions={run.get('unpriced_sessions', 0)}"
         if wait := run["endpoint_wait"]:
             line += (

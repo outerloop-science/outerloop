@@ -72,6 +72,7 @@ roadmap: README.md
                 "known_session_cost_usd": 0.0,
                 "unpriced_sessions": 0,
                 "captured_sessions": 0,
+                "verified": False,
                 "gpu_hours_used": 2.5,
                 "gpu_hours_budget": 8.0,
                 "endpoint_wait": {"endpoint": "local", "since": 100},
