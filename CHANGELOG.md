@@ -6,6 +6,12 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Removed
+
+- Upgrading: the contract budget key `climb_job_minutes` is no longer read; a
+  contract that still uses it fails validation. Rename it to
+  `attempt_job_minutes` before upgrading.
+
 ### Upgrading
 
 Operator actions (everything else needs no action; details in each entry):
