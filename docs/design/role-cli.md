@@ -1,6 +1,7 @@
 # The role CLI: one tool surface per agentic role
 
-**Status: plan (2026-08-24), reviewable before code.** The author's launch/sleep
+**Status: plan (2026-08-24); the author and judge verbs have shipped (see the
+table).** The author's launch/sleep
 tool (#133) proved a pattern worth generalizing: the agent-facing surface for
 every kernel interaction is a **kernel-installed CLI**; any file or schema
 behind it is **internal ABI**. This doc plans that rollout across the roles and
@@ -53,8 +54,9 @@ One `.outerloop/syscall` tool, its live verbs gated per role by RoleSpec:
 
 | Role | Verbs | Win | Installed where |
 | --- | --- | --- | --- |
-| author | `launch` / `note` / `status` / `sleep` (#133) · `submit` (Phase B) · later `pr`, `retrieve` | A | sandbox (standalone) |
-| reviewer / verifier / panel | `finding` / `conclude` (verdict as a syscall type) | B | orchestrator-side |
+| author | `launch` / `message` / `submit` / `sleep` / `end` (shipped) · later `pr` | A | sandbox (standalone) |
+| reviewer / verifier / panel | `finding` / `conclude` (verdict as a syscall type; shipped) | B | orchestrator-side |
+| shared (RoleSpec picks per role) | `status` / `history` / `queue` / `reports` / `siblings` / `sync` / `cancel` (shipped) | — | with the role |
 | planner | `plan propose` | B (+ policy-as-validation) | orchestrator-side |
 | steward | contract-edit + GitHub-write verbs | A + B | orchestrator-side |
 
