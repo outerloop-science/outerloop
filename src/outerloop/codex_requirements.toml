@@ -1,0 +1,3 @@
+# Bound read-only at /etc/codex/requirements.toml for every contained Codex role.
+# Codex 0.160.0 does not read requirements from CODEX_HOME.
+allow_managed_hooks_only = true

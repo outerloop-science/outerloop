@@ -891,6 +891,38 @@ def _parse_result(stdout: str) -> dict[str, Any] | None:
     return candidates[0] if candidates else None
 
 
+def _seed_codex_config(session_home: Path, config: str) -> bool:
+    """Replace user config without following session-planted links or hardlinks."""
+    fds: list[int] = []
+    temporary = f".config-{uuid.uuid4().hex}.toml"
+    try:
+        parent_fd = os.open(session_home.parent, os.O_RDONLY | os.O_DIRECTORY)
+        fds.append(parent_fd)
+        home_fd = _open_nofollow_dir(session_home.name, parent_fd)
+        if home_fd < 0:
+            return False
+        fds.append(home_fd)
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(".codex", mode=0o700, dir_fd=home_fd)
+        codex_fd = _open_nofollow_dir(".codex", home_fd)
+        if codex_fd < 0:
+            return False
+        fds.append(codex_fd)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=codex_fd)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(config)
+        os.replace(temporary, "config.toml", src_dir_fd=codex_fd, dst_dir_fd=codex_fd)
+        return True
+    except OSError:
+        return False
+    finally:
+        if len(fds) == 3:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary, dir_fd=fds[-1])
+        for fd in reversed(fds):
+            os.close(fd)
+
+
 def _codex_command(
     binary: str,
     model: str,
@@ -905,7 +937,7 @@ def _codex_command(
     The prompt is NOT an argument: `codex exec` reads it from stdin when no
     positional prompt is given, keeping the brief out of world-readable /proc
     argv (the same rule as the Claude adapter). Flags verified against
-    codex-cli 0.130.0 (`codex exec[ resume] --help`): --json, --model,
+    codex-cli 0.160.0 (`codex exec[ resume] --help`): --json, --model,
     --output-last-message, --skip-git-repo-check, and the stdin prompt behavior.
 
     Fresh and resume take DIFFERENT flags. `codex exec` has `--sandbox` and
@@ -957,15 +989,16 @@ def _parse_codex_result(
 
     `final_text` comes from the --output-last-message file, which is reliable.
     `session_id` is the `thread.started` event's `thread_id`, verified against
-    codex-cli 0.130.0 (a `codex exec resume <thread_id>` recalls the session).
+    codex-cli 0.160.0 (a `codex exec resume <thread_id>` recalls the session).
     Cost is left at 0 (these backends are subscription or token metered; the
     budget layer meters them by a session/token proxy). Never raises.
     """
-    # Event schema verified against codex-cli 0.130.0:
+    # Event schema verified against codex-cli 0.160.0:
     #   thread.started -> thread_id (the session id)
+    #   turn.completed -> success (usage carries tokens)
+    # Error shapes last verified against codex-cli 0.130.0:
     #   error          -> message
     #   turn.failed    -> error.message
-    #   turn.completed -> success (usage carries tokens)
     session_id = ""
     saw_error = False
     errors: list[str] = []
@@ -1018,7 +1051,7 @@ class CodexHarness:
     """Headless OpenAI Codex CLI (`codex exec`) — a second Harness backend.
 
     Stage 1's swappability proof (docs/design/consolidation.md). CLI flags AND
-    headless resume are verified against codex-cli 0.130.0 (`session_id` = the
+    headless resume are verified against codex-cli 0.160.0 (`session_id` = the
     `thread.started` `thread_id`; resume recalls it); cost parsing stays
     best-effort (these backends are metered by a session/token proxy in the
     budget layer).
@@ -1083,6 +1116,11 @@ class CodexHarness:
             "--bind",
             f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
+        argv += [
+            "--bind",
+            f"{Path(__file__).with_name('codex_requirements.toml').resolve()}:"
+            "/etc/codex/requirements.toml:ro",
+        ]
         if self.endpoint and self.endpoint.codex_bridge:
             from outerloop.bridge_install import runtime_path
 
@@ -1099,10 +1137,12 @@ class CodexHarness:
         AUTHOR mode the login runs inside apptainer with the same bound --home,
         so auth.json lands where the contained exec will read it."""
         env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
+        env["CODEX_HOME"] = str((session_home / ".codex").absolute())
         if self.container_image:
             # --cleanenv drops host env inside the container except APPTAINERENV_*
             # (prefix stripped by apptainer): the key travels via env, not argv.
             env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
+            env["APPTAINERENV_CODEX_HOME"] = env["CODEX_HOME"]
             login_argv = self._apptainer_argv(
                 [self.CONTAINER_CODEX, "login", "--with-api-key"], session_home, None
             )
@@ -1150,6 +1190,8 @@ class CodexHarness:
                 # mount time deep inside apptainer — catch it here instead
                 log.warning("contained codex needs an absolute binary path")
                 return _error_result("config-error")
+        if any("dangerously-bypass-hook-trust" in arg for arg in self.extra_args):
+            return _error_result("config-error", detail="hook trust bypass is forbidden")
         transcript_stem = f"{workspace.name}-codex"
         session_home = workspace.parent / f"{workspace.name}-home"
         try:
@@ -1199,13 +1241,11 @@ class CodexHarness:
                 return _error_result(
                     "bridge-runtime-missing", detail="run outerloop harness upgrade bridge"
                 )
+        # Rebuild user config on EVERY launch, including resume: the previous
+        # session can write hook trust into it. Durable transcripts stay intact.
+        config = ""
         # Native OpenAI sessions log in via stdin; endpoint sessions use env_key.
         if self.endpoint:
-            codex_dir = session_home / ".codex"
-            try:
-                codex_dir.mkdir(mode=0o700, exist_ok=True)
-            except OSError:
-                return _error_result("workspace-error", detail="could not create codex config dir")
             if bridge:
                 base_url = "http://127.0.0.1:1/v1"
             else:
@@ -1219,19 +1259,9 @@ class CodexHarness:
                 'wire_api = "responses"\n'
                 "requires_openai_auth = false\n"
             )
-            if not _write_private_fixed(codex_dir / "config.toml", config):
-                return _error_result("workspace-error", detail="could not seed codex config")
             self._purge_auth(session_home)
-        else:
-            config_path = session_home / ".codex/config.toml"
-            previous = _read_no_follow(config_path) or ""
-            if previous.startswith('model_provider = "outerloop_endpoint"\n'):
-                try:
-                    config_path.unlink()
-                except OSError:
-                    return _error_result(
-                        "workspace-error", detail="could not clear endpoint config"
-                    )
+        if not _seed_codex_config(session_home, config):
+            return _error_result("workspace-error", detail="could not seed codex config")
         login_error = None if self.endpoint else self._login(session_home)
         if login_error is not None:
             return login_error
@@ -1244,6 +1274,10 @@ class CodexHarness:
             last_message_path.unlink()
         # contained runs invoke the image's codex (on PATH); uncontained the
         # host binary. The exec binds the workspace and sets it as --pwd.
+        # Unix requirements have no per-process override in 0.160.0. Contained
+        # runs bind our managed-only policy; bare processes disable hooks and
+        # plugins (bundled cleanup hooks otherwise survive hooks=false). These
+        # CLI settings follow operator extra args so project config cannot win.
         codex_argv = _codex_command(
             self.CONTAINER_CODEX if self.container_image else self.binary,
             self.model,
@@ -1251,7 +1285,9 @@ class CodexHarness:
             workspace,
             last_message_path,
             resume_session_id,
-            self.extra_args,
+            (*self.extra_args, "-c", "features.plugins=false", "-c", "features.hooks=false")
+            if not self.container_image
+            else self.extra_args,
         )
         if bridge:
             assert self.endpoint is not None
@@ -1272,8 +1308,10 @@ class CodexHarness:
         try:
             key_env = "OUTERLOOP_SESSION_KEY" if self.endpoint else "OPENAI_API_KEY"
             env = session_env(self.api_key, key_env, session_home)
+            env["CODEX_HOME"] = str((session_home / ".codex").absolute())
             if self.container_image:
                 env[f"APPTAINERENV_{key_env}"] = self.api_key
+                env["APPTAINERENV_CODEX_HOME"] = env["CODEX_HOME"]
             process = subprocess.Popen(
                 command,
                 cwd=workspace,

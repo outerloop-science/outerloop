@@ -1864,7 +1864,7 @@ def test_editor_harness_codex_backend_is_contained() -> None:
         "-c",
         "tools.web_search=true",
     )
-    assert harness.supports_resume is True  # codex exec resume, validated on 0.130.0
+    assert harness.supports_resume is True  # codex exec resume, validated on 0.160.0
     with pytest.raises(ValueError, match="unknown backend"):
         build_harness("sk-o", spec, backend="bogus", container_image="img.sif")
 
