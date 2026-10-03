@@ -14,6 +14,12 @@ Versions follow [SemVer](https://semver.org).
   walltime, research lines off). A contract that fails to load still leaves
   parked runs parked until it is fixed.
 
+### Removed
+
+- Upgrading: the contract budget key `climb_job_minutes` is no longer read; a
+  contract that still uses it fails validation. Rename it to
+  `attempt_job_minutes` before upgrading.
+
 ### Added
 
 - Add optional per-benchmark `regression` allowances with a free tolerance,
