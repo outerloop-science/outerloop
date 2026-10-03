@@ -532,3 +532,63 @@ def test_v021_baseline_cache_miss_retry_reuse(tmp_path, monkeypatch, interrupt):
     assert isinstance(second, MeasureOK) and second.baseline == 0.5
     assert second.baseline_note
     assert len(measured) == 2 and path.read_bytes() == saved
+
+
+@pytest.mark.parametrize(
+    "memory,passes,rule", [(133, True, "gain-unlocked"), (160, False, "hard-cap")]
+)
+@pytest.mark.parametrize("direction,main_candidate", [("max", 127), ("min", 73)])
+def test_conditional_memory_gate(memory, passes, rule, direction, main_candidate):
+    text = (
+        CONTRACT.replace("direction: max", "direction: min")
+        .replace("metric: r2\n    direction: min", f"metric: r2\n    direction: {direction}")
+        .replace(
+            "min_delta: 0.02",
+            """min_delta_rel: 0.05
+    regression:
+      free_rel: 0.005
+      max_rel: 0.5
+      requires_gain_rel: 0.05""",
+        )
+    )
+    out = _decide(
+        FakeMeasurer(
+            {
+                "baseline": 100,
+                "candidate": main_candidate,
+                "sib-sib-base": 100,
+                "sib-sib-cand": memory,
+            }
+        ),
+        measured_paths=("src/shared/util.py",),
+        text=text,
+    )
+    assert isinstance(out, MeasureOK) is passes
+    assert out.suite[0].rule == rule
+    assert out.suite[0].regressed is not passes
+    if not passes:
+        assert out.outcome == "suite-regression"
+
+
+@pytest.mark.parametrize(
+    "baseline,candidate,passes",
+    [(0.3, 0.314999, False), (0.3, 0.315, True), (0.3, 0.315001, True), (0, 0.03, False)],
+)
+def test_suite_unlock_uses_exact_measured_relative_gain(baseline, candidate, passes):
+    text = CONTRACT.replace(
+        "min_delta: 0.02",
+        """min_delta_rel: 0.05
+    regression:
+      free_rel: 0.005
+      max_rel: 0.5
+      requires_gain_rel: 0.05""",
+    )
+    out = _decide(
+        FakeMeasurer(
+            {"baseline": baseline, "candidate": candidate, "sib-sib-base": 100, "sib-sib-cand": 67}
+        ),
+        measured_paths=("src/shared/util.py",),
+        text=text,
+    )
+    assert isinstance(out, MeasureOK) is passes
+    assert out.suite[0].rule == ("gain-unlocked" if passes else "insufficient-gain")
