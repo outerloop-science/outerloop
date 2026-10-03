@@ -6,6 +6,22 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Retain private per-invocation session evidence: delivered prompt, bounded native
+  log, timestamps, identifiers, usage, and SHA-256 hashes beside existing captures.
+  Record missing logs and truncation without failing the author. Capture Codex and
+  Hermes tokens and price them with `OUTERLOOP_TOKEN_PRICES`; unpriced cost is
+  unknown, while explicit zero prices remain zero. Status exposes known spend
+  and unpriced session counts. Bound native discovery by depth, entries, and
+  elapsed time; withhold unresolved secret prefixes at truncation boundaries.
+  Incomplete Codex turn usage remains unpriced, and final-message reads refuse
+  symlinks at every path component and apply a byte cap.
+  Upgrading: new session sidecars and stage usage fields are additive; older
+  records without them remain readable, with unknown evidence coverage and no
+  fabricated token backfill. Numeric legacy costs retain their meaning. New
+  unknown costs use JSON null; older kernels that coerce parked costs with
+  `float()` cannot resume those records without an update. Drain parked runs
+  before rolling back to such a kernel.
+
 - Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: An eval dispatched by the previous kernel and still in flight at upgrade is measured again once under the new cache key (no extra budget charge). To avoid the extra run, upgrade when no evals are in flight: `touch <root>/PAUSE` (stops wakes, so no new evals are dispatched), wait until no eval jobs remain in the queue, upgrade, then `rm <root>/PAUSE` and run `outerloop start`.
 
 - Park launch capacity refusals in capacity wait when an immediate resume is

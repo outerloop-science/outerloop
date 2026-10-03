@@ -229,7 +229,7 @@ def run_agent_review(
                 "emitted findings for %s#%s (cost=%s turns=%d)",
                 repo,
                 number,
-                f"${cost:.2f}" if cost else "unreported",
+                f"${cost:.2f}" if cost is not None else "unknown",
                 role_result.session.num_turns,
             )
             return "emitted"
@@ -257,7 +257,7 @@ def run_agent_review(
             round_label,
             repo,
             number,
-            f"${cost:.2f}" if cost else "unreported",
+            f"${cost:.2f}" if cost is not None else "unknown",
             role_result.session.num_turns,
         )
         return round_label

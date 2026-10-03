@@ -66,7 +66,6 @@ from outerloop.harness import (
     ClaudeModelUnset,
     Harness,
     ResumeContextBlocked,
-    SessionResult,
     default_binary,
     default_claude_model,
     redact,
@@ -128,6 +127,7 @@ from outerloop.runstate import (
 from outerloop.runstate import (
     run_dir as run_dir_of,
 )
+from outerloop.session_evidence import restore_session
 from outerloop.syscall import (
     MAX_ARTIFACT_BYTES,
     MAX_REPLY_CHARS,
@@ -738,6 +738,8 @@ def _park_run(
         )[:MAX_CLAIM_CHARS],
         "session_cost_usd": parked.session.cost_usd if parked.session else 0.0,
         "session_turns": parked.session.num_turns if parked.session else 0,
+        "session_tokens": parked.session.tokens if parked.session else {},
+        "session_record_path": parked.session.session_record_path if parked.session else "",
     }
     if parked.submitted:
         # a SUBMITTED candidate park (buildout Phase B): the wake delivers the
@@ -2903,15 +2905,7 @@ def resume_run(
 
     # rebuild the session from what the park saved: the (redacted) write-up and
     # its real spend, so the report shows true cost/turns. It is never re-run.
-    session = SessionResult(
-        stop_reason="resumed",
-        is_error=False,
-        cost_usd=float(stage.get("session_cost_usd", 0.0)),  # type: ignore[arg-type]
-        num_turns=int(stage.get("session_turns", 0)),  # type: ignore[call-overload]
-        session_id=record.resume_session_id,
-        final_text=str(stage.get("report", "")),
-        transcript_path="",
-    )
+    session = restore_session(stage, record.resume_session_id)
     try:
         result = resume_attempt(
             contract,

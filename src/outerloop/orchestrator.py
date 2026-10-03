@@ -552,8 +552,11 @@ class AttemptResult:
         if self.note:
             lines.append(f"Note: {self.note}")
         if self.session is not None:
+            cost = (
+                f"${self.session.cost_usd:.2f}" if self.session.cost_usd is not None else "unknown"
+            )
             lines += [
-                f"Session: cost=${self.session.cost_usd:.2f}, "
+                f"Session: cost={cost}, "
                 f"turns={self.session.num_turns}, stop={self.session.stop_reason}",
                 "",
                 "## Agent's report",

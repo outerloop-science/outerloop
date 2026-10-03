@@ -285,3 +285,30 @@ def test_run_does_not_follow_a_symlinked_run_home(monkeypatch: Any, tmp_path: Pa
     monkeypatch.setattr(CodexHarness, "_login", lambda self, hm: None)
     CodexHarness(api_key="k").run("brief", workspace)
     assert (outside / ".codex" / ".tmp" / "keep" / "f").read_text() == "x"  # untouched
+
+
+def test_last_message_rejects_author_symlink(monkeypatch: Any, tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    confidential = tmp_path / "host-confidential.txt"
+    confidential.write_text("synthetic confidential host contents")
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs: Any) -> None:
+            self.last_message = Path(command[command.index("--output-last-message") + 1])
+
+        def communicate(self, **kwargs: Any) -> tuple[str, str]:
+            self.last_message.symlink_to(confidential)
+            return '{"type":"turn.completed"}', ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(CodexHarness, "_login", lambda self, home: None)
+    result = CodexHarness(api_key="k").run("brief", workspace)
+    assert not result.is_error
+    assert result.final_text == ""
+    assert confidential.read_text() == "synthetic confidential host contents"
+    for artifact in tmp_path.glob("ws-*"):
+        if artifact.is_file():
+            assert "synthetic confidential host contents" not in artifact.read_text()

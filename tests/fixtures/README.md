@@ -30,3 +30,8 @@ The other fixtures carry their originating kernel commit in their filenames.
 - `author_route_missing_model.json` and `author_route_missing_route.json`: synthetic
   derivatives of `author_route_legacy.json` with model or all route fields omitted,
   exercising pre-field writers through load/save and the new kernel wake entry point.
+
+- `session_cost_legacy.json`: synthetic parked-session stage in the
+  pre-session-evidence shape (numeric cost and turns, no tokens or artifact
+  paths). The production parked-session reader preserves that cost and report,
+  tolerates absent new fields, and accepts new null costs without a migration.

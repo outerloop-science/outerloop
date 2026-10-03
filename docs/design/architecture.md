@@ -289,7 +289,7 @@ grep + recency + distillation until that provably fails.
 | Module | Job |
 | --- | --- |
 | `contract` | Schema + loader for `.outerloop.yaml`, incl. the hard-coded invariants |
-| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-run HOME, fresh per run; brief on stdin, never argv); capture transcript and cost (the orchestrator captures the diff); secret-scan transcripts before storage. See "Harness and context engineering" below |
+| `harness` | Run one agent session in a scrubbed environment (no PAT, no billing keys; per-run HOME, fresh per run; brief on stdin, never argv); capture private session evidence and usage (the orchestrator captures the diff); redact known secrets before storage. See [session capture](../session-capture.md). See "Harness and context engineering" below |
 | `orchestrator` | Tick logic: sentinel, lease, task selection, session dispatch, state sync |
 | `compute` | sbatch/squeue submit-and-poll behind one interface |
 | `github` | Bot auth and push (orchestrator-side, after sessions end), PR/issue ops |

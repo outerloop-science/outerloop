@@ -68,10 +68,11 @@ def test_command_shape_and_toolsets() -> None:
         ("terminal", "web"),
         (),
     )
-    assert cmd[:3] == [
+    assert cmd[:4] == [
         str(hermes_runtime(Path("/opt/hermes")) / "venv/bin/python"),
         "-B",
-        "/opt/hermes/run_agent.py",
+        str(Path(harness_mod.__file__).with_name("hermes_capture.py")),
+        "/opt/hermes",
     ]
     assert "uv" not in cmd
     assert "--save_sample" in cmd
@@ -488,3 +489,47 @@ def test_legacy_resume_replay_retry_does_not_rewrite_history(monkeypatch, tmp_pa
     saved = json.loads(path.read_text())
     assert saved["turns"][:2] == legacy["turns"]
     assert "original" in seen["brief_text"] and "latest results" in seen["brief_text"]
+
+
+def test_native_capture_preserves_legacy_turn_count(monkeypatch: Any, tmp_path: Path) -> None:
+    home = tmp_path / "ws-home"
+    reported = {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs: Any) -> None:
+            self.capture_id = kwargs["env"]["OUTERLOOP_CAPTURE_ID"]
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            (home / "sample_current.json").write_text(
+                json.dumps(
+                    {
+                        "conversations": [
+                            {"from": "gpt", "value": "<tool_call>synthetic</tool_call>"},
+                            {"from": "gpt", "value": "Synthetic final"},
+                        ]
+                    }
+                )
+            )
+            (home / f"evidence-{self.capture_id}.json").write_text(
+                json.dumps(
+                    {
+                        "usage": reported,
+                        "messages": [
+                            {"role": "assistant", "content": None, "tool_calls": []},
+                            {"role": "assistant", "content": "Synthetic final"},
+                        ],
+                    }
+                )
+            )
+            return "Synthetic stdout", ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", Process)
+    result = HermesHarness(api_key="synthetic-key", repo_dir=tmp_path / "hermes").run(
+        "Synthetic brief", tmp_path / "ws"
+    )
+    assert not result.is_error
+    assert result.num_turns == 2
+    assert result.final_text == "Synthetic final"
+    assert result.tokens == reported
