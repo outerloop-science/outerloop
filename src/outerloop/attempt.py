@@ -2837,7 +2837,8 @@ def resume_run(
 
     base_sha = str(stage["base_sha"])
     candidate_sha = str(stage["candidate_sha"])
-    candidate_ref = str(stage["candidate_ref"])
+    # v0.2.1 author-sleep parks carry no candidate_ref; the current writer uses ""
+    candidate_ref = str(stage.get("candidate_ref") or "")
     issue_number = record.issue_number
     # the run's target branch rides the stage, so a wake opens its PR against
     # the branch the ORIGINAL climb selected — not the CLI's default (the wake

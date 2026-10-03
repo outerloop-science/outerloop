@@ -8107,8 +8107,12 @@ def test_v021_capacity_refusal_park_resume(tmp_path, monkeypatch, sessionless, i
     raw = json.loads((source / ("sessionless.json" if sessionless else "open.json")).read_text())
     # Only test-repository coordinates change; every durable key comes from v0.2.1.
     raw.update(target="org/pilot", pr_url="")
-    for key in ("base_sha", "candidate_sha", "candidate_ref"):
+    # point the real v0.2.1 record at this test repository; keep its shape
+    # (a v0.2.1 author-sleep park has no candidate_ref; the wake must tolerate it)
+    for key in ("base_sha", "candidate_sha"):
         raw["stage"][key] = coordinates[key]
+    if "candidate_ref" in raw["stage"]:
+        raw["stage"]["candidate_ref"] = coordinates["candidate_ref"]
     (directory / "state.json").write_text(json.dumps(raw))
     legacy = load_record(state, run_id)
     assert "capacity_wait" not in legacy.stage
@@ -8215,8 +8219,12 @@ def test_v021_sessionless_author_sleep_resumes_directly(
     coordinates = load_record(state, run_id).stage
     raw = json.loads((Path(__file__).parent / "fixtures/rc1_v021/sessionless.json").read_text())
     raw["target"] = "org/pilot"
-    for key in ("base_sha", "candidate_sha", "candidate_ref"):
+    # point the real v0.2.1 record at this test repository; keep its shape
+    # (a v0.2.1 author-sleep park has no candidate_ref; the wake must tolerate it)
+    for key in ("base_sha", "candidate_sha"):
         raw["stage"][key] = coordinates[key]
+    if "candidate_ref" in raw["stage"]:
+        raw["stage"]["candidate_ref"] = coordinates["candidate_ref"]
     if outstanding:
         raw["stage"]["afterany"] = "afterany:501"
         raw["stage"]["syscall_launches"] = [{"name": "probe"}]

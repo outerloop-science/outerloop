@@ -19,19 +19,18 @@ Operator actions (everything else needs no action; details in each entry):
   under the new cache key, with no extra charge.
 - Parked authors keep the instructions they started with; judges use the new
   rubric at once.
+- Runs parked by the previous kernel resume after the upgrade.
 - Before rolling back: consume pending rebind requests, finish capacity-parked
   runs, runs with extended session limits, overridden and endpoint-routed runs,
   and chat-only Codex sessions, and stop additional instances.
 
-- A PR is one idea, not one knob: an idea may bring the few changes it needs
-  when the report gives each change's own effect, and a larger idea touching
-  several places is welcome. Authors are told to sweep a hyperparameter or size
-  in one array launch and show the landscape around the chosen value; the panel
-  may block a single-point tuning change that gives no such picture (new
-  `landscape` finding category). Upgrading: no action; judges apply the new
-  rubric at once, an author parked across the upgrade keeps the instructions it
-  started with (they are not re-delivered), and a reader that does not know the
-  `landscape` category treats it as `other`. (Listed under 0.2.1 by mistake; it
+- A PR tests one idea. It may include the few changes that idea needs, and the
+  report states the effect of each change. Authors test several values in one
+  array launch and report the results around the chosen value; the panel may
+  block a single-value tuning change without them (new `landscape` finding
+  category). Upgrading: no action. Judges use the new rubric at once. An author
+  parked across the upgrade keeps the instructions it started with. Older readers
+  treat `landscape` as `other`. (This was listed under 0.2.1 by mistake; it
   shipped after that tag.)
 
 - Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: no action. An eval or baseline recorded by the previous kernel, in flight or finished, is measured again once under the new cache key, with no extra budget charge; pausing or draining before the upgrade does not avoid it.
