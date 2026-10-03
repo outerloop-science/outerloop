@@ -607,3 +607,44 @@ def test_corrupt_index_does_not_fall_back_to_sidecars(tmp_path):
     totals = session_totals(tmp_path)
     assert totals["session_cost_usd"] is None
     assert totals["verified"] is False
+
+
+@pytest.mark.parametrize("errored", [False, True])
+def test_errored_sessions_are_not_priced(tmp_path, monkeypatch, errored):
+    from dataclasses import replace
+
+    monkeypatch.setenv(
+        "OUTERLOOP_TOKEN_PRICES",
+        json.dumps({"test-model": {"input_tokens": 2, "output_tokens": 10}}),
+    )
+
+    class Adapter:
+        api_key = "synthetic-secret"
+        model = "test-model"
+
+        @capture_session("hermes")
+        def run(self, brief, workspace, resume_session_id=None):
+            events = [
+                {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ]
+            done = _parse_codex_result("\n".join(map(json.dumps, events)), "done", 0)
+            return replace(done, is_error=errored, stop_reason="error" if errored else "end")
+
+    result = Adapter().run("brief", tmp_path / "ws")
+    assert (result.cost_usd is None) is errored  # partial usage is never priced
+
+
+def test_unreadable_credential_never_fails_the_session(tmp_path):
+    from outerloop.session_evidence import provision_credential_file
+
+    class Adapter:
+        api_key = "synthetic-secret"
+        model = "test-model"
+
+        @capture_session("codex")
+        def run(self, brief, workspace, resume_session_id=None):
+            provision_credential_file(tmp_path)  # a directory, not a readable file
+            events = [{"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}]
+            return _parse_codex_result("\n".join(map(json.dumps, events)), "done", 0)
+
+    assert Adapter().run("brief", tmp_path / "ws").final_text == "done"

@@ -53,6 +53,10 @@ def provision_credential_file(path: Path) -> None:
         content = path.read_text()
     except FileNotFoundError:
         return  # No file was provisioned (e.g. an ambient credential provider).
+    except (OSError, UnicodeDecodeError) as exc:
+        # capture is best-effort: never fail a session over its evidence
+        log.warning("could not snapshot credential %s for redaction: %s", path, exc)
+        return
     secrets = state.setdefault("credential_secrets", set())
 
     def remember(value: Any) -> None:
@@ -253,7 +257,9 @@ def capture_session(
                         )
                     except OSError:
                         pass
-                if backend != "claude" and result.stop_reason != "timeout":
+                # an errored or timed-out invocation may hold partial usage:
+                # leave its cost unknown rather than price an undercount
+                if backend != "claude" and result.stop_reason != "timeout" and not result.is_error:
                     result = replace(result, cost_usd=price(self.model, result.tokens))
                 try:
                     result = save(
