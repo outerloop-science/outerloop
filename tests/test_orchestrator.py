@@ -1503,7 +1503,8 @@ def test_pr_body_carries_the_suite_table(tmp_path: Path) -> None:
     )
     body = pr_body(result, CONFIG, redact_secrets=())
     assert "| sokoban | 0.8 | 0.8 |" in body
-    assert "none regressed beyond its floor" in body
+    assert "all passed their sibling regression policies" in body
+    assert "legacy-floor" in body
 
 
 def test_task_names_the_suite_gate_only_when_it_exists(tmp_path: Path) -> None:
@@ -3198,3 +3199,93 @@ def test_v021_capacity_error_becomes_durable_park(tmp_path, rc1_record):
     assert result.outcome == "no-improvement"
     assert len(refused) == 2
     assert all(meter == (1, 1, 0.1) for meter in meters)
+
+
+@pytest.mark.parametrize(
+    "candidate,gain,refused,rule",
+    [
+        (99, 0, False, "no-regression"),
+        (100, 0, False, "no-regression"),
+        (100.5, 0, False, "free-allowance"),
+        (100.5001, 0.049999, True, "insufficient-gain"),
+        (133, 0.049999, True, "insufficient-gain"),
+        (133, 0.05, False, "gain-unlocked"),
+        (133, 0.050001, False, "gain-unlocked"),
+        (149.9999, 0.27, False, "gain-unlocked"),
+        (150, 0.27, True, "hard-cap"),
+        (160, 0.27, True, "hard-cap"),
+        (133, None, True, "insufficient-gain"),
+        (133, float("nan"), True, "non-finite"),
+        (133, float("inf"), True, "non-finite"),
+        (float("nan"), 0.27, True, "non-finite"),
+        (float("inf"), 0.27, True, "non-finite"),
+    ],
+)
+def test_conditional_suite_regression(candidate, gain, refused, rule):
+    from outerloop.contract import Regression
+    from outerloop.orchestrator import suite_regressed, suite_regression_verdict
+
+    policy = Regression(free_rel=0.005, max_rel=0.5, requires_gain_rel=0.05)
+    args = dict(regression=policy, climbed_gain_rel=gain)
+    assert suite_regressed(100, candidate, "min", **args) is refused
+    assert suite_regression_verdict(100, candidate, "min", **args) == (refused, rule)
+
+
+@pytest.mark.parametrize("direction,baseline,sign", [("min", 100, 1), ("max", -100, -1)])
+def test_regression_units_directions_and_defaults(direction, baseline, sign):
+    from outerloop.contract import Regression
+    from outerloop.orchestrator import suite_regressed
+
+    def refused(loss, policy, **kwargs):
+        return suite_regressed(
+            baseline,
+            baseline + sign * loss,
+            direction,
+            min_delta=2,
+            min_delta_rel=0.05,
+            regression=policy,
+            **kwargs,
+        )
+
+    assert not refused(5, None)
+    assert refused(5.01, None)
+    assert not refused(5, Regression())
+    assert refused(5.01, Regression())
+    assert not refused(49, Regression(free_rel=0.005, max_rel=0.5))
+    assert refused(50, Regression(free_rel=0.005, max_rel=0.5))
+    assert not refused(2, Regression(max=10, requires_gain=3))
+    assert refused(3, Regression(max=10, requires_gain=3), climbed_gain=2.99)
+    assert not refused(3, Regression(max=10, requires_gain=3), climbed_gain=3)
+    assert refused(10, Regression(max=10, requires_gain=3), climbed_gain=100)
+    assert refused(5, Regression(free_rel=0.05, max_rel=0.05))
+
+
+def test_regression_zero_and_nonfinite_baseline():
+    from outerloop.contract import Regression
+    from outerloop.orchestrator import suite_regressed
+
+    policy = Regression(free_rel=0.005, max_rel=0.5)
+    assert not suite_regressed(0, 0, "min", regression=policy)
+    assert suite_regressed(0, 0.001, "min", regression=policy)
+    for baseline in (float("nan"), float("inf"), -float("inf")):
+        assert suite_regressed(baseline, 1, "min", regression=policy)
+        assert suite_regressed(baseline, 1, "min")
+
+
+def test_legacy_suite_row_and_rule_reports():
+    import json
+    from dataclasses import replace
+
+    from outerloop.orchestrator import AttemptResult, SuiteMeasurement
+
+    legacy = json.loads(
+        (Path(__file__).parent / "fixtures/suite_measurement_legacy.json").read_text()
+    )
+    row = SuiteMeasurement(**legacy)
+    assert row.rule == "legacy-floor"
+    for rule in ("legacy-floor", "gain-unlocked", "hard-cap"):
+        result = AttemptResult(
+            outcome="improved", baseline=100, candidate=73, suite=(replace(row, rule=rule),)
+        )
+        assert rule in result.report(CONFIG)
+        assert rule in pr_body(result, CONFIG, redact_secrets=())

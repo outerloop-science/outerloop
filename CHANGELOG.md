@@ -12,6 +12,16 @@ Versions follow [SemVer](https://semver.org).
   contract that still uses it fails validation. Rename it to
   `attempt_job_minutes` before upgrading.
 
+### Added
+
+- Add optional per-benchmark `regression` allowances with a free tolerance,
+  exclusive hard cap, and optional measured climbed-gain requirement, in
+  relative or absolute units. Suite rows and reports identify the applied rule.
+  Upgrading: no action for existing contracts; their gate behavior and measurement
+  signatures are unchanged. Legacy suite rows without `rule` default to
+  `legacy-floor`; the new row field is additive. Contracts using the new block
+  require this kernel version and must remove it before rolling back.
+
 ### Upgrading
 
 Operator actions (everything else needs no action; details in each entry):
