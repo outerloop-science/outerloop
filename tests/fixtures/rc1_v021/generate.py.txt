@@ -1,0 +1,72 @@
+import sys
+sys.path.insert(0, sys.argv[1])
+import json, os, subprocess, tempfile
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import Mock
+from outerloop.runstate import RunRecord, save_record
+from outerloop.measure import DispatchedMeasurer, Measure, write_baseline_cache
+from outerloop.brief import BriefInputs, Task, build_brief, render
+from outerloop.tick import write_pending
+from outerloop.launchlog import append_submitted
+from outerloop.syscall import Launch
+from outerloop.dispatch import write_eval_job, snapshot_tree
+from outerloop.github import Workspace
+from outerloop.attempt import _checkout_line, _push_line_snapshot
+
+out = Path(sys.argv[2]).resolve()
+out.mkdir(exist_ok=True)
+for kind in ('open', 'merged', 'ended', 'sessionless'):
+    record = RunRecord('one', 'owner/repo', 'research', 'ended' if kind == 'ended' else 'parked',
+        author_backend='claude', author_model='old-model', resume_session_id='' if kind == 'sessionless' else 's1',
+        pr_url='https://github.com/owner/repo/pull/9' if kind in ('open','merged') else '',
+        benchmark='tsp', ending='negative-result' if kind == 'ended' else '',
+        stage={'phase':'author-sleep', 'candidate_sha':'a'*40, 'base_sha':'b'*40,
+            'afterany':'', 'launches_used':1, 'sleeps_used':1, 'gpu_hours_used':0.1,
+            'seed':7, 'suite_seed':9, 'base_branch':'main', 'syscall_launches':[], 'report':'mid-flight'})
+    with tempfile.TemporaryDirectory() as t:
+        save_record(Path(t), record, 1000000)
+        (out / f'{kind}.json').write_bytes((Path(t)/'runs/one/state.json').read_bytes())
+(out/'pr-states.json').write_text(json.dumps({'open':{'state':'open','merged':False}, 'merged':{'state':'closed','merged':True}}))
+# New requests layered onto an old record; never pretend these existed in v0.2.1.
+(out/'rebind.json').write_text(json.dumps({'id':'upgrade-request', 'time':1000001, 'note':'move author'}))
+(out/'end-request.json').write_text(json.dumps({'requested_at':1000001, 'note':'operator stop'}))
+write_pending(out, 'owner/repo', 'bench', '100', 1)
+write_pending(out, 'owner/repo', 'bench', '101', 1, agent='agent-01')
+append_submitted(out, sleep=1, launches=(Launch('probe','true',1),), job_ids=['501'], at=1000000)
+write_eval_job(out, 'provenance', repo_root=Path('/fixture/repo'), snapshot_sha='a'*40, command='true', image='')
+write_baseline_cache(out/'baselines', 'main', 'a'*40, value=0.1, seed=7, run_tag='v021', image='/img.sif', command='run main', metric='score')
+backend=Mock(has_lanes=True)
+backend.submit.return_value='101'
+m=DispatchedMeasurer(backend, out/'eval-run', Path('/fixture/repo'), '/img.sif', 'a', 'p', 60, run_tag='r1', gpu_partition='gpu')
+measure=Measure('candidate','a'*40,'cmd','r2',(('SEED','7'),),1)
+m._dispatch(measure)
+(m._ev(measure)/'exit-code').write_text('0\n')
+(m._ev(measure)/'stdout').write_text('{"metric":"r2","value":0.1}\n')
+(out/'identity.json').write_text(json.dumps({'slot':m._slot(measure),'job_name':m._job_name(measure)}))
+(out/'queue.json').write_text(json.dumps([{'id':'501','name':'one-launch-probe','gpus':2},{'id':'502','name':replace(m, run_tag='one')._job_name(measure),'gpus':1},{'id':'503','name':'wake-one','gpus':0}]))
+(out/'brief.txt').write_text(render(build_brief(BriefInputs(task=Task('try narrower search','tsp','improve','measure'),contract_text='scope: {allowed: [src/pilot/solvers/]}',ruler='mean tour length',syscalls=True,launch_budget=3,sleep_budget=3), created='2026-09-01T00:00:00Z')))
+# Real prior-release line and dispatch refs, stored as a portable Git bundle.
+os.environ.update(GIT_AUTHOR_DATE='2026-09-01T00:00:00Z',GIT_COMMITTER_DATE='2026-09-01T00:00:00Z',OUTERLOOP_BOT_LOGIN='agentic-learning-bot')
+class Auth:
+    def token(self): return "unused"
+with tempfile.TemporaryDirectory() as t:
+    root=Path(t); repo=root/'repo'; repo.mkdir()
+    def git(*args): return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
+    git('init','-q','-b','main'); git('config','user.name','fixture');git('config','user.email','fixture@example.invalid')
+    (repo/'src').mkdir();(repo/'src/work.py').write_text('base\n');(repo/'protected.txt').write_text('base protected\n')
+    git('add','.');git('commit','-qm','base')
+    bare=root/'origin.git';subprocess.run(['git','clone','-q','--bare',str(repo),str(bare)],check=True)
+    git('remote','add','origin',str(bare))
+    git('fetch','-q','origin')
+    ws=Workspace(repo,auth=Auth())
+    _checkout_line(ws,repo,'agent-01','main')
+    (repo/'src/work.py').write_text('legacy admitted\n');(repo/'protected.txt').write_text('legacy unfiltered\n');(repo/'AGENT_MEMORY.md').write_text('legacy memory\n')
+    _push_line_snapshot(ws,'agents/agent-01','one','negative-result')
+    assert git('show','agents/agent-01:protected.txt')=='legacy unfiltered'
+    snapshot_tree(ws,git('rev-parse','HEAD'))
+    git('bundle','create',str(out/'line.bundle'),'--all')
+
+# Normalize only synthetic absolute coordinates; never execute the archived jobs.
+for script in out.rglob("job.sh"):
+    script.write_text(script.read_text().replace(str(out), "/fixture/state"))

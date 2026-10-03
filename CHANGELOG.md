@@ -6,14 +6,45 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
-- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: An eval dispatched by the previous kernel and still in flight at upgrade is measured again once under the new cache key (no extra budget charge). To avoid the extra run, upgrade when no evals are in flight: `touch <root>/PAUSE` (stops wakes, so no new evals are dispatched), wait until no eval jobs remain in the queue, upgrade, then `rm <root>/PAUSE` and run `outerloop start`.
+### Upgrading
+
+Operator actions (everything else needs no action; details in each entry):
+
+- Before selecting a chat-only Codex endpoint profile, install the bridge:
+  `outerloop harness upgrade --used`.
+- Existing Hermes source-only installs: run `bash scripts/install_hermes.sh
+  "$REVIEW_HERMES_REPO"` (or full `outerloop init`) before Hermes sessions launch.
+- Harness version overrides now need matching SHA-256 settings.
+- Evals and baselines recorded by the previous kernel are measured again once
+  under the new cache key, with no extra charge.
+- Parked authors keep the instructions they started with; judges use the new
+  rubric at once.
+- Runs parked by the previous kernel resume after the upgrade.
+- Before rolling back: consume pending rebind requests, finish capacity-parked
+  runs, runs with extended session limits, overridden and endpoint-routed runs,
+  and chat-only Codex sessions, and stop additional instances.
+
+- A PR tests one idea. It may include the few changes that idea needs, and the
+  report states the effect of each change. Authors test several values in one
+  array launch and report the results around the chosen value; the panel may
+  block a single-value tuning change without them (new `landscape` finding
+  category). Upgrading: no action. Judges use the new rubric at once. An author
+  parked across the upgrade keeps the instructions it started with. Older readers
+  treat `landscape` as `other`. (This was listed under 0.2.1 by mistake; it
+  shipped after that tag.)
+
+- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: no action. An eval or baseline recorded by the previous kernel, in flight or finished, is measured again once under the new cache key, with no extra budget charge; pausing or draining before the upgrade does not avoid it.
 
 - Park launch capacity refusals in capacity wait when an immediate resume is
   unavailable or already refused, instead of ending the run. The next wake
   delivers the refusal and a retry note, resuming the same session when supported
   or starting a fresh session with the run context otherwise. Meters are
   preserved and capacity waits do not exhaust stuck retries.
-  Existing records need no migration.
+  Upgrading: no action; existing records need no migration. A run parked by the
+  previous kernel in author-sleep with no session and no pending job starts a
+  fresh author leg on its next wake instead of ending as a session error.
+  Finish capacity-parked runs before rolling back; older kernels cannot resume
+  them.
 
 - Add operator `outerloop rebind <run-id> [--root <root>] [--note <text>]` to
   explicitly move an existing run to its slot's current author at the next leg,
@@ -89,7 +120,9 @@ Versions follow [SemVer](https://semver.org).
   dropped from the seal (tracked paths retain their parent content), while
   admitted work and line memory survive normal endings and crashes after
   scope refusals. Filtering leaves working files and the real index untouched
-  and logs a bounded list of dropped paths. No persisted-state format changes.
+  and logs a bounded list of dropped paths. Upgrading: no action; existing line
+  branches are left as they are, and the next snapshot drops out-of-scope paths.
+  Rollback is safe.
 
 - Support separate instances on one cluster account: process-only absolute
   `OUTERLOOP_ENV_FILE`, with the existing ownership/write-permission checks,
@@ -228,7 +261,7 @@ Versions follow [SemVer](https://semver.org).
 
 - Hermes installs a standalone Python and venv once per pinned commit in a sibling runtime, then launches Python directly. Full `init` provisions configured Hermes judges and records their source path; `--no-install-harness` opts out.
 
-### Upgrading
+### Upgrading notes for the entries above
 
 - No action needed; OUTERLOOP_GPU_LANES is optional.
 
@@ -241,7 +274,6 @@ Versions follow [SemVer](https://semver.org).
 
 ### Upgrading
 
-- No action needed; the panel's new `landscape` category is additive, and a reader that does not know it treats it as `other`.
 - No action needed; an author's report-only answer to the panel now updates the PR, and a PR whose panel clears is marked ready for review.
 - No action needed; a PR held only by a base-moved blessing heals on the next tick.
 - No contract change; existing contract files need no edits.
@@ -277,8 +309,6 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- A PR is one idea, not one knob: an idea may bring the few changes it needs when the report gives each change's own effect, and a larger idea touching several places is welcome.
-- Authors are told to sweep a hyperparameter or size in one array launch and show the landscape around the chosen value; the panel may block a single-point tuning change that gives no such picture.
 - An idea with a clear mechanism that does not yet beat the best is reported as a success and kept on the author's research line.
 - The sweep rechecks ancestry for PRs held only by a base-moved blessing.
 - Merges performed by the sweep are observed and confirmed in the same tick.

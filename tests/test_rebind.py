@@ -626,3 +626,149 @@ def test_board_author_chain_retains_override():
         "claude / old → claude / new (override)",
         "claude / new (override)",
     ]
+
+
+@pytest.mark.parametrize("kind", ["open", "merged", "ended"])
+@pytest.mark.parametrize("interrupt", ["none", "before-save", "after-save"])
+def test_v021_rebind_retry(tmp_path, rc1_record, selection, monkeypatch, kind, interrupt):
+    from pathlib import Path
+
+    import outerloop.rebind as module
+    from outerloop.provenance import producing_author
+
+    directory, source = rc1_record(kind)
+    raw = json.loads((directory / "state.json").read_text())
+    assert not {"author_history", "author_rebind_id"} & raw.keys()
+    assert not {"candidate_author", "candidate_authors"} & raw["stage"].keys()
+    monkeypatch.setattr(
+        "outerloop.github.contract_at",
+        lambda *a: (
+            """
+benchmarks: [{name: tsp, command: echo, metric: score, direction: max}]
+budgets: {gpu_hours_per_run: 1, runs_per_week: 5}
+scope: {allowed: [src/]}
+roadmap: README.md
+"""
+        ),
+    )
+    record = load_record(tmp_path, "one")
+    before = (directory / "state.json").read_bytes()
+    assert apply(tmp_path, record, "") == record  # absent request is a no-op
+    (directory / "rebind.json").write_bytes((source / "rebind.json").read_bytes())
+    if kind == "ended":
+        for _ in range(2):
+            assert apply(tmp_path, record, "") == record
+            assert (directory / "state.json").read_bytes() == before
+        return
+    if interrupt != "none":
+        original_save, original_unlink = module._save_record, Path.unlink
+
+        def fail_save(*args):
+            raise KeyboardInterrupt
+
+        def fail_unlink(path, *args, **kwargs):
+            if path.name == "rebind.json":
+                raise KeyboardInterrupt
+            return original_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                module, "_save_record", fail_save if interrupt == "before-save" else original_save
+            )
+            patch.setattr(Path, "unlink", fail_unlink)
+            with pytest.raises(KeyboardInterrupt):
+                apply(tmp_path, record, "")
+        assert requested(tmp_path, "one")
+        if interrupt == "before-save":
+            assert (directory / "state.json").read_bytes() == before
+    rebound = apply(tmp_path, load_record(tmp_path, "one"), "")
+    assert len(rebound.author_history) == 2
+    assert rebound.author_rebind_id == "upgrade-request"
+    assert rebound.author_history[0]["model"] == "old-model"
+    assert rebound.author_history[1]["model"] == "served-model[endpoint=onprem]"
+    assert rebound.pr_url == record.pr_url
+    assert rebound.resume_session_id == record.resume_session_id
+    assert producing_author(directory, "a" * 40)["model"] == "old-model"
+    assert producing_author(directory, "c" * 40)["model"] == rebound.author_model
+    saved = (directory / "state.json").read_bytes()
+    assert apply(tmp_path, rebound, "") == rebound
+    assert (directory / "state.json").read_bytes() == saved
+    assert not requested(tmp_path, "one")
+
+
+def test_v021_rebind_eval_and_launch_provenance(tmp_path, rc1_record, selection, monkeypatch):
+    import shutil
+
+    from outerloop.dispatch import write_eval_job
+    from outerloop.launchlog import append_submitted, read_ledger
+    from outerloop.syscall import Launch
+
+    directory, source = rc1_record()
+    # Rebinding also has to retain the attribution of a candidate already sealed.
+    monkeypatch.setattr(
+        "outerloop.github.contract_at",
+        lambda *a: (
+            """
+benchmarks: [{name: tsp, command: echo, metric: score, direction: max}]
+budgets: {gpu_hours_per_run: 1, runs_per_week: 5}
+scope: {allowed: [src/]}
+roadmap: README.md
+"""
+        ),
+    )
+    shutil.copytree(source / "eval-provenance", directory / "eval-provenance")
+    shutil.copyfile(source / "launches.jsonl", directory / "launches.jsonl")
+    legacy_ledger = (directory / "launches.jsonl").read_bytes()
+    assert not (directory / "eval-provenance/provenance.json").exists()
+    (directory / "rebind.json").write_bytes((source / "rebind.json").read_bytes())
+    apply(tmp_path, load_record(tmp_path, "one"), "")
+    original = os.replace
+
+    def fail(source, destination):
+        if destination.name == "provenance.json":
+            raise KeyboardInterrupt
+        original(source, destination)
+
+    def write_eval():
+        write_eval_job(
+            directory,
+            "provenance",
+            repo_root=directory / "ws",
+            snapshot_sha="a" * 40,
+            command="true",
+            image="",
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr("outerloop.dispatch.os.replace", fail)
+        with pytest.raises(KeyboardInterrupt):
+            write_eval()
+    write_eval()
+    provenance = (directory / "eval-provenance/provenance.json").read_bytes()
+    assert json.loads(provenance)["author"]["model"] == "old-model"
+    write_eval()
+    assert (directory / "eval-provenance/provenance.json").read_bytes() == provenance
+    launch = (Launch("probe", "true", 1),)
+    append_submitted(directory, sleep=1, launches=launch, job_ids=["501"], at=2, commit="a" * 40)
+    assert (directory / "launches.jsonl").read_bytes() == legacy_ledger
+    import outerloop.launchlog as ledger
+
+    original_append = ledger._append
+
+    def interrupted(*args):
+        original_append(*args)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ledger, "_append", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            append_submitted(
+                directory, sleep=2, launches=launch, job_ids=["502"], at=3, commit="a" * 40
+            )
+    for _ in range(2):
+        append_submitted(
+            directory, sleep=2, launches=launch, job_ids=["502"], at=3, commit="a" * 40
+        )
+    rows = read_ledger(directory)
+    assert len(rows) == 2 and rows[1]["author"]["model"] == "old-model"
+    assert (directory / "launches.jsonl").read_bytes().startswith(legacy_ledger)
