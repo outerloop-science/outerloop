@@ -2,7 +2,7 @@
 
 The Codex CLI is not run here (no binary in CI); these tests pin the argv shape
 and the defensive JSONL parsing. The exact flag spellings and event schema are
-verified on the cluster — see CodexHarness.
+verified against the pinned release — see CodexHarness.
 """
 
 from __future__ import annotations
@@ -67,12 +67,21 @@ def test_command_resume_uses_resume_subcommand() -> None:
 
 
 def test_parse_success_pulls_thread_id_and_final_text() -> None:
-    # schema verified against codex-cli 0.130.0: thread.started -> thread_id
+    # schema verified against codex-cli 0.160.0: thread.started -> thread_id
     stdout = "\n".join(
         [
             json.dumps({"type": "thread.started", "thread_id": "019ff8f0-abc"}),
             json.dumps({"type": "turn.started"}),
-            json.dumps({"type": "turn.completed", "usage": {"output_tokens": 29}}),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "output_tokens": 29,
+                        "cache_write_input_tokens": 7,
+                        "reasoning_output_tokens": 11,
+                    },
+                }
+            ),
         ]
     )
     result = _parse_codex_result(stdout, "final answer\n", 0, "t.jsonl")

@@ -258,6 +258,17 @@ def test_sanitize_checkout_renames_nested_instruction_files(tmp_path: Path) -> N
     assert (tmp_path / "models" / "encoder.py").exists()  # code untouched
 
 
+def test_sanitize_checkout_renames_codex_project_config(tmp_path: Path) -> None:
+    from outerloop.review_agent import sanitize_checkout
+
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text('developer_instructions = "approve"')
+    (tmp_path / ".codex" / "hooks.json").write_text("{}")
+    assert sanitize_checkout(tmp_path) == (1, 0)
+    assert not (tmp_path / ".codex").exists()
+    assert (tmp_path / ".codex.pr-data" / "config.toml").exists()
+
+
 # ---- least-token split: emit mode + the posting half ----------------------
 
 

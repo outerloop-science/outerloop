@@ -6,6 +6,20 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- Bump the pinned Codex CLI from 0.130.0 to 0.160.0 and update its Linux
+  archive digest. All contained Codex roles bind a kernel-owned, read-only
+  managed-hooks-only policy; uncontained sessions disable lifecycle hooks and
+  plugins (including built-in cleanup hooks) because this CLI has no per-session
+  requirements-file override. Rebuild user config before every launch/resume to
+  discard persisted hook trust, while
+  retaining session history. Reject the hook-trust bypass flag.
+  Upgrading: no manual action or run-record migration is needed; existing
+  session homes are sanitized automatically on their next launch. The policy
+  ships with the kernel and needs no image rebuild or system configuration.
+- Record the Codex 0.160.0 project-config finding in `SECURITY.md`: writable
+  sessions auto-trust project config, so repository model settings can apply;
+  project provider settings are filtered. The external containment boundary
+  remains necessary and is unchanged.
 - Retain private per-invocation session evidence: delivered prompt, bounded native
   log, timestamps, identifiers, usage, and SHA-256 hashes beside existing captures.
   Record missing logs and truncation without failing the author. Capture Codex and
