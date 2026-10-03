@@ -41,3 +41,8 @@ the inputs in `pre_contract_switches.json`. Its pending field list preserves
 the strict HEAD reader shape: a newly serialized default submission must
 construct that shape without extra keys. Default output is compared byte for
 byte; explicit claims continue to carry provenance.
+
+- `session_cost_legacy.json`: synthetic parked-session stage in the
+  pre-session-evidence shape (numeric cost and turns, no tokens or artifact
+  paths). The production parked-session reader preserves that cost and report,
+  tolerates absent new fields, and accepts new null costs without a migration.

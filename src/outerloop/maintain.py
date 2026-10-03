@@ -323,7 +323,7 @@ def run_maintenance_scan(
             "emitted maintenance findings for %s (%s; cost=%s turns=%d)",
             repo,
             lens or "general",
-            f"${cost:.2f}" if cost else "unreported",
+            f"${cost:.2f}" if cost is not None else "unknown",
             role_result.session.num_turns,
         )
         return "emitted"

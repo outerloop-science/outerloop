@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+- GPU job sizing is an operator setting: `OUTERLOOP_EVAL_CPUS_PER_GPU` and
+  `OUTERLOOP_EVAL_MEM_GB_PER_GPU` (defaults 8 and 64) set the per-GPU core and
+  memory floor for GPU evals and author launches, for nodes with fewer cores or
+  less memory per GPU. Upgrading: no action; unset keeps the defaults.
 - Apply current contract verification and channel settings before wake message
   delivery or workspace fetches. Allow measured results to replace an earlier
   self-reported leader without inheriting its claimed baseline.
@@ -24,6 +28,28 @@ Versions follow [SemVer](https://semver.org).
   sessions auto-trust project config, so repository model settings can apply;
   project provider settings are filtered. The external containment boundary
   remains necessary and is unchanged.
+- Retain private per-invocation session evidence: delivered prompt, bounded native
+  log, timestamps, identifiers, usage, and SHA-256 hashes beside existing captures.
+  Record missing logs and truncation without failing the author. Capture Codex and
+  Hermes tokens and price them with `OUTERLOOP_TOKEN_PRICES`; unpriced cost is
+  unknown, while explicit zero prices remain zero. Status exposes known spend
+  and unpriced session counts. Bound native discovery by depth, entries, and
+  elapsed time; withhold unresolved secret prefixes at truncation boundaries.
+  Incomplete Codex turn usage remains unpriced, and final-message reads refuse
+  symlinks at every path component and apply a byte cap. Redact provisioned
+  credential file contents before retention, leave failed Codex invocations
+  unpriced, and hash Hermes's delivered resume prompt. Cost totals persist in a
+  kernel-written, atomically replaced index outside the workspace and session
+  HOME. Separate readers and restarted kernels retain totals; any uncontained
+  invocation marks them unverified, also shown in status.
+  Upgrading: legacy sidecars are not imported into cost totals; pre-index history
+  has unknown coverage.
+  Upgrading: new session sidecars and stage usage fields are additive; older
+  records without them remain readable, with unknown evidence coverage and no
+  fabricated token backfill. Numeric legacy costs retain their meaning. New
+  unknown costs use JSON null; older kernels that coerce parked costs with
+  `float()` cannot resume those records without an update. Drain parked runs
+  before rolling back to such a kernel.
 - Add benchmark `verification: self_report` for explicitly labelled author claims,
   with required candidate and baseline values at submit, scope enforcement and
   improvement floors, without evaluation or panel work. Self-reported PRs never

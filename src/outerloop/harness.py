@@ -31,6 +31,15 @@ from outerloop.endpoint_wait import session_url as endpoint_session_url
 from outerloop.endpoints import EndpointProfile
 from outerloop.hermes_install import hermes_ready, hermes_runtime
 from outerloop.image import apptainer_from_env
+from outerloop.session_evidence import (
+    DEFAULT_CAP,
+    active,
+    capture_session,
+    number,
+    provision_credential_file,
+    read_bounded,
+    usage,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +94,7 @@ class SessionResult:
 
     stop_reason: str  # backend's stop reason, or "timeout" / "spawn-error"
     is_error: bool
-    cost_usd: float
+    cost_usd: float | None
     num_turns: int
     session_id: str
     final_text: str  # the agent's closing message (the research report draft)
@@ -96,6 +105,9 @@ class SessionResult:
     # reports and issue comments show — stop_reason alone reads as noise
     # ("tool_use") when a session dies mid-tool-call.
     error_detail: str = ""
+    tokens: dict[str, int] = field(default_factory=dict)
+    prompt_path: str = ""
+    session_record_path: str = ""
 
 
 class Harness(Protocol):
@@ -230,7 +242,8 @@ def redact(text: str, secrets: tuple[str, ...]) -> str:
     at write time, not capture time."""
     from outerloop.appauth import issued_tokens
 
-    for secret in (*secrets, *issued_tokens()):
+    credentials = (active.get() or {}).get("credential_secrets", ())
+    for secret in sorted((*secrets, *issued_tokens(), *credentials), key=len, reverse=True):
         if secret:
             text = text.replace(secret, "[redacted]")
     return text
@@ -275,7 +288,7 @@ def _error_result(stop_reason: str, transcript_path: str = "", detail: str = "")
         stop_reason=stop_reason,
         is_error=True,
         error_detail=(detail or stop_reason)[:500],
-        cost_usd=0.0,
+        cost_usd=None,
         num_turns=0,
         session_id="",
         final_text="",
@@ -369,8 +382,13 @@ def _write_private(directory: Path, stem: str, suffix: str, text: str) -> str:
         except OSError as exc:
             log.warning("could not store transcript at %s: %s", path, exc)
             return ""
-        with os.fdopen(fd, "w") as handle:
-            handle.write(text)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            return ""
         return str(path)
     log.warning("could not find a free transcript name in %s", directory)
     return ""
@@ -403,21 +421,15 @@ def _read_no_follow(path: Path) -> str | None:
 
 
 def _collect_hermes_sample(session_home: Path) -> Any:
-    """Load this run's trajectory (newest `sample_*.json`) and delete every one
-    of them. Hardened for a session-writable dir: the mtime sort key cannot
-    raise out of run() on a vanished file, the read does not follow symlinks,
+    """Legacy result fallback: accept only one sample, then delete all samples.
+    Native evidence uses the explicit capture id, never this fallback.
+    Hardened for a session-writable dir: the read does not follow symlinks,
     and unlink removes the link itself (never its target). Returns the parsed
     sample, or None."""
 
-    def _mtime(p: Path) -> float:
-        try:
-            return p.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    candidates = sorted(session_home.glob("sample_*.json"), key=_mtime, reverse=True)
+    candidates = list(session_home.glob("sample_*.json"))
     sample: Any = None
-    if candidates:
+    if len(candidates) == 1:
         text = _read_no_follow(candidates[0])
         if text is not None:
             with contextlib.suppress(json.JSONDecodeError):
@@ -640,6 +652,7 @@ class ClaudeCodeHarness:
     CONTAINER_ADC = "/opt/agent/adc.json"
     supports_resume = True  # native --resume
 
+    @capture_session("claude")
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
@@ -684,6 +697,12 @@ class ClaudeCodeHarness:
         ]
         if resume_session_id:
             claude_argv += ["--resume", resume_session_id]
+        else:
+            # Know the native filename even when a timeout prevents the final JSON result.
+            session_id = str(uuid.uuid4())
+            claude_argv += ["--session-id", session_id]
+            if evidence_state := active.get():
+                evidence_state["native_id"] = session_id
         if self.container_image:
             # bind sources must be absolute or apptainer fails at mount time
             workspace = workspace.resolve()
@@ -776,6 +795,9 @@ class ClaudeCodeHarness:
                     # with the prefix stripped — the key travels via the
                     # environment, never argv (argv is world-readable in /proc).
                     env["APPTAINERENV_ANTHROPIC_API_KEY"] = self.api_key
+            if self.vertex is not None and self.vertex.adc_file:
+                # Also mounted when an endpoint overrides Vertex authentication.
+                provision_credential_file(Path(self.vertex.adc_file))
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -856,7 +878,8 @@ class ClaudeCodeHarness:
             stop_reason=str(data.get("stop_reason") or data.get("subtype") or "unknown"),
             is_error=is_error,
             error_detail=detail if is_error else "",
-            cost_usd=_float(data.get("total_cost_usd")),
+            cost_usd=number(data.get("total_cost_usd")),
+            tokens=usage(data.get("usage"), "claude"),
             num_turns=_int(data.get("num_turns")),
             session_id=str(data.get("session_id") or ""),
             final_text=final_text,
@@ -990,8 +1013,8 @@ def _parse_codex_result(
     `final_text` comes from the --output-last-message file, which is reliable.
     `session_id` is the `thread.started` event's `thread_id`, verified against
     codex-cli 0.160.0 (a `codex exec resume <thread_id>` recalls the session).
-    Cost is left at 0 (these backends are subscription or token metered; the
-    budget layer meters them by a session/token proxy). Never raises.
+    Usage is summed across completed turns. The adapter prices it only when
+    the operator supplies a model price table. Never raises.
     """
     # Event schema verified against codex-cli 0.160.0:
     #   thread.started -> thread_id (the session id)
@@ -1000,6 +1023,10 @@ def _parse_codex_result(
     #   error          -> message
     #   turn.failed    -> error.message
     session_id = ""
+    tokens: dict[str, int] = {}
+    usage_keys: set[str] | None = None
+    incomplete_usage = False
+    turns = 0
     saw_error = False
     errors: list[str] = []
     for line in stdout.splitlines():
@@ -1017,17 +1044,31 @@ def _parse_codex_result(
             thread_id = event.get("thread_id")
             if isinstance(thread_id, str):
                 session_id = thread_id
+        elif etype == "turn.completed":
+            turns += 1
+            turn_usage = usage(event.get("usage"), "codex")
+            keys = set(turn_usage)
+            if not {"input_tokens", "output_tokens"} <= keys:
+                incomplete_usage = True
+            if usage_keys is not None and keys != usage_keys:
+                incomplete_usage = True
+            usage_keys = keys
+            for key, value in turn_usage.items():
+                tokens[key] = tokens.get(key, 0) + value
         elif etype == "error":
             saw_error = True
             message = event.get("message")
             if isinstance(message, str):
                 errors.append(message)
         elif etype == "turn.failed":
+            incomplete_usage = True
             saw_error = True
             err = event.get("error")
             message = err.get("message") if isinstance(err, dict) else None
             if isinstance(message, str):
                 errors.append(message)
+    if incomplete_usage or saw_error or returncode != 0:
+        tokens = {}  # Partial invocation totals must never be priced as complete.
     is_error = returncode != 0 or saw_error
     detail = "; ".join(errors)[:500]
     # Fall back to stderr so a failed run (e.g. a bad flag, no matching event)
@@ -1038,8 +1079,9 @@ def _parse_codex_result(
         stop_reason="error" if is_error else "completed",
         is_error=is_error,
         error_detail=detail if is_error else "",
-        cost_usd=0.0,
-        num_turns=0,
+        cost_usd=None,
+        num_turns=turns,
+        tokens=tokens,
         session_id=session_id,
         final_text=last_message.strip(),
         transcript_path=transcript_path,
@@ -1052,9 +1094,8 @@ class CodexHarness:
 
     Stage 1's swappability proof (docs/design/consolidation.md). CLI flags AND
     headless resume are verified against codex-cli 0.160.0 (`session_id` = the
-    `thread.started` `thread_id`; resume recalls it); cost parsing stays
-    best-effort (these backends are metered by a session/token proxy in the
-    budget layer).
+    `thread.started` `thread_id`; resume recalls it). Usage is reported per
+    invocation; operator-supplied rates provide dollars when configured.
 
     CONTAINED mode (`container_image` set): both `codex login` and `codex exec`
     run inside `apptainer exec --containall --cleanenv`, sharing a bound
@@ -1176,6 +1217,7 @@ class CodexHarness:
         with contextlib.suppress(OSError):
             (session_home / ".codex" / "auth.json").unlink()
 
+    @capture_session("codex")
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
@@ -1312,6 +1354,7 @@ class CodexHarness:
             if self.container_image:
                 env[f"APPTAINERENV_{key_env}"] = self.api_key
                 env["APPTAINERENV_CODEX_HOME"] = env["CODEX_HOME"]
+            provision_credential_file(session_home / ".codex" / "auth.json")
             process = subprocess.Popen(
                 command,
                 cwd=workspace,
@@ -1359,7 +1402,10 @@ class CodexHarness:
         # errors="replace": a non-UTF-8 last-message file must not raise
         # UnicodeDecodeError (not an OSError) and break the never-raises contract.
         with contextlib.suppress(OSError):
-            last_message = redact(last_message_path.read_text(errors="replace"), (self.api_key,))
+            last_message = redact(
+                read_bounded(last_message_path, DEFAULT_CAP).decode("utf-8", errors="replace"),
+                (self.api_key,),
+            )
         # The final message is preserved in the 0600 transcript; drop the raw
         # file so model output is not left behind.
         with contextlib.suppress(OSError):
@@ -1396,7 +1442,8 @@ def _hermes_command(
     argv = [
         str(hermes_runtime(repo_dir) / "venv/bin/python"),
         "-B",
-        str(repo_dir / "run_agent.py"),
+        str(Path(__file__).with_name("hermes_capture.py").resolve()),
+        str(repo_dir),
         f"--query={query}",
         f"--max_turns={max_turns}",
         "--save_sample",
@@ -1419,8 +1466,8 @@ def _parse_hermes_result(
     """Best-effort SessionResult from a hermes run.
 
     Prefers the --save_sample trajectory JSON (assistant messages + turn
-    count); falls back to raw stdout as the final text. Cost is left at 0
-    (metered by the budget layer's proxy). Never raises."""
+    count); falls back to raw stdout as the final text. The capture wrapper
+    supplies reported usage; the adapter applies operator prices. Never raises."""
     final_text = ""
     num_turns = 0
     # hermes saves ShareGPT-format trajectories ({"from": "gpt", "value": ...}),
@@ -1450,6 +1497,13 @@ def _parse_hermes_result(
         final_text = content if isinstance(content, str) else str(content)
     if not final_text:
         final_text = stdout.strip()[-20_000:]
+    tokens = usage(sample.get("usage"), "hermes") if isinstance(sample, dict) else {}
+    for line in stdout.splitlines():
+        if line.startswith("OUTERLOOP_USAGE "):
+            with contextlib.suppress(ValueError, AttributeError):
+                tokens = usage(
+                    json.loads(line.removeprefix("OUTERLOOP_USAGE ")).get("usage"), "hermes"
+                )
     # hermes exits 0 even when every API call failed; a run with no
     # assistant output is a failure, not a report
     is_error = returncode != 0 or num_turns == 0
@@ -1457,8 +1511,9 @@ def _parse_hermes_result(
         stop_reason="error" if is_error else "completed",
         is_error=is_error,
         error_detail=stdout.strip()[-500:] if is_error else "",
-        cost_usd=0.0,
+        cost_usd=None,
         num_turns=num_turns,
+        tokens=tokens,
         session_id="",  # HermesHarness.run injects the resume id (saved-transcript seam)
         final_text=final_text,
         transcript_path=transcript_path,
@@ -1534,6 +1589,7 @@ class HermesHarness:
 
     resume_max_chars: int | None = None
 
+    @capture_session("hermes")
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
@@ -1577,6 +1633,10 @@ class HermesHarness:
                 if self.resume_max_chars is not None
                 else hermes_resume_max_chars(),
             )
+        capture_id = f"{session_id}-{uuid.uuid4().hex}"
+        evidence_state = active.get()
+        if evidence_state is not None:
+            evidence_state.update(prompt=brief_to_send, native_id=capture_id, session_id=session_id)
         if self.provider:
             # minimal headless config: provider + default model, nothing else
             hermes_dir = session_home / ".hermes"
@@ -1613,6 +1673,8 @@ class HermesHarness:
             f"Read the file {brief_path} and follow it as your complete brief. "
             f"The tree to work on is at {workspace.resolve()}."
         )
+        if evidence_state is not None:
+            evidence_state["query"] = query
         command = _hermes_command(
             repo,
             query,
@@ -1646,17 +1708,22 @@ class HermesHarness:
                 f"{runtime_abs}:{runtime_abs}:ro",
                 "--pwd",
                 str(home_abs),
+                "--bind",
+                f"{Path(__file__).with_name('hermes_capture.py').resolve()}:{Path(__file__).with_name('hermes_capture.py').resolve()}:ro",
                 self.container_image,
                 *command,
             ]
+        _collect_hermes_sample(session_home)  # discard stale legacy samples before this invocation
         try:
             env = session_env(self.api_key, self.key_env, session_home)
             env["TERMINAL_CWD"] = str(workspace.resolve())
+            env["OUTERLOOP_CAPTURE_ID"] = capture_id
             if self.container_image:
                 # --cleanenv drops the host env except APPTAINERENV_*: the key
                 # travels via the environment, never argv
                 env[f"APPTAINERENV_{self.key_env}"] = env[self.key_env]
                 env["APPTAINERENV_TERMINAL_CWD"] = env["TERMINAL_CWD"]
+                env["APPTAINERENV_OUTERLOOP_CAPTURE_ID"] = capture_id
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).
@@ -1691,10 +1758,23 @@ class HermesHarness:
             )
         stdout = redact(stdout, (self.api_key,))
         transcript_path = _write_private(workspace.parent, transcript_stem, ".log", stdout)
+        native_text = None
+        with contextlib.suppress(OSError):
+            native_text = read_bounded(
+                session_home / f"evidence-{capture_id}.json", DEFAULT_CAP
+            ).decode("utf-8", errors="replace")
+        native_sample = None
+        if native_text:
+            with contextlib.suppress(ValueError):
+                native_sample = json.loads(native_text)
+        # Preserve the existing author-result parser. Raw messages can count
+        # tool-call turns differently from Hermes's ShareGPT conversion.
         sample = _collect_hermes_sample(session_home)
         with contextlib.suppress(OSError):
-            brief_path.unlink()  # the brief holds PR content; don't leave it at rest
+            brief_path.unlink()
         result = _parse_hermes_result(stdout, sample, process.returncode, transcript_path)
+        if isinstance(native_sample, dict):
+            result = replace(result, tokens=usage(native_sample.get("usage"), "hermes"))
         # Record this turn so a later resume can restore the context, and hand
         # back the session id it lives under. Only on a real reply — a failed
         # turn leaves the prior transcript intact (nothing useful to append).

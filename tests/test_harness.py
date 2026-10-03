@@ -30,6 +30,7 @@ CANNED = {
     "stop_reason": "end_turn",
     "session_id": "sess-1",
     "total_cost_usd": 0.42,
+    "usage": {"input_tokens": 100, "cache_read_input_tokens": 50, "output_tokens": 20},
     "result": "Report: hypothesis held.",
 }
 
@@ -57,6 +58,7 @@ def test_successful_session_parses_everything(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="sk-test-123", binary=binary).run("do the task", ws)
     assert not result.is_error
     assert result.cost_usd == 0.42
+    assert result.tokens == {"input_tokens": 150, "cached_input_tokens": 50, "output_tokens": 20}
     assert result.num_turns == 3
     assert result.session_id == "sess-1"
     assert result.final_text == "Report: hypothesis held."
@@ -158,7 +160,7 @@ def test_malformed_fields_are_salvaged_not_discarded(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     result = ClaudeCodeHarness(api_key="k", binary=binary).run("task", ws)
-    assert result.cost_usd == 0.0
+    assert result.cost_usd is None
     assert result.session_id == "sess-1"
     assert result.num_turns == 3
     assert not result.is_error
