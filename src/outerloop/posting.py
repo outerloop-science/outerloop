@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from outerloop.github import GitHubClient, GitHubError
 from outerloop.harness import redact
@@ -123,6 +124,10 @@ def post_round_review(
 
 
 SKIP_MARKER = marker("round-skipped")
+# the model needs a newer harness than the reviewer release pins
+MODEL_TOO_NEW = re.compile(r"does not support this model|or newer is required", re.IGNORECASE)
+# the runner's harness install is missing or does not match the pins
+HARNESS_STALE = re.compile(r"run outerloop harness upgrade", re.IGNORECASE)
 
 
 def post_skip_stub(
@@ -146,15 +151,33 @@ def post_skip_stub(
     posting stays backend-agnostic — the key env var is provider-specific, this
     module is not.
     """
-    note = redact(str(exc), tuple(s for s in secrets if s))[:200]
-    try:
-        client.comment(
-            repo,
-            number,
+    full = redact(str(exc), tuple(s for s in secrets if s))
+    note = full[:300]
+    if MODEL_TOO_NEW.search(full):
+        body = (
+            f"{SKIP_MARKER}\n*The {role} round could not run — the pinned agent "
+            f"harness is too old for the requested model ({type(exc).__name__}: "
+            f"{note}). This is not an outage: point the workflow at a newer "
+            f"reviewer release (the `uses:` ref and `reviewer_ref`), then re-add "
+            f"the review label.*"
+        )
+    elif HARNESS_STALE.search(full):
+        body = (
+            f"{SKIP_MARKER}\n*The {role} round could not run — the agent harness "
+            f"on this runner is missing or does not match the reviewer's pins "
+            f"({type(exc).__name__}: {note}). This is not an outage: run the "
+            f"named `outerloop harness upgrade` where the reviewer runs; in a "
+            f"workflow, keep the `uses:` ref and `reviewer_ref` on the same "
+            f"release. Then re-add the review label.*"
+        )
+    else:
+        body = (
             f"{SKIP_MARKER}\n*The {role} round could not run — the model API "
             f"refused the request ({type(exc).__name__}: {note}). Treat this "
             f"as an outage, not a clean read; re-add the review label to "
-            f"re-request once the API recovers.*",
+            f"re-request once the API recovers.*"
         )
+    try:
+        client.comment(repo, number, body)
     except EXPECTED_FAILURES as post_exc:
         log.warning("could not post the skip stub: %s", post_exc)
