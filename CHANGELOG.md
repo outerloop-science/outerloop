@@ -15,8 +15,22 @@ Versions follow [SemVer](https://semver.org).
   upgrades do this automatically. Existing single-binary installs are detected
   as drift and replaced with a verified pair.
 
+### Changed
+
+- A run whose benchmark is no longer in its contract (renamed or removed)
+  stops with one clear message naming the benchmarks the contract has,
+  instead of continuing on default settings (no GPU budget, default eval
+  walltime, research lines off). A contract that fails to load still leaves
+  parked runs parked until it is fixed.
+
 ### Removed
 
+- Upgrading: labels and comment markers are recognized only under the
+  `outerloop:` prefix. Rename any `autoresearch:*` labels on target repos
+  (`gh label edit autoresearch:review --name outerloop:review`), update
+  workflow `if:` conditions that match the old label, and change an open
+  research-log issue's `<!-- autoresearch:research-log -->` marker to
+  `<!-- outerloop:research-log -->`, or the kernel opens a new one.
 - Upgrading: the contract budget key `climb_job_minutes` is no longer read; a
   contract that still uses it fails validation. Rename it to
   `attempt_job_minutes` before upgrading.

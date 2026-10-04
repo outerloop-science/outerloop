@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -66,7 +67,7 @@ def test_no_steward_section_means_everything_out_of_scope() -> None:
 
 
 def _issue(
-    number, title, body="", author="renmengye", assoc="OWNER", labels=("autoresearch:steward",)
+    number, title, body="", author="renmengye", assoc="OWNER", labels=("outerloop:steward",)
 ):
     return {
         "number": number,
@@ -108,7 +109,7 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
     # claimed issues are skipped
     github2 = FakeIssues(
         [_issue(4, "re-base the tsp pool")],
-        comments={4: [{"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}}]},
+        comments={4: [{"body": "<!-- outerloop:claimed -->\ntaken", "user": {"login": BOT}}]},
     )
     assert pick_steward_issue(github2, "org/pilot", c, BOT) is None
     # a released claim makes the order claimable again
@@ -116,9 +117,9 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->\ntaken", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->\ntaken", "user": {"login": BOT}},
                 {
-                    "body": "<!-- autoresearch:claim-released -->\nsubmission failed",
+                    "body": "<!-- outerloop:claim-released -->\nsubmission failed",
                     "user": {"login": BOT},
                 },
             ]
@@ -131,9 +132,9 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->", "user": {"login": BOT}},
             ]
         },
     )
@@ -143,12 +144,12 @@ def test_pick_steward_issue_gates_on_label_standing_and_claim() -> None:
         [_issue(4, "re-base the tsp pool")],
         comments={
             4: [
-                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claimed -->", "user": {"login": BOT}},
-                {"body": "<!-- autoresearch:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claim-released -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claimed -->", "user": {"login": BOT}},
+                {"body": "<!-- outerloop:claim-released -->", "user": {"login": BOT}},
             ]
         },
     )
@@ -478,7 +479,7 @@ def test_outage_releases_do_not_count_toward_the_attempt_cap() -> None:
         "body": "the tsp pool is stale",
         "user": {"login": "renmengye", "type": "User"},
         "author_association": "OWNER",
-        "labels": [{"name": "autoresearch:steward"}],
+        "labels": [{"name": "outerloop:steward"}],
     }
 
     @dataclass
@@ -514,7 +515,7 @@ def test_marker_spoofing_by_strangers_moves_nothing() -> None:
         "body": "the tsp pool is stale",
         "user": {"login": "renmengye", "type": "User"},
         "author_association": "OWNER",
-        "labels": [{"name": "autoresearch:steward"}],
+        "labels": [{"name": "outerloop:steward"}],
     }
 
     @dataclass
@@ -668,7 +669,7 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
             self.posted.append((number, body))
 
     claimed = {
-        "body": "<!-- autoresearch:claimed -->",
+        "body": "<!-- outerloop:claimed -->",
         "created_at": "2026-08-09T00:00:00Z",
         "user": {"login": "agentic-learning-bot"},
     }
@@ -717,7 +718,7 @@ def test_orphaned_claims_are_released_for_dead_runs() -> None:
     )
     # now=2e9 is 2033-05-18T03:33Z; a claim 33 minutes old is not stale
     fresh = {
-        "body": "<!-- autoresearch:claimed -->",
+        "body": "<!-- outerloop:claimed -->",
         "created_at": "2033-05-18T03:00:00Z",
         "user": {"login": "agentic-learning-bot"},
     }
@@ -847,3 +848,19 @@ def test_steward_reset_is_measured_under_self_report_policy(tmp_path, steward_re
     assert pending and pending.kind == "RESET" and pending.provenance == "measured"
     assert not github.armed
     assert "self_reported" not in json.dumps(github.prs)
+
+
+def test_steward_missing_benchmark_ends_with_names(tmp_path, steward_repo):
+    seed = tmp_path / "seed"
+    path = seed / ".outerloop.yaml"
+    path.write_text(path.read_text().replace("name: tsp", "name: renamed"))
+    _git(seed, "add", ".outerloop.yaml")
+    _git(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename")
+    _git(seed, "push", str(steward_repo), "main")
+    outcome, github, _ = run_steward(tmp_path, edits={})
+    record = load_record(tmp_path / "state", "steward-tsp-1")
+    assert outcome.outcome == "steward-error"
+    assert record.state == "ended" and record.ending == "aborted"
+    assert "benchmark 'tsp' not in contract (['renamed'])" in record.ending_note
+    assert "benchmark 'tsp' not in contract (['renamed'])" in Path(outcome.report_path).read_text()
+    assert not github.prs

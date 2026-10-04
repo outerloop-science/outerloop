@@ -296,7 +296,7 @@ def flight_checkout(home: Path, name: str, now: float) -> Path:
 
 
 def _benchmark_gpus(contract: Any, benchmark: str) -> int:
-    bench = next((b for b in getattr(contract, "benchmarks", []) if b.name == benchmark), None)
+    bench = contract.benchmark(benchmark)
     return int(getattr(bench, "gpus", 0) or 0)
 
 
@@ -738,7 +738,7 @@ def _merge_blessed_pr(
         reason = why_not(record, pr, dial, tip, contains_base)
         if reason:
             from outerloop.github import is_own_login
-            from outerloop.markers import has_marker, legacy_marker, marker
+            from outerloop.markers import has_marker, marker
 
             reason = redact(reason, _client_secrets(github))
             log.info("merge of %s#%s waits: %s", record.target, number, reason)
@@ -765,11 +765,7 @@ def _merge_blessed_pr(
                 )
                 return False
             status = f"Self-merge waiting: {reason}."
-            previous = (
-                latest.replace(marker("self-merge-status"), "")
-                .replace(legacy_marker("self-merge-status"), "")
-                .strip()
-            )
+            previous = latest.replace(marker("self-merge-status"), "").strip()
             if previous != status:
                 github.comment(record.target, number, f"{marker('self-merge-status')}\n{status}")
             return False

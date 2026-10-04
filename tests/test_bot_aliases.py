@@ -34,7 +34,7 @@ def test_the_kernels_old_research_log_issue_is_never_an_order(monkeypatch) -> No
     issue = {
         "number": 1,
         "title": "Research log",
-        "body": "<!-- autoresearch:research-log -->\none comment per finished run",
+        "body": "<!-- outerloop:research-log -->\none comment per finished run",
         "user": {"login": "agentic-learning-bot"},
         "author_association": "MEMBER",
     }

@@ -18,7 +18,7 @@ uv run pre-commit run --all-files
 
 - **The bot never merges and is never a code owner** — do not weaken this in any
   code or config change.
-- **autoresearch is never a target of itself**; the contract file, roadmap, and
+- **outerloop is never a target of itself**; the contract file, roadmap, and
   `.github/` are forbidden write paths everywhere, regardless of contract YAML.
 - Budget caps are load-bearing safety features, not tunables to raise casually.
 - Never commit credentials, transcripts, or run artifacts (SECURITY.md).
@@ -29,7 +29,7 @@ uv run pre-commit run --all-files
   need.
 - Merge commits only; never rebase, squash, or force-push.
 - **Review until quiet**: development PRs iterate advisory-review rounds
-  (after a fix commit, remove then re-add the `autoresearch:review` label
+  (after a fix commit, remove then re-add the `outerloop:review` label
   once the push settles; the authorizing round must be the most recent,
   run against the head commit). Termination is judged, not literal: code
   PRs stop when a round yields no new medium+/behavior-affecting findings;
@@ -37,7 +37,7 @@ uv run pre-commit run --all-files
   then escalate to the PI instead of cycling. Merge only on an explicit
   `ci` success AND that quiet round. Read every review before merging —
   green is not read.
-- Imports are absolute (`from autoresearch...`); deps go in with their code +
+- Imports are absolute (`from outerloop...`); deps go in with their code +
   `uv lock`; CHANGELOG under `[Unreleased]`.
 - A PR that changes state read across kernel versions (run records, PR
   branches, ledger files, inbox messages, caches) carries a compatibility
