@@ -414,7 +414,10 @@ class DispatchedMeasurer:
             retries = prior.get("retries", 0)
             exhausted = retries >= 2
             if exhausted:
-                note += "; 2 retries exhausted; parked for operator repair, next wake retries once"
+                note += (
+                    f"; 2 retries exhausted; parked until an operator fixes the cause "
+                    f"and deletes {path}"
+                )
             if prior.get("job_id") != job_id:
                 temporary = path.with_suffix(".tmp")
                 temporary.write_text(
@@ -431,9 +434,11 @@ class DispatchedMeasurer:
             else:
                 exhausted = prior["exhausted"]
                 note = prior["note"]
-            # Only missing results reach here; remove a partial clean exit too.
-            (self._ev(m) / "submitted").unlink(missing_ok=True)
-            code_file.unlink(missing_ok=True)
+            # Clear the marker only to re-dispatch; an exhausted measure keeps it,
+            # so every later wake parks on the journal instead of submitting again.
+            if not exhausted:
+                (self._ev(m) / "submitted").unlink(missing_ok=True)
+                code_file.unlink(missing_ok=True)
         except OSError as exc:
             note += f"; cannot persist retry state: {exc}; parked for operator repair"
             exhausted = True

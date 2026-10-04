@@ -781,7 +781,7 @@ roadmap: README.md
             min_relative_improvement=0,
         )
     assert len(submitted) == 2
-    assert not m._marker(base)
+    assert m._marker(base)  # kept: later wakes park on the journal, not resubmit
     assert "2 retries exhausted" in parked.value.wait_note
     from outerloop.syscall import SyscallRequest
 
@@ -805,12 +805,19 @@ roadmap: README.md
         assert "job 102 ended COMPLETED" in str(saved.stage["wait_note"])
         assert "results could not be written" in render_text(collect_status(tmp_path))
         record = replace(saved, wake_attempts=1)
-    # A later wake tries once, retaining the exhausted counter across restart.
+    # Later wakes (and restarts) stay parked without submitting another eval.
+    from outerloop.measure import EvalInfraError
+
     resumed = _measurer(directory, submitted, states=states)
+    for _ in range(3):
+        with pytest.raises(EvalInfraError):
+            resumed.results([base])
+    assert len(submitted) == 2
+    # The operator fixes the cause and deletes the journal: the next wake re-dispatches.
+    resumed._infra_retry_path(base).unlink()
     with pytest.raises(MeasurementPending) as pending:
         resumed.results([base])
     assert pending.value.capacity_wait and pending.value.job_ids == ("103",)
-    assert json.loads(resumed._infra_retry_path(base).read_text())["retries"] == 2
     _land(resumed, base, 0.5, job="103")
     assert resumed.results([base]) == {"baseline": 0.5}
 
@@ -839,7 +846,8 @@ def test_infra_retry_journal_interruption_does_not_reset_or_double_count(
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "unlink", interrupted)
-        with pytest.raises(KeyboardInterrupt):
+        # an exhausted measure keeps its marker, so nothing is unlinked to interrupt
+        with pytest.raises(EvalInfraError if prior_retries == 2 else KeyboardInterrupt):
             m.results([measure])
     assert not submitted
     assert m._marker(measure) == "100"
