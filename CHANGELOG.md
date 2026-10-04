@@ -10,7 +10,8 @@ Versions follow [SemVer](https://semver.org).
 
 - Codex installed from npm (the review workflow's install) runs through a
   script launcher whose vendored binary carries its own code-mode host; the
-  session no longer refuses it for lacking a host beside the launcher.
+  session no longer refuses it for lacking a host beside the launcher. A
+  contained session refuses a launcher up front (the image has no Node.js).
 - `examples/review.yml` referenced a nonexistent `@v1` tag; it now uses `@main`
   with a note to pin a release in production (#475).
 - Native Codex sessions failed on the first turn because Codex 0.160's code-mode

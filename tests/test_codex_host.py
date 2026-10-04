@@ -218,3 +218,15 @@ def test_script_launcher_finds_its_own_host(tmp_path, monkeypatch, launcher):
         result = None
     assert reached, "the host check refused a script launcher"
     assert result is None or result.stop_reason != "codex-code-mode-host-missing"
+
+
+def test_contained_session_refuses_a_script_launcher(tmp_path, monkeypatch):
+    """The image has no Node.js or npm package tree, so a launcher bound at
+    /opt/agent/codex cannot run there: refuse before login."""
+    binary = tmp_path / "codex.js"
+    binary.write_text("require('x')\n")
+    monkeypatch.setattr(CodexHarness, "_login", lambda *a: pytest.fail("login started"))
+    result = CodexHarness("key", binary=str(binary), container_image="image.sif").run(
+        "task", tmp_path / "ws"
+    )
+    assert result.is_error and result.stop_reason == "codex-launcher-in-container"

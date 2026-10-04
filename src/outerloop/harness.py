@@ -1304,6 +1304,12 @@ class CodexHarness:
                         os.close(codex_fd)
                 os.close(home_fd)
         host = self._code_mode_host()
+        if host is None and self.container_image:
+            return _error_result(
+                "codex-launcher-in-container",
+                detail="a contained session needs the native codex binary, not a script "
+                "launcher; run outerloop harness upgrade codex",
+            )
         if host is not None and (not host.is_file() or not os.access(host, os.X_OK)):
             return _error_result(
                 "codex-code-mode-host-missing", detail="run outerloop harness upgrade codex"
