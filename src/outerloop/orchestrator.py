@@ -150,7 +150,9 @@ class RunParked(Exception):
         judged: tuple[str, str, AttemptResult] | None = None,
         launch_afterany: str = "",
         capacity_wait: bool = False,
+        wait_note: str = "",
     ):
+        self.wait_note = wait_note
         self.capacity_wait = capacity_wait
         self.phase = phase
         # the author's launch jobs alone (a candidate park's `afterany` also
@@ -1206,6 +1208,7 @@ def resume_attempt(
             phase="candidate",
             afterany=pending.afterany(),
             capacity_wait=pending.capacity_wait,
+            wait_note=pending.note,
             base_sha=base_sha,
             seed=seed,
             suite_seed=suite_seed,
@@ -2319,6 +2322,7 @@ def attempt_once(
                 phase="candidate",
                 afterany=_merge_afterany(pending.afterany(), launch_afterany),
                 capacity_wait=pending.capacity_wait,
+                wait_note=pending.note,
                 launch_afterany=launch_afterany,
                 base_sha=base_sha,
                 seed=run_seed,

@@ -17,6 +17,17 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- Missing dispatched evaluation output is now an infrastructure failure for
+  baselines (including suite baselines) and cleanly completed jobs. Retry twice
+  without GPU-budget or author/wake retry charges, then park with an
+  operator-visible note; the run stays parked (no further evals) until an
+  operator fixes the cause and deletes the named `infra-retries.json`.
+  Candidate failures and existing results retain their behavior (#474).
+  Upgrading: no action needed. Missing `infra-retries.json` beside an eval's
+  `submitted` marker means zero retries; missing `stage.wait_note` means no note.
+  Existing markers and results remain readable; ended runs are unchanged. Older
+  kernels ignore both additions, but rollback restores their no-result failures.
+
 - Codex installed from npm (the review workflow's install) runs through a
   script launcher whose vendored binary carries its own code-mode host; the
   session no longer refuses it for lacking a host beside the launcher. A

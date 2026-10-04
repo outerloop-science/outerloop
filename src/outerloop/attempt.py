@@ -708,6 +708,7 @@ def _park_run(
         **{k: latest.stage[k] for k in STAGE_RETAINED_KEYS if k in latest.stage},
         "phase": parked.phase,
         "capacity_wait": parked.capacity_wait,
+        "wait_note": redact(parked.wait_note, secrets),
         "base_sha": parked.base_sha,
         "candidate_sha": parked.candidate_sha,
         "candidate_authors": authors,
