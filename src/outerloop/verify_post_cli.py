@@ -20,6 +20,7 @@ from pathlib import Path
 
 from outerloop.github import EnvTokenProvider, GitHubClient
 from outerloop.posting import EXPECTED_FAILURES, post_round, post_skip_stub
+from outerloop.review import sanitize
 from outerloop.review_agent import pull_request
 from outerloop.verifier import (
     VERIFY_MARKER,
@@ -64,7 +65,9 @@ def post_from_file(
             log.info("skipping post on %s#%s: %s", repo, number, skip)
             return None
         if kind == "skip-stub":
-            post_skip_stub(client, repo, number, "verification", RuntimeError("no verdict"))
+            # the detail crossed the job boundary: sanitize it as the review poster does
+            detail = sanitize(str(envelope.get("detail", "")), 300) or "no verdict"
+            post_skip_stub(client, repo, number, "verification", RuntimeError(detail))
             return "skip-stub"
         data = envelope.get("data")
         result = verify_result_from_data(data if isinstance(data, dict) else {})

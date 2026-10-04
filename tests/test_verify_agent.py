@@ -231,6 +231,30 @@ def test_tokenless_split_emits_then_posts(tmp_path: Path) -> None:
     assert "outerloop:verification-review" in post_client.comments[0]
 
 
+def test_split_skip_stub_keeps_the_error_detail(tmp_path: Path) -> None:
+    """The tokenless job emits the API error; the posting job must post that
+    error, not a placeholder, so the thread says what failed."""
+    from outerloop.verify_post_cli import post_from_file
+
+    ws = tmp_path / "two-trees"
+    ws.mkdir()
+    emit = tmp_path / "verdict.json"
+    error = "rate_limit_error: slow down"
+    run_agent_verify(
+        _Client(),  # type: ignore[arg-type]
+        "org/repo",
+        9,
+        _Harness("", is_error=True, detail=error),
+        ws,
+        bot_login=BOT,
+        emit_path=emit,
+    )
+    post_client = _Client()
+    assert post_from_file(post_client, "org/repo", 9, BOT, emit) == "skip-stub"  # type: ignore[arg-type]
+    (stub,) = post_client.comments
+    assert "rate_limit_error" in stub and "no verdict" not in stub
+
+
 def test_post_from_file_refuses_a_mismatched_pr(tmp_path: Path) -> None:
     import json as _json
 
