@@ -575,15 +575,6 @@ class AttemptResult:
         return redact("\n".join(lines), redact_secrets)
 
 
-def _benchmark(contract: Contract, name: str):
-    for bench in contract.benchmarks:
-        if bench.name == name:
-            return bench
-    raise ValueError(
-        f"benchmark {name!r} not in contract ({[b.name for b in contract.benchmarks]})"
-    )
-
-
 def out_of_scope(paths: Sequence[str], contract: Contract) -> list[str]:
     """Changed paths the contract does not allow the agent to touch.
 
@@ -831,7 +822,7 @@ def improved(baseline: float, candidate: float, direction: str, min_rel: float) 
 def make_task(
     contract: Contract, benchmark_name: str, baseline: float | None, hypothesis: str = ""
 ) -> Task:
-    bench = _benchmark(contract, benchmark_name)
+    bench = contract.benchmark(benchmark_name)
     better = "lower" if bench.direction == "min" else "higher"
     suite_gated = bool(contract.scope.shared) and len(contract.benchmarks) > 1
     # ORIENTATION, not direction: the brief states the current score and how
@@ -1384,7 +1375,7 @@ def attempt_once(
     the budgets come from the benchmark's `depth_k` / `sleep_k`.
     """
     contract = load_contract(contract_text, config.target)
-    bench = _benchmark(contract, config.benchmark)
+    bench = contract.benchmark(config.benchmark)
     spec = spec or author_spec()
     if not spec.execution.can_execute:
         raise ValueError("attempt_once runs an editing role; the spec must allow execution")

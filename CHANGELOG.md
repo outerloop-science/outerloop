@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- A run whose benchmark is no longer in its contract (renamed or removed)
+  stops with one clear message naming the benchmarks the contract has,
+  instead of continuing on default settings (no GPU budget, default eval
+  walltime, research lines off). A contract that fails to load still leaves
+  parked runs parked until it is fixed.
+
 ### Removed
 
 - Upgrading: the contract budget key `climb_job_minutes` is no longer read; a
