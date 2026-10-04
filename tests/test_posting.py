@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from outerloop import posting
 from outerloop.github import GitHubError
 
@@ -98,6 +100,22 @@ def test_skip_stub_carries_its_own_marker_and_reason() -> None:
     (stub,) = [c["body"] for c in client.posted]
     assert stub.lstrip().startswith(posting.SKIP_MARKER)
     assert "could not run" in stub and "credit balance" in stub
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "API Error: 400 Claude Code 2.1.229 does not support this model; "
+        "version 2.1.280 or newer is required",
+        "run outerloop harness upgrade codex",
+    ],
+)
+def test_skip_stub_names_a_too_old_harness_not_an_outage(error: str) -> None:
+    client = _FakeClient()
+    posting.post_skip_stub(client, "org/repo", 1, "advisory review", RuntimeError(error))  # type: ignore[arg-type]
+    (stub,) = [c["body"] for c in client.posted]
+    assert "too old for the requested model" in stub and "not an outage" in stub
+    assert error[:40] in stub
 
 
 def test_post_round_posts_one_numbered_stamped_comment() -> None:

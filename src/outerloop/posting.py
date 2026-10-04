@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from outerloop.github import GitHubClient, GitHubError
 from outerloop.harness import redact
@@ -123,6 +124,10 @@ def post_round_review(
 
 
 SKIP_MARKER = marker("round-skipped")
+# refusals that mean "upgrade the harness", not "the API is down"
+VERSION_REFUSAL = re.compile(
+    r"does not support this model|or newer is required|harness upgrade", re.IGNORECASE
+)
 
 
 def post_skip_stub(
@@ -146,15 +151,23 @@ def post_skip_stub(
     posting stays backend-agnostic — the key env var is provider-specific, this
     module is not.
     """
-    note = redact(str(exc), tuple(s for s in secrets if s))[:200]
-    try:
-        client.comment(
-            repo,
-            number,
+    note = redact(str(exc), tuple(s for s in secrets if s))[:300]
+    if VERSION_REFUSAL.search(note):
+        body = (
+            f"{SKIP_MARKER}\n*The {role} round could not run — the pinned agent "
+            f"harness is too old for the requested model ({type(exc).__name__}: "
+            f"{note}). This is not an outage: point the workflow at a newer "
+            f"reviewer release (the `uses:` ref and `reviewer_ref`), then re-add "
+            f"the review label.*"
+        )
+    else:
+        body = (
             f"{SKIP_MARKER}\n*The {role} round could not run — the model API "
             f"refused the request ({type(exc).__name__}: {note}). Treat this "
             f"as an outage, not a clean read; re-add the review label to "
-            f"re-request once the API recovers.*",
+            f"re-request once the API recovers.*"
         )
+    try:
+        client.comment(repo, number, body)
     except EXPECTED_FAILURES as post_exc:
         log.warning("could not post the skip stub: %s", post_exc)

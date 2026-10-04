@@ -1,9 +1,9 @@
 # Versions and integrity pins move together.
 [claude]
-version = "2.1.272"
-linux-x64 = "d81396a668eb76fbddb49a2a5841f1b5d7af96b4c1f6500ced92f2c988f5bcd4"
-linux-x64-musl = "e30bb3ac07c4f1c3f63b47312e9a73ba6875256b7768c4cdb784d2b179417489"
-linux-arm64 = "214a90efdd16ee0ea81132ffecced588dba394d178cc494f285ba04b5288c8de"
+version = "2.1.285"
+linux-x64 = "33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29"
+linux-x64-musl = "7b4414af1bc06eb6d91730759bd01c4c02a4976d0b8526237e9a6d8c33eaf102"
+linux-arm64 = "24fac77749bed3d91365d6b6915aa4b824e14318ecb6bc17adbc192f01c9173d"
 
 [codex]
 version = "0.160.0"

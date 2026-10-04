@@ -6,6 +6,14 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- Claude Code pin 2.1.272 -> 2.1.285 (current stable; `claude-opus-5-5` needs
+  2.1.280 or newer). Upgrading: run `outerloop harness upgrade claude`; deploys
+  that run harness upgrades do this automatically.
+- A review round refused because the pinned harness is too old for the model
+  now says so (and how to fix it) instead of calling it an API outage (#475).
+
 ### Fixed
 
 - Native Codex sessions failed on the first turn because Codex 0.160's code-mode
