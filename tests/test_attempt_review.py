@@ -1538,8 +1538,8 @@ def test_terminal_releases_snapshot_when_notebook_fails(review_run, monkeypatch,
         raise RuntimeError("notebook unavailable")
 
     monkeypatch.setattr(
-        attempt,
-        {"contract": "load_contract", "benchmark": "_benchmark", "seal": "_push_line_snapshot"}[
+        attempt.Contract if failure == "benchmark" else attempt,
+        {"contract": "load_contract", "benchmark": "benchmark", "seal": "_push_line_snapshot"}[
             failure
         ],
         fail,

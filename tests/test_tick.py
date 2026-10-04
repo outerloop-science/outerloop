@@ -4768,3 +4768,57 @@ def test_malformed_overrides_do_not_stop_tick_main(tmp_path, monkeypatch, caplog
     assert load_record(tmp_path, "r1").wake_attempts == 1
     assert caplog.text.count("fresh claims held:") == 1
     assert mod._author_config_error(spec)
+
+
+def test_missing_benchmark_gpu_count_refuses_scheduling(tmp_path, monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    from outerloop.contract import ContractError, load_contract
+    from outerloop.intake import IssueTask
+    from outerloop.tick import ServiceSpec, _benchmark_gpus, effective_limits, service_steward
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: renamed, command: evaluate, metric: score, direction: max}
+budgets: {gpu_hours_per_run: 0, runs_per_week: 10}
+scope: {allowed: [src/]}
+steward: {allowed: [eval/]}
+roadmap: README.md
+""",
+        "owner/repo",
+    )
+    message = "benchmark 'original' not in contract (['renamed'])"
+    with pytest.raises(ContractError) as error:
+        _benchmark_gpus(contract, "original")
+    assert str(error.value) == message
+    task = IssueTask(1, "update evaluation", "", "maintainer", "original")
+    monkeypatch.setattr("outerloop.steward.pick_steward_issue", lambda *args: task)
+    monkeypatch.setattr("outerloop.steward.release_orphaned_claims", lambda *args, **kwargs: None)
+    github = Mock()
+    compute = Mock()
+    spec = ServiceSpec(
+        target="owner/repo",
+        account="",
+        partition="",
+        run_root=tmp_path,
+        image="",
+        home=tmp_path,
+        steward_key_file="/key",
+    )
+    assert (
+        service_steward(
+            tmp_path,
+            github,
+            compute,
+            spec,
+            NOW,
+            contract,
+            effective_limits(contract.budgets),
+            records=[],
+        )
+        is None
+    )
+    assert message in caplog.text
+    compute.submit.assert_not_called()
+    github.comment.assert_not_called()

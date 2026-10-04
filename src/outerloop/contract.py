@@ -53,6 +53,10 @@ class ContractError(ValueError):
     """Base class for contract rejections."""
 
 
+class BenchmarkNotFoundError(ContractError):
+    """The run's benchmark is not in the contract (renamed or removed)."""
+
+
 class SelfTargetError(ContractError):
     """Raised when a contract names outerloop itself as the target."""
 
@@ -353,19 +357,6 @@ class Budgets(_StrictModel):
     # in. Unset: the author's own pace, the whole array by default.
     max_concurrent_gpus: int | None = Field(default=None, ge=1)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_climb_job_minutes(cls, data: Any) -> Any:
-        # TRANSITIONAL: the field was `climb_job_minutes`. Map the legacy key
-        # to the new name before validation (new name wins if BOTH appear, so
-        # a mid-migration contract never fails), and consume it so extra=forbid
-        # does not reject it. Drop this once the (two) live contracts migrate.
-        if isinstance(data, dict) and "climb_job_minutes" in data:
-            data = dict(data)
-            legacy = data.pop("climb_job_minutes")
-            data.setdefault("attempt_job_minutes", legacy)
-        return data
-
 
 class Scope(_StrictModel):
     allowed: list[str] = Field(min_length=1)
@@ -426,6 +417,13 @@ class Contract(_StrictModel):
     #     no-regression phase, and the panel's taste rubric all bind
     #     BEFORE publish.
     merge: Literal["manual", "auto"] = "manual"
+
+    def benchmark(self, name: str) -> Benchmark:
+        for bench in self.benchmarks:
+            if bench.name == name:
+                return bench
+        names = [bench.name for bench in self.benchmarks]
+        raise BenchmarkNotFoundError(f"benchmark {name!r} not in contract ({names})")
 
     @field_validator("benchmarks")
     @classmethod
