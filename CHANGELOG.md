@@ -10,6 +10,8 @@ Versions follow [SemVer](https://semver.org).
 
 Operator actions (everything else needs no action; details in each entry):
 
+- Claude Code is pinned at 2.1.285: run `outerloop harness upgrade claude`
+  (deploys that run harness upgrades do this on their own).
 - Before selecting a chat-only Codex endpoint profile, install the bridge:
   `outerloop harness upgrade --used`.
 - Existing Hermes source-only installs: run `bash scripts/install_hermes.sh
@@ -255,6 +257,8 @@ Operator actions (everything else needs no action; details in each entry):
 
 ### Changed
 
+- Claude Code pin 2.1.272 -> 2.1.285, the current stable release;
+  `claude-opus-5-5` refuses Claude Code older than 2.1.280.
 - Upgrading: legacy Codex archive-only markers and Hermes runtimes without interpreter digests are reinstalled on upgrade; legacy Hermes runtimes remain launchable. Existing retry records remain readable, and corrupt records are treated as empty. Run state and in-flight PRs are unchanged; rollback leaves the additional digest files unused.
 
 - Upgrading: version overrides now require matching SHA-256 settings; legacy Codex installs without hash markers are reprovisioned. New retry state and hash markers are ignored by older kernels; the first successfully synced tick verifies configured harnesses and records new paths only when needed. Legacy `.env` paths and Hermes runtimes remain readable; old artifacts are retained. See `docs/install.md` for rollback across kernel pins.

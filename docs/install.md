@@ -301,7 +301,7 @@ Use `--no-install-harness` to skip this step. To install by hand from the
 outerloop checkout, run `bash scripts/install_claude.sh [target_path]` or
 `bash scripts/install_codex.sh [target_path]`, then rerun `outerloop init --force`.
 The default target is `$OUTERLOOP_<BACKEND>_BIN`, else `~/.local/bin/<backend>`.
-Claude 2.1.272 is pinned for Linux x64 (glibc/musl) and ARM64; other platforms
+Claude 2.1.285 is pinned for Linux x64 (glibc/musl) and ARM64; other platforms
 are refused. Installation needs `curl`, `sha256sum`, and a writable target
 directory. Hermes runs authors and reviewers, provisioned with
 `bash scripts/install_hermes.sh [target_dir]`.

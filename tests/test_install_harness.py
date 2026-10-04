@@ -97,7 +97,9 @@ def test_init_install(tmp_path, monkeypatch, capsys, backend, mode):
 def test_claude_checksum_gate(tmp_path, valid):
     # Substitute only the test copy's pins, never the production verification
     # or hash tool: a small executable stands in for the 227 MB release asset.
-    payload = b"#!/bin/sh\necho '2.1.272 (Claude Code)'\n"
+    from outerloop.harness_pins import pins
+
+    payload = f"#!/bin/sh\necho '{pins('claude')['version']} (Claude Code)'\n".encode()
     asset = tmp_path / "asset"
     asset.write_bytes(payload if valid else b"untrusted")
     script = tmp_path / "installer.sh"
