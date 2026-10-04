@@ -1153,9 +1153,16 @@ class CodexHarness:
     # --home). So the revise/wake loops resume codex like Claude.
     supports_resume = True
 
-    def _code_mode_host(self) -> Path:
-        binary = shutil.which(self.binary) or self.binary
-        return Path(binary).resolve().with_name("codex-code-mode-host")
+    def _code_mode_host(self) -> Path | None:
+        """The code-mode host beside the codex executable, or None for a script
+        launcher (the npm package's codex.js), which finds its own vendored host."""
+        path = Path(shutil.which(self.binary) or self.binary).resolve()
+        try:
+            with path.open("rb") as file:
+                launcher = path.suffix == ".js" or file.read(2) == b"#!"
+        except OSError:
+            launcher = False
+        return None if launcher else path.with_name("codex-code-mode-host")
 
     def _apptainer_argv(
         self, inner: list[str], session_home: Path, workspace: Path | None
@@ -1175,7 +1182,9 @@ class CodexHarness:
             "--bind",
             f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
-        argv += ["--bind", f"{self._code_mode_host()}:{self.CONTAINER_CODE_MODE_HOST}:ro"]
+        host = self._code_mode_host()
+        if host is not None:
+            argv += ["--bind", f"{host}:{self.CONTAINER_CODE_MODE_HOST}:ro"]
         argv += [
             "--bind",
             f"{Path(__file__).with_name('codex_requirements.toml').resolve()}:"
@@ -1295,7 +1304,13 @@ class CodexHarness:
                         os.close(codex_fd)
                 os.close(home_fd)
         host = self._code_mode_host()
-        if not host.is_file() or not os.access(host, os.X_OK):
+        if host is None and self.container_image:
+            return _error_result(
+                "codex-launcher-in-container",
+                detail="a contained session needs the native codex binary, not a script "
+                "launcher; run outerloop harness upgrade codex",
+            )
+        if host is not None and (not host.is_file() or not os.access(host, os.X_OK)):
             return _error_result(
                 "codex-code-mode-host-missing", detail="run outerloop harness upgrade codex"
             )

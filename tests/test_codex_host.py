@@ -192,3 +192,41 @@ def test_status_and_upgrade_repair_legacy(tmp_path, monkeypatch, capsys, drift):
     assert harness_cli.verified("codex", Path(env["OUTERLOOP_CODEX_BIN"]), desired)
     harness_cli.upgrade_one("codex", env, env_file, tmp_path)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("launcher", ["codex.js", "codex-shebang"])
+def test_script_launcher_finds_its_own_host(tmp_path, monkeypatch, launcher):
+    """npm installs codex as a JS launcher whose vendored native binary has the
+    host beside it; the launcher's own directory has none, and that is fine."""
+    binary = tmp_path / launcher
+    binary.write_text("#!/usr/bin/env node\n" if launcher == "codex-shebang" else "require('x')\n")
+    binary.chmod(0o755)
+    harness = CodexHarness("key", binary=str(binary), container_image="image.sif")
+    assert harness._code_mode_host() is None
+    argv = harness._apptainer_argv(["/opt/agent/codex"], tmp_path / "home", tmp_path)
+    assert not any(HOST in a for a in argv)
+    reached = []
+
+    def login(*args):
+        reached.append(True)
+        raise RuntimeError("stop after the preflight")
+
+    monkeypatch.setattr(CodexHarness, "_login", login)
+    try:
+        result = CodexHarness("key", binary=str(binary)).run("task", tmp_path / "ws")
+    except RuntimeError:
+        result = None
+    assert reached, "the host check refused a script launcher"
+    assert result is None or result.stop_reason != "codex-code-mode-host-missing"
+
+
+def test_contained_session_refuses_a_script_launcher(tmp_path, monkeypatch):
+    """The image has no Node.js or npm package tree, so a launcher bound at
+    /opt/agent/codex cannot run there: refuse before login."""
+    binary = tmp_path / "codex.js"
+    binary.write_text("require('x')\n")
+    monkeypatch.setattr(CodexHarness, "_login", lambda *a: pytest.fail("login started"))
+    result = CodexHarness("key", binary=str(binary), container_image="image.sif").run(
+        "task", tmp_path / "ws"
+    )
+    assert result.is_error and result.stop_reason == "codex-launcher-in-container"
