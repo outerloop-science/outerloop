@@ -22,9 +22,12 @@ jobs:
     if: >-
       github.event.action != 'labeled'
       || github.event.label.name == 'outerloop:review'
-    # @main moves; pin a release tag or commit SHA in production (and reviewer_ref with it).
-    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
+    # Pin a release (or a commit SHA): this job hands your reviewer key to the
+    # workflow, so never point it at a moving branch. Keep reviewer_ref on the
+    # same release.
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0.3.0rc1
     with:
+      reviewer_ref: v0.3.0rc1
       # PRs authored by this login are never reviewed (so the bot never
       # reviews its own PRs). Use your own bot/app login.
       bot_login: your-bot-login
