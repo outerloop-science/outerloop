@@ -98,3 +98,15 @@ def rc1_record(tmp_path):
         return directory, source
 
     return install
+
+
+@pytest.fixture
+def codex_host(tmp_path, monkeypatch):
+    """Supply the companion executable for tests with a fake Codex process."""
+    from outerloop.harness import CodexHarness
+
+    host = tmp_path / "codex-code-mode-host"
+    host.write_text("#!/bin/sh\nexit 0\n")
+    host.chmod(0o755)
+    monkeypatch.setattr(CodexHarness, "_code_mode_host", lambda self: host)
+    return host

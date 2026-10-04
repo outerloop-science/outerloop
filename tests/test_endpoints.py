@@ -24,6 +24,8 @@ from outerloop.review_agent_cli import resolve_reviewer_harness
 from outerloop.role_runner import build_harness
 from outerloop.roles import author_spec, reviewer_spec
 
+pytestmark = pytest.mark.usefixtures("codex_host")
+
 
 @pytest.fixture
 def profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:

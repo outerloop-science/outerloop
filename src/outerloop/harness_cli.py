@@ -123,6 +123,15 @@ def verified(name: str, path: Path, desired: Mapping[str, str]) -> bool:
             return Path(f"{path}.verified-sha256").read_text().strip() == actual
         if name == "claude":
             return actual in [v for k, v in desired.items() if k != "version"]
+        host = path.resolve().with_name("codex-code-mode-host")
+        if not host.is_file() or not os.access(host, os.X_OK):
+            return False
+        with host.open("rb") as file:
+            host_actual = hashlib.file_digest(file, "sha256").hexdigest()
+        if Path(f"{host}.verified-sha256").read_text().strip() != (
+            f"{desired['code_mode_host_sha256']} {host_actual}"
+        ):
+            return False
         return (
             Path(f"{path}.verified-sha256").read_text().strip() == f"{desired['sha256']} {actual}"
         )

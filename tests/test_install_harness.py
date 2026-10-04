@@ -475,6 +475,7 @@ def test_tampered_binary_reinstalled(tmp_path, name, marker):
     if name == "codex":
         with tarfile.open(asset, "w:gz") as archive:
             archive.add(binary, arcname="codex")
+            archive.add(binary, arcname="codex-code-mode-host-x86_64-unknown-linux-musl")
     else:
         asset.write_text(payload)
     checksum = hashlib.sha256(asset.read_bytes()).hexdigest()
@@ -486,12 +487,15 @@ def test_tampered_binary_reinstalled(tmp_path, name, marker):
         source,
     )
     script = tmp_path / "installer.sh"
+    source = source.replace(
+        'HOST_SHA256="$(pin codex code_mode_host_sha256)"', f'HOST_SHA256="{checksum}"'
+    )
     script.write_text(source)
     binary.write_text(payload + "# tampered\n")
     binary.chmod(0o755)
     sidecar = Path(f"{binary}.verified-sha256")
     sidecar.write_text(checksum if marker == "legacy" else f"{checksum} {digest}")
-    desired = {"version": version, "sha256": checksum}
+    desired = {"version": version, "sha256": checksum, "code_mode_host_sha256": checksum}
     assert not harness_cli.verified(name, binary, desired)
     shim = tmp_path / "shim"
     shim.mkdir()

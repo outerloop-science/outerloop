@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import outerloop.harness as harness_mod
 from outerloop.harness import (
     CodexHarness,
@@ -19,6 +21,8 @@ from outerloop.harness import (
     _parse_codex_result,
     _rmtree_at,
 )
+
+pytestmark = pytest.mark.usefixtures("codex_host")
 
 
 def test_command_has_expected_flags() -> None:

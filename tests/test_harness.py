@@ -35,6 +35,9 @@ CANNED = {
 }
 
 
+pytestmark = pytest.mark.usefixtures("codex_host")
+
+
 def fake_claude(tmp_path: Path, payload: str, exit_code: int = 0, sleep: int = 0) -> str:
     """A stand-in binary that dumps env, argv, and stdin, then emits `payload`."""
     script = tmp_path / "claude"
