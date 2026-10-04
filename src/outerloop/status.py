@@ -54,6 +54,7 @@ def collect_status(root: Path) -> dict[str, Any]:
                     else {}
                 ),
                 "phase": stage.get("phase", ""),
+                **({"wait_note": stage["wait_note"]} if stage.get("wait_note") else {}),
                 "author_backend": record.author_backend or "claude",
                 "author_model": record.author_model,
                 "author_overridden": record.author_overridden,
@@ -113,6 +114,8 @@ def render_text(status: dict[str, Any]) -> str:
                 f" waiting for endpoint {wait.get('endpoint', '?')} "
                 f"since {_time(wait.get('since'))}"
             )
+        if note := run.get("wait_note"):
+            line += f" waiting: {note}"
         if rebind := run.get("rebind"):
             line += (
                 f" rebind={rebind.get('status', 'pending')}"

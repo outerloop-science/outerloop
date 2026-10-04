@@ -277,7 +277,7 @@ def test_timeout_right_after_submit_is_named(tmp_path):
     submitted: list = []
     m = _measurer(tmp_path, submitted, states={"101": "TIMEOUT"})
     with pytest.raises(EvalError, match=r"hit its walltime \(TIMEOUT\).*more minutes"):
-        m.results(_measures())
+        m.results([_measures()[1]])
     assert len(submitted) == 1
 
 
@@ -658,3 +658,277 @@ def test_legacy_slot_is_miss_and_redispatch_is_idempotent(
     _land(resumed, measure, 0.9)
     assert replace(resumed).results([measure]) == {"candidate": 0.9}
     assert len(submitted) == 1
+
+
+@pytest.mark.parametrize("name", ["baseline", "candidate", "sib-other-base"])
+def test_infra_no_result_retries_survive_restart_and_succeed(tmp_path, name):
+    measure = Measure(name, "sha", "cmd", "r2")
+    submitted: list = []
+    states = {"100": "COMPLETED", "101": "COMPLETED", "102": "PENDING"}
+    m = _measurer(tmp_path, submitted, states=states)
+    _dispatched(m, measure, job="100")  # legacy marker, no retry journal
+    for count in (1, 2):
+        m = _measurer(tmp_path, submitted, states=states)
+        # The newly submitted job is pending until the next delivery.
+        states[str(100 + count)] = "PENDING"
+        with pytest.raises(MeasurementPending) as caught:
+            m.results([measure])
+        assert caught.value.capacity_wait
+        assert caught.value.job_ids == (str(100 + count),)
+        assert m._marker(measure) == str(100 + count)
+        journal = json.loads(m._infra_retry_path(measure).read_text())
+        assert journal["retries"] == count
+        assert len(submitted) == count
+        # Repeated delivery while live neither submits nor spends a retry.
+        live = {m._job_name(measure): str(100 + count)}
+        resumed = _measurer(tmp_path, submitted, states=states, live=live)
+        with pytest.raises(MeasurementPending) as pending:
+            resumed.results([measure])
+        assert pending.value.capacity_wait
+        assert json.loads(m._infra_retry_path(measure).read_text()) == journal
+        assert len(submitted) == count
+        states[str(100 + count)] = "COMPLETED"
+    _land(m, measure, 0.7, job="102")
+    assert _measurer(tmp_path, submitted).results([measure]) == {name: 0.7}
+    assert len(submitted) == 2
+
+
+@pytest.mark.parametrize("state", ["FAILED", "OUT_OF_MEMORY", "TIMEOUT", "CANCELLED", "GONE", ""])
+@pytest.mark.parametrize("name", ["baseline", "sib-other-base", "candidate", "sib-other-cand"])
+def test_no_result_classification(tmp_path, state, name):
+    from outerloop.measure import _no_result_note
+
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states={"100": state})
+    measure = Measure(name, "sha", "cmd", "r2")
+    _dispatched(m, measure, job="100")
+    if name == "baseline" or name.endswith("-base"):
+        with pytest.raises(MeasurementPending) as caught:
+            m.results([measure])
+        assert caught.value.capacity_wait
+        assert len(submitted) == 1
+    else:
+        with pytest.raises(EvalError) as caught_error:
+            m.results([measure])
+        assert type(caught_error.value) is EvalError
+        assert str(caught_error.value) == f"measure {name}: {_no_result_note('100', state)}"
+        assert not submitted
+
+
+@pytest.mark.parametrize("code", ["0", "1", "137", "143"])
+def test_exit_code_takes_precedence_over_wrapper_completion(tmp_path, code):
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states={"100": "COMPLETED"})
+    measure = _measures()[1]
+    _land(m, measure, code=code, job="100")
+    if code == "0":
+        with pytest.raises(MeasurementPending):
+            m.results([measure])
+        assert len(submitted) == 1
+        assert not (m._ev(measure) / "exit-code").exists()
+    else:
+        with pytest.raises(EvalError):
+            m.results([measure])
+        assert not submitted
+
+
+def test_exhausted_infra_retries_park_and_resume_without_charging(tmp_path):
+    from dataclasses import replace
+
+    from outerloop.attempt import _park_run
+    from outerloop.contract import load_contract
+    from outerloop.harness import SessionResult
+    from outerloop.orchestrator import RunParked, resume_attempt
+    from outerloop.runstate import RunRecord, load_record, save_record
+    from outerloop.status import collect_status, render_text
+
+    contract = load_contract(
+        """
+benchmarks:
+  - name: main
+    command: cmd
+    metric: r2
+    direction: max
+budgets: {gpu_hours_per_run: 10, runs_per_week: 5}
+scope: {allowed: [src/]}
+roadmap: README.md
+""",
+        "owner/repo",
+    )
+
+    submitted: list = []
+    states = {"100": "COMPLETED"}
+    directory = tmp_path / "runs" / "run"
+    m = _measurer(directory, submitted, states=states)
+    base, candidate = _measures()
+    _land(m, candidate, 0.8)
+    _dispatched(m, base, job="100")
+    for count in (1, 2):
+        with pytest.raises(MeasurementPending):
+            m.results([base])
+        states[str(100 + count)] = "COMPLETED"
+    with pytest.raises(RunParked) as parked:
+        resume_attempt(
+            contract,
+            contract.benchmarks[0],
+            base_sha=base.tree_sha,
+            candidate_sha=candidate.tree_sha,
+            seed=1,
+            suite_seed=1,
+            measured_paths=["src/pilot/solvers/tsp.py"],
+            session=SessionResult("end_turn", False, 0, 1, "s", "report", ""),
+            measurer=m,
+            min_relative_improvement=0,
+        )
+    assert len(submitted) == 2
+    assert not m._marker(base)
+    assert "2 retries exhausted" in parked.value.wait_note
+    from outerloop.syscall import SyscallRequest
+
+    park = parked.value
+    park.submitted = True
+    park.syscall = SyscallRequest(launches=(), submit=True)
+    park.gpu_hours_used = 2.5
+    park.launches_used = 3
+    park.sleeps_used = 4
+    record = RunRecord("run", "owner/repo", "Research", "parked", wake_attempts=100)
+    save_record(tmp_path, record, 1)
+    for now in (1000, 1100):
+        _park_run(tmp_path, record, park, "ref", 1, now, keep_wake_attempts=True)
+        saved = load_record(tmp_path, "run")
+        assert saved.state == "parked" and not saved.ending
+        assert saved.wake_attempts == 0
+        assert saved.stage["gpu_hours_used"] == 2.5
+        assert saved.stage["launches_used"] == 3
+        assert saved.stage["sleeps_used"] == 4
+        assert saved.deadline == now + 60
+        assert "job 102 ended COMPLETED" in str(saved.stage["wait_note"])
+        assert "results could not be written" in render_text(collect_status(tmp_path))
+        record = replace(saved, wake_attempts=1)
+    # A later wake tries once, retaining the exhausted counter across restart.
+    resumed = _measurer(directory, submitted, states=states)
+    with pytest.raises(MeasurementPending) as pending:
+        resumed.results([base])
+    assert pending.value.capacity_wait and pending.value.job_ids == ("103",)
+    assert json.loads(resumed._infra_retry_path(base).read_text())["retries"] == 2
+    _land(resumed, base, 0.5, job="103")
+    assert resumed.results([base]) == {"baseline": 0.5}
+
+
+@pytest.mark.parametrize("prior_retries", [0, 1, 2])
+def test_infra_retry_journal_interruption_does_not_reset_or_double_count(
+    tmp_path, monkeypatch, prior_retries
+):
+    from outerloop.measure import EvalInfraError
+
+    submitted: list = []
+    states = {"100": "COMPLETED"}
+    m = _measurer(tmp_path, submitted, states=states)
+    measure = _measures()[1]
+    _dispatched(m, measure, job="100")
+    if prior_retries:
+        m._infra_retry_path(measure).write_text(
+            json.dumps({"retries": prior_retries, "job_id": "99", "note": "prior failure"})
+        )
+    unlink = Path.unlink
+
+    def interrupted(path, *args, **kwargs):
+        if path == m._ev(measure) / "submitted":
+            raise KeyboardInterrupt
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            m.results([measure])
+    assert not submitted
+    assert m._marker(measure) == "100"
+    journal = json.loads(m._infra_retry_path(measure).read_text())
+    assert journal["retries"] == min(2, prior_retries + 1)
+    resumed = _measurer(tmp_path, submitted, states=states)
+    expected = EvalInfraError if prior_retries == 2 else MeasurementPending
+    with pytest.raises(expected):
+        resumed.results([measure])
+    assert len(submitted) == (0 if prior_retries == 2 else 1)
+    assert json.loads(m._infra_retry_path(measure).read_text()) == journal
+
+
+def test_terminal_completion_immediately_after_submit_is_infrastructure(tmp_path):
+    from outerloop.measure import EvalInfraError
+
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states=dict.fromkeys(["101", "102", "103"], "COMPLETED"))
+    measure = _measures()[1]
+    for _ in range(2):
+        with pytest.raises(MeasurementPending) as pending:
+            m.results([measure])
+        assert pending.value.capacity_wait
+    with pytest.raises(EvalInfraError):
+        m.results([measure])
+    assert len(submitted) == 3  # original dispatch plus exactly two retries
+
+
+def test_infra_retry_disk_full_keeps_marker_and_parks(tmp_path, monkeypatch):
+    from outerloop.measure import EvalInfraError
+
+    submitted: list = []
+    m = _measurer(tmp_path, submitted, states={"100": "COMPLETED"})
+    measure = _measures()[1]
+    _dispatched(m, measure, job="100")
+    write = Path.write_text
+
+    def full(path, *args, **kwargs):
+        if path.name == "infra-retries.tmp":
+            raise OSError("No space left on device")
+        return write(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "write_text", full)
+        with pytest.raises(EvalInfraError, match="cannot persist retry state"):
+            m.results([measure])
+    assert m._marker(measure) == "100"
+    assert not submitted
+    with pytest.raises(MeasurementPending):
+        _measurer(tmp_path, submitted, states={"100": "COMPLETED"}).results([measure])
+    assert len(submitted) == 1
+
+
+def test_legacy_record_tolerates_missing_wait_note(tmp_path, monkeypatch):
+    from outerloop.attempt import _park_run
+    from outerloop.orchestrator import RunParked
+    from outerloop.runstate import load_record
+    from outerloop.status import collect_status
+
+    raw = json.loads((Path(__file__).parent / "fixtures/rc1_v021/open.json").read_text())
+    raw.update(run_id="legacy", pr_url="")
+    directory = tmp_path / "runs" / "legacy"
+    directory.mkdir(parents=True)
+    (directory / "state.json").write_text(json.dumps(raw))
+    record = load_record(tmp_path, "legacy")
+    assert "wait_note" not in record.stage
+    assert "wait_note" not in collect_status(tmp_path)["runs"][0]
+    park = RunParked(
+        phase="candidate",
+        afterany="",
+        base_sha="base",
+        seed=1,
+        suite_seed=1,
+        capacity_wait=True,
+        wait_note="job 100 ended COMPLETED; results could not be written",
+    )
+    import outerloop.attempt as attempt
+
+    save = attempt.save_record
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            attempt, "save_record", lambda *args: (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        with pytest.raises(KeyboardInterrupt):
+            _park_run(tmp_path, record, park, "ref", 1, 1000)
+    assert "wait_note" not in load_record(tmp_path, "legacy").stage
+    assert attempt.save_record is save
+    for _ in range(2):
+        _park_run(tmp_path, load_record(tmp_path, "legacy"), park, "ref", 1, 1000)
+        saved = load_record(tmp_path, "legacy")
+        assert saved.state == "parked" and saved.stage["wait_note"] == park.wait_note
+        assert collect_status(tmp_path)["runs"][0]["wait_note"] == park.wait_note

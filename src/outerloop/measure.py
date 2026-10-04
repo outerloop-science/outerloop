@@ -43,7 +43,8 @@ class MeasurementPending(Exception):
     dependency (the colon-joined job ids: `afterany:<a>:<b>` in one wake job)
     so the caller can park the run as `parked` on exactly this set."""
 
-    def __init__(self, job_ids: tuple[str, ...], *, capacity_wait: bool = False):
+    def __init__(self, job_ids: tuple[str, ...], *, capacity_wait: bool = False, note: str = ""):
+        self.note = note
         self.capacity_wait = capacity_wait
         self.job_ids = job_ids
         super().__init__(f"{len(job_ids)} measure(s) pending: {':'.join(job_ids)}")
@@ -53,6 +54,14 @@ class MeasurementPending(Exception):
         carries no known ids (a transient query failure) — the caller then
         relies on the tick sweep's deadline instead of an afterany wake."""
         return "afterany:" + ":".join(self.job_ids) if self.job_ids else ""
+
+
+class EvalInfraError(MeasurementPending):
+    """A missing infrastructure result needs an operator and a later wake."""
+
+    def __init__(self, job_ids: tuple[str, ...], note: str):
+        super().__init__(job_ids, capacity_wait=True, note=note)
+        self.args = (note,)
 
 
 @dataclass(frozen=True)
@@ -351,9 +360,6 @@ class DispatchedMeasurer:
         run_id = self.run_dir.name if self.run_dir.parent.name == "runs" else self.run_tag
         return run_job_name(run_id, prefix="eval-", suffix=f"-{m.name[:12]}-{h}")
 
-    def _done(self, m: Measure) -> bool:
-        return (self._ev(m) / "exit-code").exists()
-
     def _readable(self, m: Measure) -> bool:
         """The result can be read: a nonzero exit-code is final on its own (the
         job writer records a failed checkout as exit 97 with no stdout); a
@@ -380,15 +386,59 @@ class DispatchedMeasurer:
             time.sleep(RESULT_POLL_S)
         return True
 
-    def _ended_without_result(self, m: Measure) -> str:
-        """Why a dispatched job produced no result; a TIMEOUT means the eval
-        needs more walltime."""
+    def _end_state(self, m: Measure) -> str:
         job_id = self._marker(m)
         try:
-            state = self.compute.status(job_id) if job_id.isdigit() else ""
+            return self.compute.status(job_id) if job_id else ""
         except Exception:
-            state = ""
-        return _no_result_note(job_id, state)
+            return ""
+
+    def _infra_retry_path(self, m: Measure) -> Path:
+        return self._ev(m) / "infra-retries.json"
+
+    def _retry_no_result(self, m: Measure, state: str) -> tuple[str, bool]:
+        """Journal before clearing the marker; a repeated delivery counts once."""
+        job_id = self._marker(m)
+        baseline = m.name == "baseline" or (m.name.startswith("sib-") and m.name.endswith("-base"))
+        code_file = self._ev(m) / "exit-code"
+        code = code_file.read_text().strip() if code_file.exists() else ""
+        if not (baseline or state.startswith("COMPLETED") or code == "0"):
+            raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
+        note = (
+            f"measure {m.name}: job {job_id} ended {state or 'UNKNOWN'}; "
+            "results could not be written (infrastructure failure)"
+        )
+        path = self._infra_retry_path(m)
+        try:
+            prior = json.loads(path.read_text()) if path.exists() else {}
+            retries = prior.get("retries", 0)
+            exhausted = retries >= 2
+            if exhausted:
+                note += "; 2 retries exhausted; parked for operator repair, next wake retries once"
+            if prior.get("job_id") != job_id:
+                temporary = path.with_suffix(".tmp")
+                temporary.write_text(
+                    json.dumps(
+                        {
+                            "retries": min(2, retries + 1),
+                            "job_id": job_id,
+                            "exhausted": exhausted,
+                            "note": note,
+                        }
+                    )
+                )
+                temporary.replace(path)
+            else:
+                exhausted = prior["exhausted"]
+                note = prior["note"]
+            # Only missing results reach here; remove a partial clean exit too.
+            (self._ev(m) / "submitted").unlink(missing_ok=True)
+            code_file.unlink(missing_ok=True)
+        except OSError as exc:
+            note += f"; cannot persist retry state: {exc}; parked for operator repair"
+            exhausted = True
+        log.warning("%s", note)
+        return note, exhausted
 
     def _marker(self, m: Measure) -> str:
         f = self._ev(m) / "submitted"
@@ -437,7 +487,8 @@ class DispatchedMeasurer:
         its id cannot cause a duplicate submit. Per not-yet-done measure:
           * a live job with this name -> park on its id (authoritative);
           * a marker but NO live job -> the job ran and vanished without a
-            result (SIGKILL / node death / GONE) -> EvalError, never resubmit;
+            result: baseline or clean completion -> infrastructure retry;
+            unknown / signal death of a candidate -> EvalError, never resubmit;
           * no live job and no marker -> never dispatched -> dispatch;
           * squeue unavailable -> park (marker id if any) rather than risk a
             duplicate; the wake set may be empty -> the sweep deadline retries.
@@ -445,9 +496,15 @@ class DispatchedMeasurer:
         pending: list[str] = []
         blind = False
         capacity_wait = False
+        infra_notes: dict[str, str] = {}
+        exhausted = False
         for m in measures:
-            if self._done(m):
+            if self._readable(m):
                 continue
+            retry_path = self._infra_retry_path(m)
+            if retry_path.exists():
+                capacity_wait = True
+                infra_notes[m.name] = json.loads(retry_path.read_text())["note"]
             try:
                 live = self.compute.job_id_for_name(self._job_name(m))
             except Exception:
@@ -467,7 +524,12 @@ class DispatchedMeasurer:
                 # unless the files are merely late on the shared filesystem
                 if self._settled(m):
                     continue
-                raise EvalError(f"measure {m.name}: {self._ended_without_result(m)}")
+                infra_notes[m.name], spent = self._retry_no_result(m, self._end_state(m))
+                capacity_wait = True
+                if spent:
+                    exhausted = True
+                    blind = True
+                    continue
             # No marker, not live, no result -> never dispatched -> dispatch.
             # RESIDUAL (bounded, accepted): if a prior process died in the
             # microsecond gap between sbatch returning and _dispatch writing
@@ -485,7 +547,7 @@ class DispatchedMeasurer:
                 log.warning("measure %s waiting for capacity: %s", m.name, exc)
                 blind = True
                 continue
-            if self._done(m):
+            if self._readable(m):
                 continue  # a synchronous compute finished the job inside submit
             try:
                 state = self.compute.status(job_id)
@@ -498,10 +560,17 @@ class DispatchedMeasurer:
                 # once the filesystem has had its moment
                 if self._settled(m):
                     continue
-                raise EvalError(f"measure {m.name}: {_no_result_note(job_id, state)}")
+                infra_notes[m.name], spent = self._retry_no_result(m, state)
+                capacity_wait = True
+                exhausted |= spent
+                blind = True
+                continue
             pending.append(job_id)
+        infra_note = "; ".join(infra_notes.values())
+        if exhausted:
+            raise EvalInfraError(tuple(pending), infra_note)
         if pending or blind:
-            raise MeasurementPending(tuple(pending), capacity_wait=capacity_wait)
+            raise MeasurementPending(tuple(pending), capacity_wait=capacity_wait, note=infra_note)
         out: dict[str, float] = {}
         for m in measures:
             self._settled(m)  # exit-code seen, stdout possibly still on its way

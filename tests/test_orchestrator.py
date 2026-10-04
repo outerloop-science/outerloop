@@ -335,7 +335,7 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(
         from outerloop.measure import MeasurementPending
 
         def wait(*args, **kwargs):
-            raise MeasurementPending((), capacity_wait=True)
+            raise MeasurementPending((), capacity_wait=True, note="measure infrastructure wait")
 
         m.results = wait  # type: ignore[method-assign]
     with pytest.raises(RunParked) as exc:
@@ -365,6 +365,7 @@ def test_submit_parks_the_dispatched_gate_with_the_submitted_marker(
     from outerloop.launchlog import read_ledger
     from outerloop.runstate import RunRecord
 
+    assert p.wait_note == ("measure infrastructure wait" if capacity_wait else "")
     assert p.capacity_wait == capacity_wait
     record = RunRecord(run_id="test", target="org/pilot", task_title="t", state="running")
     _park_run(tmp_path, record, p, "ref", None, 1000)
