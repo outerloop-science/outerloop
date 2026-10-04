@@ -280,7 +280,7 @@ def test_context_excludes_drive_by_and_forged_marker_comments(review_run) -> Non
         "id": 105,
         # a real outage stub from the Actions bot: right identity, but its
         # own marker — "the API was down" is a notice, not a review round
-        "body": "<!-- autoresearch:round-skipped -->\n*The verification round could not run*",
+        "body": "<!-- outerloop:round-skipped -->\n*The verification round could not run*",
         "user": {"login": "github-actions[bot]"},
         "author_association": "NONE",
     }

@@ -1578,7 +1578,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
         {
             "number": 1,
             "title": "spoof",
-            "body": "<!-- autoresearch:contract-alarm -->\nmine now",
+            "body": "<!-- outerloop:contract-alarm -->\nmine now",
             "user": {"login": "stranger"},
         }
     )
@@ -1728,7 +1728,7 @@ roadmap: docs/roadmap.md
                     "body": "",
                     "user": {"login": "renmengye"},
                     "author_association": "OWNER",
-                    "labels": [{"name": "autoresearch:steward"}],
+                    "labels": [{"name": "outerloop:steward"}],
                 }
             ]
 
@@ -2864,7 +2864,7 @@ roadmap: docs/roadmap.md
                     "body": "",
                     "user": {"login": "renmengye"},
                     "author_association": "OWNER",
-                    "labels": [{"name": "autoresearch:steward"}],
+                    "labels": [{"name": "outerloop:steward"}],
                 }
             ]
 
@@ -2975,7 +2975,7 @@ roadmap: docs/roadmap.md
                     "body": "",
                     "user": {"login": "renmengye"},
                     "author_association": "OWNER",
-                    "labels": [{"name": "autoresearch:steward"}],
+                    "labels": [{"name": "outerloop:steward"}],
                 }
             ]
 
@@ -4592,8 +4592,8 @@ def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplo
     assert (tmp_path / "TICK").read_text() == ""  # released on the way out
 
 
-@pytest.mark.parametrize("prefix", ["outerloop", "autoresearch"])
-def test_self_merge_status_deduplicates_under_lease(tmp_path, prefix):
+def test_self_merge_status_deduplicates_under_lease(tmp_path):
+    prefix = "outerloop"
     from outerloop.tick import _merge_blessed_pr
 
     record = waiting_run(

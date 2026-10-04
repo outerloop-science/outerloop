@@ -309,7 +309,7 @@ roadmap: docs/roadmap.md
                     "body": "",
                     "user": {"login": "renmengye"},
                     "author_association": "OWNER",
-                    "labels": [{"name": "autoresearch:steward"}],
+                    "labels": [{"name": "outerloop:steward"}],
                 }
             ]
 

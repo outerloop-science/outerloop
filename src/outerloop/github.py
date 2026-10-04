@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from outerloop.contract import CONTRACT_NAME, find_contract
-from outerloop.markers import legacy_marker, marker
+from outerloop.markers import marker
 
 
 def bot_login_from_env(default: str = "") -> str:
@@ -520,12 +520,10 @@ class GitHubClient:
         # string (it is public), and splitting on it blindly would truncate
         # the frozen report — the history this method exists to preserve.
         base = current
-        # a previous addendum of ours may carry the pre-rename marker
-        for old in (self.BODY_EDIT_MARKER, legacy_marker("body-edit")):
-            idx = current.rfind(old)
-            if idx != -1 and current[idx + len(old) :].lstrip().startswith("---"):
-                base = current[:idx].rstrip()
-                break
+        idx = current.rfind(self.BODY_EDIT_MARKER)
+        tail = current[idx + len(self.BODY_EDIT_MARKER) :]
+        if idx != -1 and tail.lstrip().startswith("---"):
+            base = current[:idx].rstrip()
         self._request("PATCH", path, {"body": f"{base}\n\n{self.BODY_EDIT_MARKER}\n{addendum}"})
 
     def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
