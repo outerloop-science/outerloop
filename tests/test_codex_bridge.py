@@ -20,6 +20,8 @@ import pytest
 from outerloop import codex_bridge as bridge
 from outerloop.bridge_install import runtime_path
 
+pytestmark = pytest.mark.usefixtures("codex_host")
+
 
 def event(delta, index=0, finish=None):
     return {

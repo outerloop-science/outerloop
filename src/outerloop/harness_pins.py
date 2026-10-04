@@ -14,6 +14,7 @@ OVERRIDE_KEYS = (
     "OUTERLOOP_CLAUDE_SHA256",
     "OUTERLOOP_CODEX_VERSION",
     "OUTERLOOP_CODEX_SHA256",
+    "OUTERLOOP_CODEX_CODE_MODE_HOST_SHA256",
     "OUTERLOOP_HERMES_REF",
     "OUTERLOOP_HERMES_SHA",
 )
@@ -64,6 +65,15 @@ def effective(name: str, env: Mapping[str, str] | None = None) -> dict[str, str]
                     result[field] = checksum
             else:
                 result["sha256"] = checksum
+    if name == "codex":
+        key = "OUTERLOOP_CODEX_CODE_MODE_HOST_SHA256"
+        checksum = env.get(key, "")
+        if env.get("OUTERLOOP_CODEX_VERSION") and not checksum:
+            raise ValueError(f"a codex version override requires {key}")
+        if checksum:
+            if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                raise ValueError(f"invalid {key}")
+            result["code_mode_host_sha256"] = checksum
     return result
 
 

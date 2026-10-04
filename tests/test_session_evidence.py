@@ -24,6 +24,8 @@ from outerloop.session_evidence import (
     usage,
 )
 
+pytestmark = pytest.mark.usefixtures("codex_host")
+
 
 @pytest.mark.parametrize(
     "backend,data,expected",

@@ -6,6 +6,15 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Fixed
+
+- Native Codex sessions failed on the first turn because Codex 0.160's code-mode
+  host was not installed. The installer now installs and verifies it, and a
+  session refuses to start without it.
+  Upgrading: run `outerloop harness upgrade codex`; deploys that run harness
+  upgrades do this automatically. Existing single-binary installs are detected
+  as drift and replaced with a verified pair.
+
 ### Removed
 
 - Upgrading: the contract budget key `climb_job_minutes` is no longer read; a

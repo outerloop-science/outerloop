@@ -61,6 +61,7 @@ def test_seed_config_refuses_symlinked_parents(tmp_path: Path, component: str) -
 @pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("resume", [None, "prior-thread"])
 @pytest.mark.parametrize("endpoint", [False, True])
+@pytest.mark.usefixtures("codex_host")
 def test_every_launch_has_hook_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

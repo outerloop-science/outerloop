@@ -240,6 +240,7 @@ def test_tick_caches_exported_before_uv():
 def test_override_installer_verifies_before_switch(tmp_path, name, valid):
     import hashlib
     import json
+    import tarfile
 
     version = "99.1.2-beta.1"
     payload = f"#!/bin/sh\necho '{version}'\n"
@@ -251,11 +252,16 @@ def test_override_installer_verifies_before_switch(tmp_path, name, valid):
     manifest = tmp_path / "manifest.json"
     checksum = hashlib.sha256(payload.encode()).hexdigest() if valid else "0" * 64
     manifest.write_text(json.dumps({"platforms": {"linux-x64": {"checksum": checksum}}}))
+    host_asset = tmp_path / "host.tar.gz"
+    with tarfile.open(host_asset, "w:gz") as archive:
+        archive.add(asset, arcname="codex-code-mode-host-x86_64-unknown-linux-musl")
     shim = tmp_path / "bin"
     shim.mkdir()
     scripts = {
         "uname": '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n',
-        "curl": '#!/bin/sh\ncase "$*" in *manifest.json*) cat "$MANIFEST";; *) '
+        "curl": '#!/bin/sh\ncase "$*" in *codex-code-mode-host*) '
+        'while [ "$1" != -o ]; do shift; done; cp "$HOST_ASSET" "$2";; '
+        '*manifest.json*) cat "$MANIFEST";; *) '
         'while [ "$1" != -o ]; do shift; done; cp "$ASSET" "$2";; esac\n',
         "npm": '#!/bin/sh\n[ "$VALID" = True ] || exit 12\n'
         'dest="$3/node_modules/@openai/codex-linux-x64/vendor/target/codex"\n'
@@ -273,6 +279,10 @@ def test_override_installer_verifies_before_switch(tmp_path, name, valid):
         "MANIFEST": str(manifest),
         "ASSET": str(asset),
         "VALID": str(valid),
+        "HOST_ASSET": str(host_asset),
+        "OUTERLOOP_CODEX_CODE_MODE_HOST_SHA256": hashlib.sha256(
+            host_asset.read_bytes()
+        ).hexdigest(),
     }
     argv = ["bash", str(ROOT / f"scripts/install_{name}.sh"), str(target)]
     result = subprocess.run(argv, env=env, capture_output=True, text=True)
@@ -401,6 +411,7 @@ def test_hash_mismatch_fast_path(tmp_path, name):
         **os.environ,
         f"OUTERLOOP_{name.upper()}_VERSION": "99.1.2",
         f"OUTERLOOP_{name.upper()}_SHA256": "0" * 64,
+        "OUTERLOOP_CODEX_CODE_MODE_HOST_SHA256": "0" * 64,
     }
     assert not harness_cli.verified(name, target, effective(name, env))
     # Force supported Claude platform for the standalone installer.

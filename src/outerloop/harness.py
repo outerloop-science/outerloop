@@ -1121,7 +1121,7 @@ class CodexHarness:
     and the deployment's boundary (this container, or the ephemeral runner in
     the uncontained case) already confines the session. The host codex binary
     is bind-mounted read-only into the container (like claude), so the image
-    stays codex-free and codex updates by swapping one host binary.
+    stays codex-free and Codex updates with its companion host.
 
     `run` never raises: every failure comes back as an error SessionResult.
     """
@@ -1145,11 +1145,17 @@ class CodexHarness:
     # is updated by swapping one host binary, no rebuild). A bare class attribute
     # (no annotation) so the dataclass does not treat it as a field.
     CONTAINER_CODEX = "/opt/agent/codex"
+    CONTAINER_CODE_MODE_HOST = "/opt/agent/codex-code-mode-host"
+
     # Headless resume is validated on codex-cli 0.130.0: a contained
     # `codex exec resume <thread_id>` recalls prior-turn context (the session id
     # is the `thread.started` event's `thread_id`, restored from the bound
     # --home). So the revise/wake loops resume codex like Claude.
     supports_resume = True
+
+    def _code_mode_host(self) -> Path:
+        binary = shutil.which(self.binary) or self.binary
+        return Path(binary).resolve().with_name("codex-code-mode-host")
 
     def _apptainer_argv(
         self, inner: list[str], session_home: Path, workspace: Path | None
@@ -1169,6 +1175,7 @@ class CodexHarness:
             "--bind",
             f"{self.binary}:{self.CONTAINER_CODEX}:ro",
         ]
+        argv += ["--bind", f"{self._code_mode_host()}:{self.CONTAINER_CODE_MODE_HOST}:ro"]
         argv += [
             "--bind",
             f"{Path(__file__).with_name('codex_requirements.toml').resolve()}:"
@@ -1287,6 +1294,11 @@ class CodexHarness:
                     finally:
                         os.close(codex_fd)
                 os.close(home_fd)
+        host = self._code_mode_host()
+        if not host.is_file() or not os.access(host, os.X_OK):
+            return _error_result(
+                "codex-code-mode-host-missing", detail="run outerloop harness upgrade codex"
+            )
         bridge = bool(self.endpoint and self.endpoint.codex_bridge)
         if bridge:
             from outerloop.bridge_install import ready, runtime_path
