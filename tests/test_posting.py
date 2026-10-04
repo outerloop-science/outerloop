@@ -103,19 +103,31 @@ def test_skip_stub_carries_its_own_marker_and_reason() -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "expect"),
     [
-        "API Error: 400 Claude Code 2.1.229 does not support this model; "
-        "version 2.1.280 or newer is required",
-        "run outerloop harness upgrade codex",
+        (
+            "API Error: 400 Claude Code 2.1.229 does not support this model; "
+            "version 2.1.280 or newer is required",
+            "too old for the requested model",
+        ),
+        (
+            "request failed " * 30 + "version 2.1.280 or newer is required",
+            "too old for the requested model",
+        ),
+        ("run outerloop harness upgrade codex", "missing or does not match"),
+        (
+            "codex-code-mode-host-missing: run outerloop harness upgrade codex",
+            "missing or does not match",
+        ),
+        ("credit balance too low", "Treat this as an outage"),
     ],
 )
-def test_skip_stub_names_a_too_old_harness_not_an_outage(error: str) -> None:
+def test_skip_stub_tells_a_stale_harness_from_an_outage(error: str, expect: str) -> None:
     client = _FakeClient()
     posting.post_skip_stub(client, "org/repo", 1, "advisory review", RuntimeError(error))  # type: ignore[arg-type]
     (stub,) = [c["body"] for c in client.posted]
-    assert "too old for the requested model" in stub and "not an outage" in stub
-    assert error[:40] in stub
+    assert expect in stub
+    assert ("not an outage" in stub) == (expect != "Treat this as an outage")
 
 
 def test_post_round_posts_one_numbered_stamped_comment() -> None:
