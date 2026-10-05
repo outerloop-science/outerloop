@@ -8,9 +8,6 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- Claude Code pin 2.1.272 -> 2.1.285 (current stable; `claude-opus-5-5` needs
-  2.1.280 or newer). Upgrading: run `outerloop harness upgrade claude`; deploys
-  that run harness upgrades do this automatically.
 - A review round refused because the pinned harness is too old for the model,
   or because the runner's harness install is missing or stale, now says which
   and how to fix it instead of calling it an API outage (#475).
@@ -22,7 +19,7 @@ Versions follow [SemVer](https://semver.org).
   session no longer refuses it for lacking a host beside the launcher. A
   contained session refuses a launcher up front (the image has no Node.js).
 - `examples/review.yml` referenced a nonexistent `@v1` tag; it now pins the
-  current release (`v0.3.0rc1`, with a matching `reviewer_ref`) (#475).
+  current release (`v0.3.0`, with a matching `reviewer_ref`) (#475).
 - Native Codex sessions failed on the first turn because Codex 0.160's code-mode
   host was not installed. The installer now installs and verifies it, and a
   session refuses to start without it.
@@ -60,34 +57,7 @@ Versions follow [SemVer](https://semver.org).
   `legacy-floor`; the new row field is additive. Contracts using the new block
   require this kernel version and must remove it before rolling back.
 
-### Upgrading
-
-Operator actions (everything else needs no action; details in each entry):
-
-- Before selecting a chat-only Codex endpoint profile, install the bridge:
-  `outerloop harness upgrade --used`.
-- Existing Hermes source-only installs: run `bash scripts/install_hermes.sh
-  "$REVIEW_HERMES_REPO"` (or full `outerloop init`) before Hermes sessions launch.
-- Harness version overrides now need matching SHA-256 settings.
-- Evals and baselines recorded by the previous kernel are measured again once
-  under the new cache key, with no extra charge.
-- Parked authors keep the instructions they started with; judges use the new
-  rubric at once.
-- Runs parked by the previous kernel resume after the upgrade.
-- Before rolling back: consume pending rebind requests, finish capacity-parked
-  runs, runs with extended session limits, overridden and endpoint-routed runs,
-  and chat-only Codex sessions, and stop additional instances.
-
-- A PR tests one idea. It may include the few changes that idea needs, and the
-  report states the effect of each change. Authors test several values in one
-  array launch and report the results around the chosen value; the panel may
-  block a single-value tuning change without them (new `landscape` finding
-  category). Upgrading: no action. Judges use the new rubric at once. An author
-  parked across the upgrade keeps the instructions it started with. Older readers
-  treat `landscape` as `other`. (This was listed under 0.2.1 by mistake; it
-  shipped after that tag.)
-
-- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: no action. An eval or baseline recorded by the previous kernel, in flight or finished, is measured again once under the new cache key, with no extra budget charge; pausing or draining before the upgrade does not avoid it.
+### Changed
 
 - Codex sessions never get Codex's built-in sub-agent tools; multi-agent work
   goes through the kernel's channels. `OUTERLOOP_CODEX_WEB_SEARCH` controls
@@ -162,7 +132,39 @@ Operator actions (everything else needs no action; details in each entry):
   exist: older strict ledger readers cannot read explicit self-reported
   provenance, and older kernels cannot enforce the new contract settings.
 
-- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: An eval dispatched by the previous kernel and still in flight at upgrade is measured again once under the new cache key (no extra budget charge). To avoid the extra run, upgrade when no evals are in flight: `touch <root>/PAUSE` (stops wakes, so no new evals are dispatched), wait until no eval jobs remain in the queue, upgrade, then `rm <root>/PAUSE` and run `outerloop start`.
+
+## [0.3.0] - 2026-10-05
+
+### Upgrading
+
+Operator actions (everything else needs no action; details in each entry):
+
+- Claude Code is pinned at 2.1.285: run `outerloop harness upgrade claude`
+  (deploys that run harness upgrades do this on their own).
+- Before selecting a chat-only Codex endpoint profile, install the bridge:
+  `outerloop harness upgrade --used`.
+- Existing Hermes source-only installs: run `bash scripts/install_hermes.sh
+  "$REVIEW_HERMES_REPO"` (or full `outerloop init`) before Hermes sessions launch.
+- Harness version overrides now need matching SHA-256 settings.
+- Evals and baselines recorded by the previous kernel are measured again once
+  under the new cache key, with no extra charge.
+- Parked authors keep the instructions they started with; judges use the new
+  rubric at once.
+- Runs parked by the previous kernel resume after the upgrade.
+- Before rolling back: consume pending rebind requests, finish capacity-parked
+  runs, runs with extended session limits, overridden and endpoint-routed runs,
+  and chat-only Codex sessions, and stop additional instances.
+
+- A PR tests one idea. It may include the few changes that idea needs, and the
+  report states the effect of each change. Authors test several values in one
+  array launch and report the results around the chosen value; the panel may
+  block a single-value tuning change without them (new `landscape` finding
+  category). Upgrading: no action. Judges use the new rubric at once. An author
+  parked across the upgrade keeps the instructions it started with. Older readers
+  treat `landscape` as `other`. (This was listed under 0.2.1 by mistake; it
+  shipped after that tag.)
+
+- Include GPU count and resolved GPU type in dispatched eval and baseline cache identity, including budget discounts. Legacy eval slots and baseline entries are cache misses. Upgrading: no action. An eval or baseline recorded by the previous kernel, in flight or finished, is measured again once under the new cache key, with no extra budget charge; pausing or draining before the upgrade does not avoid it.
 
 - Park launch capacity refusals in capacity wait when an immediate resume is
   unavailable or already refused, instead of ending the run. The next wake
@@ -384,6 +386,8 @@ Operator actions (everything else needs no action; details in each entry):
 
 ### Changed
 
+- Claude Code pin 2.1.272 -> 2.1.285, the current stable release;
+  `claude-opus-5-5` refuses Claude Code older than 2.1.280.
 - Upgrading: legacy Codex archive-only markers and Hermes runtimes without interpreter digests are reinstalled on upgrade; legacy Hermes runtimes remain launchable. Existing retry records remain readable, and corrupt records are treated as empty. Run state and in-flight PRs are unchanged; rollback leaves the additional digest files unused.
 
 - Upgrading: version overrides now require matching SHA-256 settings; legacy Codex installs without hash markers are reprovisioned. New retry state and hash markers are ignored by older kernels; the first successfully synced tick verifies configured harnesses and records new paths only when needed. Legacy `.env` paths and Hermes runtimes remain readable; old artifacts are retained. See `docs/install.md` for rollback across kernel pins.
