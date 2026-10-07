@@ -113,6 +113,36 @@ def test_parse_flags_turn_failed_with_nested_message() -> None:
     assert "401 Unauthorized" in result.error_detail
 
 
+RECONNECT = {
+    "type": "error",
+    "message": "Reconnecting... 1/5 (stream disconnected before completion: Connection closed.)",
+}
+DONE = {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 5}}
+
+
+def test_parse_recovered_error_is_not_a_failure() -> None:
+    stdout = "\n".join(map(json.dumps, [RECONNECT, DONE]))
+    result = _parse_codex_result(stdout, "done", 0)
+    assert result.is_error is False
+    assert result.stop_reason == "completed"
+    assert result.tokens == {"input_tokens": 100, "output_tokens": 5}
+
+
+@pytest.mark.parametrize(
+    "events, returncode",
+    [
+        ([RECONNECT, {"type": "turn.failed", "error": {"message": "gave up"}}], 0),
+        ([DONE, RECONNECT], 0),  # an error with no completed turn after it
+        ([RECONNECT, DONE], 1),
+        ([RECONNECT, {"type": "turn.failed"}, DONE], 0),  # a failed turn stays failed
+    ],
+)
+def test_parse_unrecovered_error_is_a_failure(events: list[dict], returncode: int) -> None:
+    result = _parse_codex_result("\n".join(map(json.dumps, events)), "", returncode)
+    assert result.is_error is True
+    assert result.tokens == {}
+
+
 def test_parse_skips_timestamped_log_lines() -> None:
     # codex interleaves "2026-... ERROR ..." log lines that are not JSON
     stdout = "2026-08-13T02:25:06Z ERROR codex_api: failed to connect\n" + json.dumps(

@@ -14,6 +14,11 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A Codex session that recovers from a transient error no longer ends its run
+  as aborted. Codex reports a dropped or timed-out model stream as an `error`
+  event ("Reconnecting... 1/5") and carries on; the kernel now counts an error
+  as fatal only when no completed turn follows it, the turn fails, or Codex
+  exits non-zero (#491).
 - Codex installed from npm (the review workflow's install) runs through a
   script launcher whose vendored binary carries its own code-mode host; the
   session no longer refuses it for lacking a host beside the launcher. A
