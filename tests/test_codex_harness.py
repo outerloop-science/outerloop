@@ -143,6 +143,13 @@ def test_parse_unrecovered_error_is_a_failure(events: list[dict], returncode: in
     assert result.tokens == {}
 
 
+def test_parse_detail_names_the_fatal_error_not_recovered_ones() -> None:
+    events = [RECONNECT, DONE] * 10 + [{"type": "error", "message": "quota exhausted"}]
+    result = _parse_codex_result("\n".join(map(json.dumps, events)), "", 0)
+    assert result.is_error is True
+    assert result.error_detail == "quota exhausted"
+
+
 def test_parse_skips_timestamped_log_lines() -> None:
     # codex interleaves "2026-... ERROR ..." log lines that are not JSON
     stdout = "2026-08-13T02:25:06Z ERROR codex_api: failed to connect\n" + json.dumps(

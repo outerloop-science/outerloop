@@ -1044,7 +1044,8 @@ def _parse_codex_result(
     turns = 0
     failed = False
     pending_error = False
-    errors: list[str] = []
+    errors: list[str] = []  # from failed turns
+    pending: list[str] = []  # from error events no completed turn has followed yet
     for line in stdout.splitlines():
         text = line.strip()
         if not text.startswith("{"):
@@ -1063,6 +1064,7 @@ def _parse_codex_result(
         elif etype == "turn.completed":
             turns += 1
             pending_error = False
+            pending.clear()
             turn_usage = usage(event.get("usage"), "codex")
             keys = set(turn_usage)
             if not {"input_tokens", "output_tokens"} <= keys:
@@ -1076,7 +1078,7 @@ def _parse_codex_result(
             pending_error = True
             message = event.get("message")
             if isinstance(message, str):
-                errors.append(message)
+                pending.append(message)
         elif etype == "turn.failed":
             incomplete_usage = True
             failed = True
@@ -1087,7 +1089,7 @@ def _parse_codex_result(
     is_error = returncode != 0 or failed or pending_error
     if incomplete_usage or is_error:
         tokens = {}  # Partial invocation totals must never be priced as complete.
-    detail = "; ".join(errors)[:500]
+    detail = "; ".join(errors + pending)[:500]
     # Fall back to stderr so a failed run (e.g. a bad flag, no matching event)
     # carries some cause instead of an empty detail.
     if is_error and not detail and stderr.strip():
