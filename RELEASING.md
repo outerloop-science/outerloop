@@ -53,6 +53,9 @@ wording does not reach a parked run unless its deduplication key changes.
    what Discord announces, so nothing is announced that did not install.
 5. `gh release create vX.Y.Z --generate-notes`, with `--prerelease` for a dev
    or rc tag.
+   For a final release, also move the `v0` tag that external callers of the
+   reusable workflows track: `git tag -f v0 vX.Y.Z && git push -f origin v0`.
+   Dev and rc tags never move it.
 6. Announce. Discord's `#announcements` gets the release from the GitHub
    webhook on its own (docs/community.md). For a final release, also write
    the post for X (`@outerloop_sci`) and Bluesky (`@outerloop.science`): one
