@@ -22,8 +22,8 @@ jobs:
     if: >-
       github.event.action != 'labeled'
       || github.event.label.name == 'outerloop:review'
-    # Track the v0 release tag: it moves only when a release is cut, never on a
-    # push to main, so the code that receives your reviewer key changes only
+    # Track the v0 release tag: maintainers move it to each final release, never
+    # on a push to main, so the code that receives your reviewer key changes only
     # with a release. Keep reviewer_ref on the same ref. To bump by hand
     # instead, pin an exact release (v0.3.0) or a commit SHA; never a branch.
     uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0

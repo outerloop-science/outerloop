@@ -89,9 +89,10 @@ That's the whole setup. Notes:
   If you have no bot yet, any placeholder login works.
 - **If you forked this repo**, add `reviewer_repo: your-org/outerloop` under
   `with:` — otherwise your fork's changes never run.
-- **Track releases with `v0`**: `@v0` with `reviewer_ref: v0` follows each
-  release automatically and never a push to `main`, so the code that holds your
-  reviewer key changes only when a release is cut. Keep the two refs the same.
+- **Track releases with `v0`**: maintainers move the `v0` tag to each final
+  release (never a dev or rc, never a push to `main`), so with `@v0` and
+  `reviewer_ref: v0` the code that holds your reviewer key changes only when a
+  release is cut. Keep the two refs the same.
   Left unset, `reviewer_ref` defaults to `main`, which moves on every push. To
   bump by hand instead, pin an exact release (`v0.3.0`) or a commit SHA.
 - Silence it on one PR with the `outerloop:no-review` label.
