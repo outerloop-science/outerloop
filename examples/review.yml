@@ -22,12 +22,13 @@ jobs:
     if: >-
       github.event.action != 'labeled'
       || github.event.label.name == 'outerloop:review'
-    # Pin a release (or a commit SHA): this job hands your reviewer key to the
-    # workflow, so never point it at a moving branch. Keep reviewer_ref on the
-    # same release.
-    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0.3.0
+    # Track the v0 release tag: it moves only when a release is cut, never on a
+    # push to main, so the code that receives your reviewer key changes only
+    # with a release. Keep reviewer_ref on the same ref. To bump by hand
+    # instead, pin an exact release (v0.3.0) or a commit SHA; never a branch.
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0
     with:
-      reviewer_ref: v0.3.0
+      reviewer_ref: v0
       # PRs authored by this login are never reviewed (so the bot never
       # reviews its own PRs). Use your own bot/app login.
       bot_login: your-bot-login

@@ -35,8 +35,9 @@ jobs:
   advisory:
     # a labeled event only runs for the outerloop:review label (manual re-review)
     if: github.event.action != 'labeled' || github.event.label.name == 'outerloop:review'
-    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0
     with:
+      reviewer_ref: v0             # keep on the same ref as the line above
       bot_login: my-bot            # PRs by this login are never reviewed
     secrets:
       anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
@@ -55,8 +56,9 @@ same reusable, different backend. Each opinion posts its own labeled round:
 ```yaml
   second-opinion:
     if: github.event.action != 'labeled' || github.event.label.name == 'outerloop:review'
-    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/advisory-review-agent.yml@v0
     with:
+      reviewer_ref: v0
       bot_login: my-bot
       backend: hermes
       model: openai/gpt-5.6-terra  # any OpenRouter id
@@ -87,8 +89,11 @@ That's the whole setup. Notes:
   If you have no bot yet, any placeholder login works.
 - **If you forked this repo**, add `reviewer_repo: your-org/outerloop` under
   `with:` — otherwise your fork's changes never run.
-- **Pin the version in production**: `reviewer_ref: v0.1.0` (or a commit SHA).
-  The default `main` moves.
+- **Track releases with `v0`**: `@v0` with `reviewer_ref: v0` follows each
+  release automatically and never a push to `main`, so the code that holds your
+  reviewer key changes only when a release is cut. Keep the two refs the same.
+  Left unset, `reviewer_ref` defaults to `main`, which moves on every push. To
+  bump by hand instead, pin an exact release (`v0.3.0`) or a commit SHA.
 - Silence it on one PR with the `outerloop:no-review` label.
 - Fork PRs are skipped by design: they must not reach your API key.
 - Nothing from the pull request is ever executed. The workflow checks out the
@@ -121,7 +126,9 @@ permissions:
 concurrency: maintenance
 jobs:
   digest:
-    uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@main
+    uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@v0
+    with:
+      reviewer_ref: v0
     secrets:
       anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
 ```
