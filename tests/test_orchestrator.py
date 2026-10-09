@@ -3145,8 +3145,8 @@ def test_v021_capacity_error_becomes_durable_park(tmp_path, rc1_record):
             if self.retry_launch:
                 _write_syscall(workspace, {"launches": [{"name": "probe", "command": "true"}]})
             else:
-                # the capacity wake, then the kernel's notes after each silent stop
-                assert "Capacity may now be free" in text or "ended without a syscall" in text
+                # a stop after the capacity note is the author's answer: no nudge
+                assert "Capacity may now be free" in text
             return ok_session()
 
     def launch(sha, request):

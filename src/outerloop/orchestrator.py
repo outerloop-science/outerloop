@@ -1379,6 +1379,7 @@ def attempt_once(
     contract = load_contract(contract_text, config.target)
     bench = contract.benchmark(config.benchmark)
     spec = spec or author_spec()
+    leg_start_seq = inbox_seq  # the cursor before this leg delivers anything
     if not spec.execution.can_execute:
         raise ValueError("attempt_once runs an editing role; the spec must allow execution")
     if not spec.scope:
@@ -1639,7 +1640,12 @@ def attempt_once(
     # narration) is resumed with a note rather than taken as the end of the run.
     # Bounded so a model that keeps stopping still ends.
     silent_stops = 0
-    kernel_spoke = False  # a kernel note this leg makes the next stop an answer
+    # A refusal delivered with this leg (or sent during it) makes the next stop
+    # an answer; pacing notes and launch results do not.
+    kernel_spoke = any(
+        m.source == "kernel" and m.key.startswith(("refusal:", "message-refused:"))
+        for m in pending_messages(inbox_dir, leg_start_seq)
+    )
     # Rejection protects stop/error paths; it is never a refusal limit.
     tree_rejected = False
     scope_refused = any(
