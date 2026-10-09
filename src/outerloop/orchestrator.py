@@ -73,6 +73,8 @@ log = logging.getLogger(__name__)
 
 EVAL_TIMEOUT_S = 1800
 MAX_REPORT_BODY = 20_000
+# times one leg of a session is resumed after stopping with nothing staged
+SILENT_STOP_RESUMES = 3
 
 
 # Environment keys the evaluator manages itself; a contract's seed_env may
@@ -1564,6 +1566,11 @@ def attempt_once(
     baseline_note = ""
     measured: tuple[str, ...] = ()
     refused_once = False
+    # A session that stops without staging anything (an empty reply, a line of
+    # narration) is resumed with a note rather than taken as the end of the run.
+    # Bounded so a model that keeps stopping still ends.
+    silent_stops = 0
+    kernel_spoke = False  # a kernel note this leg makes the next stop an answer
     # Rejection protects stop/error paths; it is never a refusal limit.
     tree_rejected = False
     scope_refused = any(
@@ -1582,7 +1589,8 @@ def attempt_once(
 
     def _resume(message: Message, *, allow_checkpoint: bool = True) -> AttemptResult | None:
         """Deliver pending messages; return an ending only if the resume fails."""
-        nonlocal session
+        nonlocal session, kernel_spoke
+        kernel_spoke = kernel_spoke or not message.key.startswith("silent-stop:")
         if on_meter is not None:
             on_meter(launches_used, sleeps_used, gpu_hours_used)
         append(inbox_dir, message)
@@ -1700,7 +1708,41 @@ def attempt_once(
                 read_error = f"unhonorable syscall request: {exc}"
                 request = SyscallRequest(launches=(), problem=read_error)
             if request is None:
-                break
+                # After a kernel note, a verdict or with a PR open, stopping is
+                # a considered answer; only a plain silent stop is resumed.
+                if (
+                    launcher is None
+                    or on_stop is not None
+                    or kernel_spoke
+                    or scope_refused
+                    or failed_gate is not None
+                    or silent_stops >= SILENT_STOP_RESUMES
+                    or not _can_resume()
+                ):
+                    break
+                silent_stops += 1
+                failed = _resume(
+                    Message(
+                        0,
+                        "note",
+                        "kernel",
+                        inbox_thread,
+                        time.time(),
+                        f"silent-stop:{session.session_id}:{inbox_seq}:{silent_stops}",
+                        {
+                            "text": (
+                                "Your session ended without a syscall: nothing was staged "
+                                "(no launch, sleep, submit or end), so nothing ran and your "
+                                "run is still open. Continue the work. If you are done, "
+                                "stage `end --report FILE` and end your turn."
+                            ),
+                        },
+                        origin=inbox_dir.name,
+                    )
+                )
+                if failed is not None:
+                    return failed
+                continue
             # Refresh ancestry before deriving the paths admitted below.
             no_backend = (
                 "sleep is not available here: this run has no compute backend for "
