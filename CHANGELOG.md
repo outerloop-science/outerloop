@@ -14,6 +14,12 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- An author session that stops without staging anything (an empty reply after
+  long reasoning, or a line of narration with no command) no longer ends its
+  run as "ended without a submit". The kernel resumes the session with a note
+  that nothing ran and the run is still open, up to three times per leg. A stop
+  after a kernel note, a gate verdict, or with a PR open is still taken as the
+  agent's answer, and `end` still ends the run.
 - A Codex session that recovers from a transient error no longer ends its run
   as aborted. Codex reports a dropped or timed-out model stream as an `error`
   event ("Reconnecting... 1/5") and carries on; the kernel now counts an error
