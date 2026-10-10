@@ -75,6 +75,8 @@ EVAL_TIMEOUT_S = 1800
 MAX_REPORT_BODY = 20_000
 # times one leg of a session is resumed after stopping with nothing staged
 SILENT_STOP_RESUMES = 3
+# inbox keys of kernel notes that refuse something; a stop after one is an answer
+REFUSAL_KEYS = ("refusal:", "refused:", "capacity-refusal:", "message-refused:", "publish-refused:")
 
 
 # Environment keys the evaluator manages itself; a contract's seed_env may
@@ -1574,7 +1576,7 @@ def attempt_once(
     # A refusal delivered with this leg (or sent during it) makes the next stop
     # an answer; pacing notes and launch results do not.
     kernel_spoke = any(
-        m.source == "kernel" and m.key.startswith(("refusal:", "message-refused:"))
+        m.source == "kernel" and m.key.startswith(REFUSAL_KEYS)
         for m in pending_messages(inbox_dir, leg_start_seq)
     )
     # Rejection protects stop/error paths; it is never a refusal limit.
