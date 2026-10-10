@@ -3336,3 +3336,19 @@ def test_silent_stop_with_an_open_pr_still_parks_for_review(tmp_path):
     result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]), on_stop=on_stop)
     assert len(harness.calls) == 1 and len(stopped) == 1
     assert result.outcome == "review"
+
+
+@pytest.mark.parametrize(
+    "key", ["refusal:", "refused:", "capacity-refusal:", "message-refused:", "publish-refused:"]
+)
+def test_a_stop_after_a_delivered_refusal_is_not_nudged(tmp_path, key):
+    import time
+
+    from outerloop.inbox import Message, append
+
+    inbox = tmp_path.parent / (tmp_path.name + "-run")
+    inbox.mkdir(exist_ok=True)
+    append(inbox, Message(0, "note", "kernel", "", time.time(), key + "x", {"text": "refused"}))
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
+    assert len(harness.calls) == 1
+    assert result.outcome == "no-improvement"
