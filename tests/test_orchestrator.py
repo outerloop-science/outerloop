@@ -3076,3 +3076,19 @@ def test_a_stop_after_a_delivered_refusal_is_not_nudged(tmp_path, key):
     result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
     assert len(harness.calls) == 1
     assert result.outcome == "no-improvement"
+
+
+def test_a_refusal_from_an_earlier_leg_does_not_disable_the_nudge(tmp_path):
+    import time
+
+    from outerloop.inbox import Message, append
+    from outerloop.orchestrator import SILENT_STOP_RESUMES
+
+    inbox = tmp_path.parent / (tmp_path.name + "-run")
+    inbox.mkdir(exist_ok=True)
+    note = {"text": "Refused: out-of-scope", "quoted_text": "out-of-scope paths: x"}
+    append(inbox, Message(0, "note", "kernel", "", time.time(), "refusal:old", note))
+    # the refusal was delivered on an earlier leg: this leg starts past it
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]), inbox_seq=1)
+    assert len(harness.calls) == 1 + SILENT_STOP_RESUMES
+    assert result.outcome == "no-improvement"

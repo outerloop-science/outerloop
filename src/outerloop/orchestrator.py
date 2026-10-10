@@ -1722,7 +1722,6 @@ def attempt_once(
                     launcher is None
                     or on_stop is not None
                     or kernel_spoke
-                    or scope_refused
                     or failed_gate is not None
                     or silent_stops >= SILENT_STOP_RESUMES
                     or not _can_resume()
