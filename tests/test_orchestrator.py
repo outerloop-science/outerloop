@@ -3145,6 +3145,7 @@ def test_v021_capacity_error_becomes_durable_park(tmp_path, rc1_record):
             if self.retry_launch:
                 _write_syscall(workspace, {"launches": [{"name": "probe", "command": "true"}]})
             else:
+                # a stop after the capacity note is the author's answer: no nudge
                 assert "Capacity may now be free" in text
             return ok_session()
 
@@ -3289,3 +3290,81 @@ def test_legacy_suite_row_and_rule_reports():
         )
         assert rule in result.report(CONFIG)
         assert rule in pr_body(result, CONFIG, redact_secrets=())
+
+
+def test_silent_stop_is_resumed_and_an_explicit_end_ends_the_run(tmp_path):
+    from outerloop.syscall_cli import main
+
+    class Author:
+        supports_resume = True
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, brief_text, workspace, resume_session_id=None):
+            self.calls.append((brief_text, resume_session_id))
+            if len(self.calls) == 2:
+                assert "ended without a syscall" in brief_text
+                assert main(["end"], root=workspace) == 0
+            return ok_session()
+
+    author = Author()
+    result, _, evaluator = run_climb(tmp_path, [], harness=author, launcher=_fake_launcher([]))
+    assert len(author.calls) == 2 and author.calls[1][1] == "s1"
+    assert result.outcome == "no-improvement"
+    assert not evaluator.calls
+
+
+def test_silent_stops_are_bounded(tmp_path):
+    from outerloop.orchestrator import SILENT_STOP_RESUMES
+
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
+    assert len(harness.calls) == 1 + SILENT_STOP_RESUMES
+    assert all("ended without a syscall" in call[0] for call in harness.calls[1:])
+    assert result.outcome == "no-improvement" and result.note == "ended without a submit"
+
+
+def test_silent_stop_with_an_open_pr_still_parks_for_review(tmp_path):
+    from outerloop.orchestrator import AttemptResult
+
+    stopped = []
+
+    def on_stop(session):
+        stopped.append(session)
+        return AttemptResult(outcome="review", session=session)
+
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]), on_stop=on_stop)
+    assert len(harness.calls) == 1 and len(stopped) == 1
+    assert result.outcome == "review"
+
+
+@pytest.mark.parametrize(
+    "key", ["refusal:", "refused:", "capacity-refusal:", "message-refused:", "publish-refused:"]
+)
+def test_a_stop_after_a_delivered_refusal_is_not_nudged(tmp_path, key):
+    import time
+
+    from outerloop.inbox import Message, append
+
+    inbox = tmp_path.parent / (tmp_path.name + "-run")
+    inbox.mkdir(exist_ok=True)
+    append(inbox, Message(0, "note", "kernel", "", time.time(), key + "x", {"text": "refused"}))
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]))
+    assert len(harness.calls) == 1
+    assert result.outcome == "no-improvement"
+
+
+def test_a_refusal_from_an_earlier_leg_does_not_disable_the_nudge(tmp_path):
+    import time
+
+    from outerloop.inbox import Message, append
+    from outerloop.orchestrator import SILENT_STOP_RESUMES
+
+    inbox = tmp_path.parent / (tmp_path.name + "-run")
+    inbox.mkdir(exist_ok=True)
+    note = {"text": "Refused: out-of-scope", "quoted_text": "out-of-scope paths: x"}
+    append(inbox, Message(0, "note", "kernel", "", time.time(), "refusal:old", note))
+    # the refusal was delivered on an earlier leg: this leg starts past it
+    result, harness, _ = run_climb(tmp_path, [], launcher=_fake_launcher([]), inbox_seq=1)
+    assert len(harness.calls) == 1 + SILENT_STOP_RESUMES
+    assert result.outcome == "no-improvement"

@@ -7538,7 +7538,11 @@ def test_hermes_resume_configuration_block_preserves_park(
     resume_run(
         state, run_id, harness=HermesHarness(api_key="key", repo_dir=tmp_path / "hermes"), **kwargs
     )
-    assert resumed == ["s1"]
+    from outerloop.orchestrator import SILENT_STOP_RESUMES
+
+    # with nothing staged and no PR, a stop is resumed with a note (bounded)
+    silent = not (pr or sleep_again)
+    assert resumed == ["s1"] * (1 + (SILENT_STOP_RESUMES if silent else 0))
     saved = load_record(state, run_id)
     assert "hermes_resume_required_chars" not in saved.stage
     if sleep_again:
