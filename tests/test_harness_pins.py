@@ -173,6 +173,54 @@ def test_upgrade_returns_failure(tmp_path, monkeypatch, capsys):
     assert "previous installation retained: broken" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("args", [["upgrade"], ["upgrade", "claude"], ["upgrade", "--used"]])
+def test_upgrade_leaves_operator_harnesses_alone(tmp_path, monkeypatch, capsys, args):
+    # a site-managed CLI (here a wrapper that prints no version) is never replaced
+    # by the pinned install, nor its recorded path rewritten
+    wrapper = tmp_path / "site" / "claude"
+    binary(wrapper, "site wrapper")
+    env_file = tmp_path / ".env"
+    recorded = f'OUTERLOOP_CLAUDE_BIN="{wrapper}"\nOUTERLOOP_OPERATOR_HARNESSES=claude\n'
+    env_file.write_text(recorded)
+    env_file.chmod(0o600)
+    monkeypatch.setattr(paths, "ENV_FILE", env_file)
+    monkeypatch.setattr(os, "environ", {"HOME": str(tmp_path), "PATH": ""})
+    upgraded = []
+    monkeypatch.setattr(harness_cli, "upgrade_one", lambda name, *a: upgraded.append(name))
+    assert harness_cli.main([*args, "--root", str(tmp_path)]) == 0
+    assert "claude" not in upgraded
+    assert f"claude: operator-supplied at {wrapper}; left alone" in capsys.readouterr().out
+    assert env_file.read_text() == recorded
+
+
+def test_status_reports_operator_harnesses(tmp_path, capsys):
+    wrapper = tmp_path / "claude"
+    binary(wrapper, "site wrapper")
+    env = {
+        "OUTERLOOP_CLAUDE_BIN": str(wrapper),
+        "OUTERLOOP_OPERATOR_HARNESSES": " claude ,",
+        "PATH": "",
+        "HOME": str(tmp_path),
+    }
+    assert harness_cli.status(env) == 0
+    line = capsys.readouterr().out.splitlines()[0]
+    assert line.endswith(" OPERATOR") and "DRIFT" not in line
+    wrapper.unlink()
+    assert harness_cli.status(env) == 0
+    assert capsys.readouterr().out.splitlines()[0].endswith(" OPERATOR MISSING")
+
+
+def test_unknown_operator_harness_is_refused(tmp_path, monkeypatch, capsys):
+    env = {"OUTERLOOP_OPERATOR_HARNESSES": "claude,claud", "HOME": str(tmp_path), "PATH": ""}
+    assert harness_cli.status(env) == 1
+    assert "unknown harness claud" in capsys.readouterr().out
+    monkeypatch.setattr(paths, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(os, "environ", env)
+    monkeypatch.setattr(harness_cli, "upgrade_one", lambda *a: pytest.fail("upgraded"))
+    assert harness_cli.main(["upgrade", "--root", str(tmp_path)]) == 1
+    assert "unknown harness claud" in capsys.readouterr().err
+
+
 def test_hermes_legacy_runtime_follows_installed_sha(tmp_path, monkeypatch, capsys):
     from outerloop.hermes_install import hermes_ready, hermes_runtime
 

@@ -88,10 +88,13 @@ def attempt_width(root: Path, target: str, contract_width: int) -> int:
 def gpu_demand(spec: JobSpec) -> int:
     if type(spec.gpus) is not int or spec.gpus < 0:
         raise CapacityError("invalid requested GPU quantity")
+    if type(spec.nodes) is not int or spec.nodes < 1:
+        raise CapacityError("invalid requested node count")
     if not spec.gpus:
         return 0
+    per_task = spec.gpus * spec.nodes  # --gpus-per-node on every node, as squeue counts it
     if not spec.array:
-        return spec.gpus
+        return per_task
     match = re.fullmatch(r"(\d+)-(\d+)(?:%(\d+))?", spec.array)
     if not match:
         raise CapacityError(f"cannot account for GPU array {spec.array!r}")
@@ -99,7 +102,7 @@ def gpu_demand(spec: JobSpec) -> int:
     count = last - first + 1
     if count <= 0 or (match[3] is not None and int(match[3]) <= 0):
         raise CapacityError("invalid GPU array")
-    return spec.gpus * min(count, int(match[3]) if match[3] else count)
+    return per_task * min(count, int(match[3]) if match[3] else count)
 
 
 def usage(root: Path, compute: Compute) -> dict[str, int]:

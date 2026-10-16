@@ -216,9 +216,16 @@ class Benchmark(_StrictModel):
     # author launches alike. 0 (default) = CPU. A GPU benchmark needs the
     # deployment to name a GPU lane (OUTERLOOP_GPU_PARTITION, optionally
     # OUTERLOOP_GPU_ACCOUNT); without one the tick refuses to launch
-    # attempts on it rather than queue evals that can never run. Bounded at
-    # one node's worth: multi-node evals are not a shape the jail supports.
+    # attempts on it rather than queue evals that can never run. Per node:
+    # bounded at one node's worth.
     gpus: int = Field(default=0, ge=0, le=8)
+    # Nodes for every dispatched job of this benchmark. Above 1 the job holds
+    # `nodes` x `gpus` GPUs and its command runs once per node with NNODES,
+    # NODE_RANK, MASTER_ADDR and MASTER_PORT set (and torchrun's PET_*
+    # equivalents); node 0's output is the result, and budgets charge every
+    # node. Uncontained Slurm deployments only: the jail has no cross-node
+    # launcher, so the tick refuses to launch attempts on it elsewhere.
+    nodes: int = Field(default=1, ge=1, le=64)
     # How the gate obtains the baseline number it compares a candidate to.
     #   paired (default): re-measure the base tree next to every candidate,
     #     both under one fresh seed (common random numbers) — the noise-
@@ -270,7 +277,15 @@ class Benchmark(_StrictModel):
         # Preserve existing gate ledger signatures across the schema addition.
         if self.verification == "gate":
             data.pop("verification")
+        if self.nodes == 1:  # every benchmark measured on one node before `nodes`
+            data.pop("nodes")
         return tuple(sorted((k, repr(v)) for k, v in data.items() if k not in self._WORKFLOW_DIALS))
+
+    @property
+    def total_gpus(self) -> int:
+        """GPUs one dispatched job of this benchmark holds: per node x nodes.
+        Budgets, sweep pacing and the operator ceiling count these."""
+        return self.gpus * self.nodes
 
     @field_validator("seed_env")
     @classmethod
@@ -294,6 +309,11 @@ class Benchmark(_StrictModel):
         if self.gpus > 0 and not should_dispatch(self.eval_minutes):
             raise ValueError(
                 f"benchmark {self.name!r} asks for {self.gpus} GPU(s) but its evals "
+                "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
+            )
+        if self.nodes > 1 and not should_dispatch(self.eval_minutes):
+            raise ValueError(
+                f"benchmark {self.name!r} asks for {self.nodes} nodes but its evals "
                 "would run in-job: set eval_minutes above the in-job threshold so they dispatch"
             )
         floor_set = (self.min_delta or 0) > 0 or (self.min_delta_rel or 0) > 0

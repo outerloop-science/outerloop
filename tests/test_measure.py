@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -759,3 +760,40 @@ def test_no_result_candidate_death_is_still_an_eval_error(tmp_path, monkeypatch)
         m.results([_measures()[1]])
     assert caught.value.capacity_wait
     assert len(submitted) == 1  # the re-dispatch the crash cut short
+
+
+def test_multi_node_measures_dispatch_on_every_node(tmp_path):
+    """A multi-node benchmark's measures request every node; one-node measures
+    keep the storage identity they had before `nodes` existed."""
+    from dataclasses import replace
+
+    submitted: list = []
+    m = replace(_measurer(tmp_path, submitted), image="", gpu_partition="h200")
+    with pytest.raises(MeasurementPending):
+        m.results(plan_measures("c", "m", "b" * 40, "c" * 40, gpus=8, nodes=2))
+    assert len(submitted) == 2
+    for argv in submitted:
+        assert {"--nodes=2", "--ntasks-per-node=1", "--gpus-per-node=8"} <= set(argv)
+    one = Measure("candidate", "a" * 40, "c", "m", gpus=8)
+    assert m._det(one) == m._det(replace(one, nodes=1)) and "nodes" not in m._det(one)
+    assert m._det(replace(one, nodes=2)) != m._det(one)
+
+
+def test_baseline_cache_keys_on_nodes(tmp_path):
+    """A cached baseline is reused only at the node count it was measured at;
+    an entry written before `nodes` existed was measured on one node."""
+    from outerloop.measure import read_baseline_cache, write_baseline_cache
+
+    facts: dict[str, Any] = dict(
+        image="", command="c", metric="m", seed_env="", gpus=8, gpu_type=""
+    )
+    write_baseline_cache(tmp_path, "b", "s" * 40, value=1.0, seed=1, run_tag="r", **facts)
+    entry = next(tmp_path.iterdir())
+    legacy = json.loads(entry.read_text())
+    assert legacy.pop("nodes") == 1
+    entry.write_text(json.dumps(legacy))
+    assert read_baseline_cache(tmp_path, "b", "s" * 40, **facts) is not None
+    assert read_baseline_cache(tmp_path, "b", "s" * 40, nodes=2, **facts) is None
+    write_baseline_cache(tmp_path, "b", "s" * 40, value=2.0, seed=1, run_tag="r", nodes=2, **facts)
+    assert read_baseline_cache(tmp_path, "b", "s" * 40, nodes=2, **facts) is not None
+    assert read_baseline_cache(tmp_path, "b", "s" * 40, **facts) is None

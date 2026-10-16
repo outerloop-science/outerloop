@@ -561,6 +561,28 @@ def test_write_eval_job_array_writes_one_script_and_a_dir_per_task(tmp_path):
     assert "TASK=" not in plain.read_text() and "SWEEP_INDEX" not in plain.read_text()
 
 
+def test_uncontained_sweep_tasks_see_their_index(tmp_path):
+    """Without an image the command runs under `env -i`; a sweep task must still
+    receive SWEEP_INDEX there, as the contained branch passes it into the jail."""
+    run_dir = tmp_path / "run"
+    sweep = write_eval_job(
+        run_dir,
+        "launch-sw",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="",
+        array=3,
+    ).read_text()
+    bare = next(ln for ln in sweep.splitlines() if "env -i" in ln)
+    assert 'SWEEP_INDEX="$SWEEP_INDEX"' in bare
+    assert sweep.index('export SWEEP_INDEX="$TASK"') < sweep.index(bare)
+    single = write_eval_job(
+        run_dir, "launch-one", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image=""
+    ).read_text()
+    assert "SWEEP_INDEX" not in single
+
+
 def test_job_copies_the_seed_cache_into_its_own_before_uv_runs(tmp_path):
     """The kernel-warmed seed is copied — never bound, never hardlinked — into
     the job's scratch cache, best-effort, before uv runs; no seed, no line."""
@@ -634,3 +656,156 @@ def test_operator_placement_and_binary_reach_evals_and_launches(tmp_path, monkey
         assert "--qos=priority" in command
         assert f"--partition={'h200' if gpus else 'short'}" in command
         assert shlex.quote(binary) + " exec --containall" in Path(command[-1]).read_text()
+
+
+def _fake_slurm(tmp_path: Path, nodes: int, job_id: int = 12345) -> dict[str, str]:
+    """A batch environment for a multi-node job: `scontrol` names the nodes and
+    `srun` runs its command once per node in turn, as SLURM_NODEID 0..N-1,
+    exiting with the first nonzero task code."""
+    import os
+
+    fake = tmp_path / "fake-slurm"
+    fake.mkdir()
+    (fake / "scontrol").write_text(
+        "#!/bin/sh\n" + "".join(f"echo node-{chr(97 + k)}\n" for k in range(nodes))
+    )
+    (fake / "srun").write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$@" > "$SRUN_ARGS"\n'
+        'while [ "${1#--}" != "$1" ]; do shift; done\n'
+        "rc=0; k=0\n"
+        'while [ "$k" -lt "$SLURM_JOB_NUM_NODES" ]; do\n'
+        '  SLURM_NODEID=$k "$@"; c=$?; [ "$rc" = 0 ] && rc=$c; k=$((k + 1))\n'
+        "done\n"
+        'exit "$rc"\n'
+    )
+    for tool in ("scontrol", "srun"):
+        (fake / tool).chmod(0o755)
+    return {
+        **os.environ,
+        "PATH": f"{fake}:{os.environ['PATH']}",
+        "SLURM_JOB_NUM_NODES": str(nodes),
+        "SLURM_JOB_NODELIST": "node-[a-b]",
+        "SLURM_JOB_ID": str(job_id),
+        "SLURM_CPUS_PER_TASK": "6",
+        "TMPDIR": str(tmp_path),
+        "SRUN_ARGS": str(tmp_path / "srun-args"),
+    }
+
+
+def _multi_node_eval(tmp_path: Path, command: str, **kw):
+    root = _repo(tmp_path)
+    sha = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    script = write_eval_job(
+        tmp_path / "run",
+        "c",
+        repo_root=root,
+        snapshot_sha=sha,
+        command=command,
+        image="",
+        nodes=2,
+        **kw,
+    )
+    subprocess.run(["sh", str(script)], env=_fake_slurm(tmp_path, 2), check=True)
+    return tmp_path / "run" / "eval-c"
+
+
+def test_multi_node_eval_runs_on_every_node_and_reports_node_zero(tmp_path):
+    """Each node checks the snapshot out on its own scratch and runs the command
+    with its place in the rendezvous; node 0's output is the eval's."""
+    command = (
+        'cat kept.py >&2; printf \'{"rank": %s, "nnodes": %s, "addr": "%s", "port": %s, '
+        '"pet": "%s/%s/%s/%s", "procs": %s}\' "$NODE_RANK" "$NNODES" "$MASTER_ADDR" '
+        '"$MASTER_PORT" "$PET_NNODES" "$PET_NODE_RANK" "$PET_MASTER_ADDR" "$PET_MASTER_PORT" '
+        '"$PET_NPROC_PER_NODE"'
+    )
+    ev = _multi_node_eval(tmp_path, command, gpus=4)
+    import json
+
+    node0 = json.loads((ev / "stdout").read_text())
+    assert node0 == {
+        "rank": 0,
+        "nnodes": 2,
+        "addr": "node-a",
+        "port": 29845,  # 29500 + job id % 1000
+        "pet": "2/0/node-a/29845",
+        "procs": 4,
+    }
+    assert json.loads((ev / "node-1.stdout").read_text())["rank"] == 1
+    assert (ev / "exit-code").read_text().strip() == "0"
+    for rank in (0, 1):  # both nodes ran in a real checkout of the snapshot
+        assert (ev / f"node-{rank}.stderr").read_text() == "x = 1\n"
+    args = (tmp_path / "srun-args").read_text().split()
+    assert "--ntasks-per-node=1" in args and "--cpus-per-task=6" in args
+    assert "--kill-on-bad-exit=1" in args
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ('[ "$NODE_RANK" = 1 ] && exit 7; echo "{}"', "7"),  # only node 1 failed
+        ('[ "$NODE_RANK" = 0 ] && exit 3; exit 9', "3"),  # node 0 first
+        # node 0 was stopped (143) after node 1 failed: node 1 is the failure
+        ('[ "$NODE_RANK" = 0 ] && exit 143; exit 5', "5"),
+        # node 0 was killed outright and left no code: still node 1's failure
+        ('[ "$NODE_RANK" = 0 ] && kill -9 $PPID; exit 5', "5"),
+        # only a killed node: srun's code
+        ('[ "$NODE_RANK" = 1 ] && kill -9 $PPID; echo "{}"', "137"),
+    ],
+)
+def test_multi_node_eval_reports_the_failing_node(tmp_path, command, expected):
+    ev = _multi_node_eval(tmp_path, command)
+    assert (ev / "exit-code").read_text().strip() == expected
+
+
+def test_multi_node_artifacts_come_from_node_zero(tmp_path):
+    ev = _multi_node_eval(
+        tmp_path,
+        'mkdir -p out && echo "$NODE_RANK" > out/r.txt',
+        artifacts=("out/r.txt",),
+        artifact_max_bytes=100,
+    )
+    assert (ev / "artifacts" / "out" / "r.txt").read_text() == "0\n"
+    assert not (ev / "artifacts.log").exists()
+
+
+def test_multi_node_eval_refuses_the_jail(tmp_path):
+    with pytest.raises(ValueError, match="uncontained"):
+        write_eval_job(
+            tmp_path / "run",
+            "c",
+            repo_root=tmp_path,
+            snapshot_sha="a" * 40,
+            command="true",
+            image="/i.sif",
+            nodes=2,
+        )
+
+
+def test_single_node_eval_script_is_unchanged_by_the_nodes_field(tmp_path):
+    kw = dict(repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image="")
+    one = write_eval_job(tmp_path / "a", "c", **kw).read_text()
+    explicit = write_eval_job(tmp_path / "b", "c", nodes=1, **kw).read_text()
+    assert one.replace(str(tmp_path / "a"), "") == explicit.replace(str(tmp_path / "b"), "")
+    assert "srun" not in one and not (tmp_path / "a" / "eval-c" / "node.sh").exists()
+
+
+def test_multi_node_job_spec_holds_every_node(tmp_path):
+    from outerloop.operator_limits import gpu_demand
+
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/sh\n")
+    spec = eval_job_spec(
+        script, job_name="e", account="a", partition="p", eval_minutes=30, gpus=8, nodes=2
+    )
+    argv = spec.to_argv()
+    assert "--nodes=2" in argv and "--ntasks-per-node=1" in argv
+    assert "--gpus-per-node=8" in argv and "--cpus-per-task=" + str(spec.cpus) in argv
+    assert gpu_demand(spec) == 16
+    from dataclasses import replace
+
+    assert gpu_demand(replace(spec, array="0-5%2")) == 32
+    single = eval_job_spec(script, job_name="e", account="a", partition="p", eval_minutes=30)
+    assert not any(a.startswith(("--nodes", "--ntasks")) for a in single.to_argv())

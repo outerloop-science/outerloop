@@ -979,13 +979,19 @@ def with_seed(dispatch: DispatchSettings, run_root: Path, target: str) -> Dispat
 
 
 def _make_launcher(
-    dispatch: DispatchSettings, run_dir: Path, workspace: Path, run_id: str, gpus: int = 0
+    dispatch: DispatchSettings,
+    run_dir: Path,
+    workspace: Path,
+    run_id: str,
+    gpus: int = 0,
+    nodes: int = 1,
 ):
     """The launch side of the author syscalls, shared by the first pass
     (live_attempt) and the author-sleep wake: each launch becomes a jailed job on
     the sealed snapshot (write_eval_job's copy-out handles artifacts), and a
-    partially-submitted batch is reaped rather than orphaned. `gpus` is the
-    benchmark's: an author's experiments run on the same lane as its evals."""
+    partially-submitted batch is reaped rather than orphaned. `gpus` (per node)
+    and `nodes` are the benchmark's: an author's experiments run on the same
+    lane, in the same shape, as its evals."""
     lane = dispatch.lane(gpus)
     account, partition = lane.account, lane.partition
 
@@ -1010,6 +1016,7 @@ def _make_launcher(
                 artifacts=launch.artifacts,
                 artifact_max_bytes=MAX_ARTIFACT_BYTES,
                 gpus=gpus,
+                nodes=nodes,
                 array=launch.array,
                 seed_cache=dispatch.seed_cache,
             )
@@ -1021,6 +1028,7 @@ def _make_launcher(
                 partition=partition,
                 eval_minutes=launch.minutes,
                 gpus=gpus,
+                nodes=nodes,
                 gpu_type=lane.gpu_type,
                 extra=lane.extra,
                 nice=LAUNCH_NICE,
@@ -1460,7 +1468,9 @@ def run_author_leg(
         inbox_dir=directory,
         inbox_seq=record.inbox_seq,
         inbox_thread=thread_for(record),
-        launcher=_make_launcher(dispatch, directory, workspace, record.run_id, gpus=bench.gpus)
+        launcher=_make_launcher(
+            dispatch, directory, workspace, record.run_id, gpus=bench.gpus, nodes=bench.nodes
+        )
         if dispatch and owned
         else None,
         watcher=_make_watcher(dispatch, run_root, record.run_id, workspace, config)
@@ -1693,7 +1703,7 @@ def _wake_author_sleep(
             run_dir, sleep=sleeps_used, results=results, at=time.time(), elapsed_seconds=elapsed
         ),
     )
-    gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.gpus, launches, elapsed)
+    gpu_hours_used = _reconcile_launch_hours(record, dispatch, bench.total_gpus, launches, elapsed)
     thread = thread_for(record)
     for index, launch_result in enumerate(results):
         job_id = (
@@ -3180,7 +3190,9 @@ def _resume_run(
         sibling_launches = _stage_syscall_launches(record)
         sibling_ids = launch_task_ids(sibling_launches, stage_launch_job_ids(record))
         sibling_elapsed = _launch_elapsed(dispatch, sibling_ids) if sibling_ids else None
-        _reconcile_launch_hours(record, dispatch, bench.gpus, sibling_launches, sibling_elapsed)
+        _reconcile_launch_hours(
+            record, dispatch, bench.total_gpus, sibling_launches, sibling_elapsed
+        )
         # the ledger's ended records for the sibling launches, whether or not
         # the author is woken: the PR's experiments table reads them (an
         # author wake that follows records nothing twice)
@@ -3646,8 +3658,8 @@ def _panel_lenses_from_args(
         try:
             if not args.image:
                 log.warning(
-                    "panel lens %s runs uncontained (local mode, no image): the judge "
-                    "shares this machine with the operator's keys",
+                    "panel lens %s runs uncontained (no image): the judge shares "
+                    "this account with the operator's keys",
                     backend,
                 )
             judge = build_harness(
@@ -5024,7 +5036,12 @@ def live_attempt(
         launcher = None
         if author_syscalls and dispatch is not None:
             launcher = _make_launcher(
-                dispatch, run_dir, workspace, run_id, gpus=_bench.gpus if _bench else 0
+                dispatch,
+                run_dir,
+                workspace,
+                run_id,
+                gpus=_bench.gpus if _bench else 0,
+                nodes=_bench.nodes if _bench else 1,
             )
 
         def acknowledge(seq: int) -> None:

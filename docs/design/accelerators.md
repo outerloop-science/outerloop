@@ -17,18 +17,21 @@ placed and capped before any TPU contract is accepted.
 
 ## What assumes a GPU today
 
-- **Declaration.** `Benchmark.gpus: int (0..8)`; `Measure.gpus`,
-  `JobSpec.gpus`; the GPU type lives on the operator's per-target lane
+- **Declaration.** `Benchmark.gpus: int (0..8)` per node and
+  `Benchmark.nodes: int (1..64)`; `Measure.gpus`/`nodes`, `JobSpec.gpus`/`nodes`;
+  `Benchmark.total_gpus` is what one job holds. The GPU type lives on the operator's per-target lane
   (`OUTERLOOP_GPU_LANES`, `gpu_lanes.py`). Whether evals dispatch depends on
   `eval_minutes`, not on `gpus`.
-- **Metering.** Launches charge minutes × array × gpus / 60; gates charge the
-  main eval (one when a cached baseline applies, else two) and every suite
-  sibling pair × walltime × gpus (`syscall.py`). The run meter is
+- **Metering.** Launches charge minutes × array × total GPUs / 60; gates charge
+  the main eval (one when a cached baseline applies, else two) and every suite
+  sibling pair × walltime × total GPUs (`syscall.py`). The run meter is
   `stage.gpu_hours_used`; budgets are `gpu_hours_per_run` plus
   `review_topup.gpu_hours`; `max_concurrent_gpus` paces sweeps.
 - **Placement.** `JobSpec.to_argv` emits `--gres=gpu:TYPE:N` or
-  `--gpus-per-node=N`, single node; dispatched evals add `--nv` and size CPUs
-  and memory per GPU.
+  `--gpus-per-node=N`, plus `--nodes=M --ntasks-per-node=1` for a multi-node
+  benchmark; dispatched evals add `--nv` and size CPUs and memory per GPU, per
+  node. A multi-node eval `srun`s its per-node script once per node
+  (uncontained deployments only).
 - **Operator limits.** `limits.toml` `max_gpus`, counted from one
   `squeue --me --json` snapshot by parsing `gres/gpu` TRES, attributing jobs to
   this fleet by run id.

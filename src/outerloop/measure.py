@@ -71,6 +71,8 @@ class Measure:
     # the measured BENCHMARK's GPUs — per measure, because a suite gate
     # measures siblings that may need a different lane than the climbed one
     gpus: int = 0
+    # and its nodes (gpus is per node); 1 is the single-node job of old
+    nodes: int = 1
 
     def env(self) -> dict[str, str]:
         return dict(self.extra_env)
@@ -93,6 +95,7 @@ class SiblingSpec:
     seed_env: str = ""
     seed: int = 0
     gpus: int = 0
+    nodes: int = 1
 
     def env(self) -> tuple[tuple[str, str], ...]:
         # inject only a REAL drawn seed: 0 is the ledger's "no seed recorded"
@@ -111,6 +114,7 @@ def plan_measures(
     seed: int = 0,
     siblings: tuple[SiblingSpec, ...] = (),
     gpus: int = 0,
+    nodes: int = 1,
 ) -> list[Measure]:
     """The measures a climb needs, as a pure function of its committed shas
     and contract facts — the same inputs a wake process reconstructs from the
@@ -127,13 +131,19 @@ def plan_measures(
     # sentinel, never a value to run under (see SiblingSpec.env / draw_run_seed).
     env: tuple[tuple[str, str], ...] = ((seed_env, str(seed)),) if seed_env and seed else ()
     plan = [
-        Measure("baseline", base_sha, command, metric, env, gpus=gpus),
-        Measure("candidate", candidate_sha, command, metric, env, gpus=gpus),
+        Measure("baseline", base_sha, command, metric, env, gpus=gpus, nodes=nodes),
+        Measure("candidate", candidate_sha, command, metric, env, gpus=gpus, nodes=nodes),
     ]
     for sib in siblings:
         plan.append(
             Measure(
-                f"sib-{sib.name}-base", base_sha, sib.command, sib.metric, sib.env(), gpus=sib.gpus
+                f"sib-{sib.name}-base",
+                base_sha,
+                sib.command,
+                sib.metric,
+                sib.env(),
+                gpus=sib.gpus,
+                nodes=sib.nodes,
             )
         )
         plan.append(
@@ -144,6 +154,7 @@ def plan_measures(
                 sib.metric,
                 sib.env(),
                 gpus=sib.gpus,
+                nodes=sib.nodes,
             )
         )
     return plan
@@ -184,11 +195,12 @@ def read_baseline_cache(
     seed_env: str = "",
     gpus: int = 0,
     gpu_type: str = "",
+    nodes: int = 1,
 ) -> dict[str, Any] | None:
     """The cached base-tree measurement for (benchmark, base sha), or None.
     The entry must have been measured under the SAME determinants the
     candidate will be — eval image, contract command, metric key, seed
-    variable, GPU count and resolved GPU type: everything the measurer's
+    variable, GPU count, node count and resolved GPU type: everything the measurer's
     own eval identity carries except the tree sha (the key) and the seed VALUE (fresh per
     attempt by design) — or it is stale (terra #178): a comparison across
     determinants is not a comparison. A cache
@@ -211,6 +223,7 @@ def read_baseline_cache(
         or data.get("seed_env", "") != seed_env
         or data.get("gpus") != gpus
         or data.get("gpu_type") != gpu_type
+        or data.get("nodes", 1) != nodes  # entries from before `nodes` are one node
     ):
         return None
     return data
@@ -230,6 +243,7 @@ def write_baseline_cache(
     seed_env: str = "",
     gpus: int = 0,
     gpu_type: str = "",
+    nodes: int = 1,
 ) -> None:
     """Record an orchestrator-measured baseline for every later attempt on
     this base, with the determinants it was measured under. Atomic (a
@@ -255,6 +269,7 @@ def write_baseline_cache(
                 "seed_env": seed_env,
                 "gpus": gpus,
                 "gpu_type": gpu_type,
+                "nodes": nodes,
             },
             fh,
         )
@@ -308,7 +323,8 @@ class DispatchedMeasurer:
         # PARK/RESUME (when a fresh measurer reads this run_dir): the container
         # image, the measure's logical role, the code (tree_sha), and the
         # contract facts it is evaluated under (command, metric, seeded env),
-        # GPU count, and the resolved GPU type from the lane.
+        # GPU and node counts, and the resolved GPU type from the lane (nodes
+        # only when above 1, so one-node slots keep the identity they had).
         # A cache key missing any of these would return a value computed under
         # DIFFERENT inputs — e.g. a resume that re-fetched the contract after
         # its command changed, or ran under a rebuilt image, reading the stale
@@ -318,7 +334,8 @@ class DispatchedMeasurer:
         env = "".join(f"\0{k}={v}" for k, v in sorted(m.env().items()))
         return (
             f"{self.image}\0{m.name}\0{m.tree_sha}\0{m.command}\0{m.metric}"
-            f"\0{m.gpus}\0{self.gpu_type}{env}"
+            f"\0{m.gpus}\0{self.gpu_type}{env}" + (f"\0\0nodes={m.nodes}" if m.nodes > 1 else "")
+            # a double NUL cannot start an env entry, so this never aliases one
         )
 
     def _slot(self, m: Measure) -> str:
@@ -457,6 +474,7 @@ class DispatchedMeasurer:
             image=self.image,
             extra_env=m.env(),
             gpus=m.gpus,
+            nodes=m.nodes,
             seed_cache=self.seed_cache,
         )
         account, partition = self._placement(m)
@@ -468,6 +486,7 @@ class DispatchedMeasurer:
             partition=partition,
             eval_minutes=self.eval_minutes,
             gpus=m.gpus,
+            nodes=m.nodes,
             gpu_type=self.gpu_type if m.gpus and self.compute.has_lanes else "",
             extra=self.gpu_extra if m.gpus and self.compute.has_lanes else (),
         )

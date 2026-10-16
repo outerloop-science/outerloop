@@ -128,6 +128,9 @@ class JobSpec:
     cpus: int = 1
     mem: str = "2G"
     gpus: int = 0
+    # nodes > 1: one task per node, and cpus/mem/gpus are per node, so the
+    # job holds nodes x gpus GPUs (dispatch fans the eval out with srun)
+    nodes: int = 1
     qos: str = ""
     # a positive nice LOWERS priority (Slurm, like Unix): experiments yield to
     # the kernel's own evals and re-measures when a slot frees
@@ -159,11 +162,13 @@ class JobSpec:
             argv.append(f"--account={self.account}")
         if self.partition:  # unset lets Slurm pick its default partition
             argv.append(f"--partition={self.partition}")
+        if self.nodes > 1:
+            argv += [f"--nodes={self.nodes}", "--ntasks-per-node=1"]
         if self.gpus:
-            # per-NODE, not per-job (--gpus): every job here is single-node,
-            # and Slurm submit plugins commonly classify a job by its
-            # per-node GRES — the per-job form has been rejected on a GPU
-            # partition as "CPU job setup is not valid"
+            # per-NODE, not per-job (--gpus): it is what a multi-node job means
+            # by its GPU count, and Slurm submit plugins commonly classify a
+            # job by its per-node GRES — the per-job form has been rejected on
+            # a GPU partition as "CPU job setup is not valid"
             # Typed --gres is also per-node.
             argv.append(
                 f"--gres=gpu:{self.gpu_type}:{self.gpus}"
@@ -769,6 +774,9 @@ class LocalCompute:
         return jobs
 
     def submit(self, spec: JobSpec) -> str:
+        if spec.nodes > 1:
+            # backstop: the tick refuses multi-node benchmarks on this backend
+            raise ValueError(f"{spec.job_name}: local compute is one machine, not {spec.nodes}")
         state_dir = _local_state_dir()
         marker = None
         remaining = len(array_indices(spec.array)) if spec.array else 1

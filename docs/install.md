@@ -856,6 +856,37 @@ your own, `--no-image` keeps runs uncontained even when an image is already on d
 run containers, init says so, prints the install steps for your system, and
 continues uncontained; run `outerloop init --force` after installing it.
 
+**Running without a container on a cluster.** A Slurm deployment with no
+container runtime sets `OUTERLOOP_UNCONTAINED=1` in `~/.config/outerloop/.env`.
+Sessions and evaluations then run as in local mode without an image, sessions
+under the harness's own sandbox and evaluations bare in a throwaway tree under
+an allowlisted environment, but as Slurm jobs on your account; the image is
+ignored even when one is on disk. Without the setting, a cluster deployment
+with no image services nothing and its log names the missing setting, so a lost
+image never silently drops containment. The local-mode rules carry over: the
+panel is off unless you set `OUTERLOOP_PANEL_UNCONTAINED=1`, a Codex or Hermes
+author needs the image (`start` refuses one), and a session can read any file
+your account can, the bot's credential and the model key files included. That
+reach also covers the evaluator's tree and the kernel's own state, so the
+measurement integrity containment provides weakens along with key secrecy. Use
+it where the site already confines processes, or where that exposure is
+acceptable to you.
+
+**Multi-node benchmarks.** An uncontained Slurm deployment can measure a
+benchmark across several nodes: `nodes: 4` with `gpus: 8` makes every
+dispatched job of that benchmark (gate evals and the author's launches alike)
+hold 32 GPUs, eight on each of four nodes. The eval job `srun`s one task per
+node; each node checks the snapshot out on its own scratch and runs the
+benchmark command with `NNODES`, `NODE_RANK`, `MASTER_ADDR` and `MASTER_PORT`
+set, plus torchrun's `PET_*` defaults, so a plain
+`torchrun --nproc-per-node=8 train.py` (or just `torchrun train.py`) joins one
+rendezvous. Node 0's output is the measurement; the other nodes' output stays
+beside it as `node-<rank>.stdout` and `.stderr` for debugging. A failing node
+exits nonzero, so `srun` stops the rest rather than leaving them at the
+rendezvous. Budgets, sweep pacing and the operator's GPU ceiling count every
+node. A contained or local deployment refuses to start attempts on a contract
+with a multi-node benchmark and says why.
+
 **One machine with several GPUs.** Local mode shares the machine's GPUs across
 jobs first come first served, and launch arrays run their tasks in parallel as
 GPUs become available. `OUTERLOOP_LOCAL_GPUS` overrides automatic detection via
@@ -945,7 +976,8 @@ means it works.
   less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer
   export PATH=$HOME/apptainer/bin:$PATH
   ```
-- *Slurm clusters.* Ask the administrators; most already provide it.
+- *Slurm clusters.* Ask the administrators; most already provide it. A cluster
+  without one can run uncontained (`OUTERLOOP_UNCONTAINED=1`, above).
 - *macOS.* No Apptainer; runs stay uncontained (a macOS containment is on the roadmap).
 
 ---
@@ -1047,6 +1079,20 @@ the effective operator override when one is present.
 `--used` selects the author, configured review/panel backends, and the Claude
 steward when configured. The deployment runs this after a successful kernel
 sync; a failure is logged without preventing the tick.
+
+**Operator-supplied harnesses.** A site may provide its own build of a harness
+CLI, such as a managed `claude` that authenticates by itself. List it in
+`OUTERLOOP_OPERATOR_HARNESSES` (comma-separated names from `claude`, `codex`,
+`hermes`, `bridge`) and record its path as usual, for example in
+`OUTERLOOP_CLAUDE_BIN`. Upgrade then leaves it alone, the deployment's
+automatic `--used` run included, and status reports `OPERATOR` (or
+`OPERATOR MISSING` when the path is not executable) instead of comparing it
+with the pin. Keeping it current is yours, and so is running a version the
+kernel was not tested against. The role's key file is still required and still
+passed to the session; when the CLI ignores it, fill it with a long random
+placeholder, because the kernel redacts the key's text from transcripts and a
+short one would garble them. A contained session binds only the binary into the
+image, so a wrapper that needs other host paths works only uncontained.
 
 Each changed harness is built below `<state-root>/harnesses/<name>/<version>/`
 in its final location. Verification precedes an atomic replacement of the

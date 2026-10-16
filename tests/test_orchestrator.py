@@ -2115,6 +2115,40 @@ def test_stale_preflight_precedes_cache_and_compute_budget(tmp_path):
     assert caught.value.gpu_hours_used == 1.0 and caught.value.launches_used == 3
 
 
+@pytest.mark.parametrize("nodes", [1, 2])
+def test_launches_charge_every_node(tmp_path, nodes):
+    """GPU-hours are per job: a multi-node benchmark's launch holds gpus on
+    every node, and the meter charges all of them."""
+    from outerloop.orchestrator import RunParked
+
+    contract = DEEP_CONTRACT.replace(
+        "    direction: min\n",
+        f"    direction: min\n    gpus: 2\n    nodes: {nodes}\n    eval_minutes: 60\n",
+    ).replace("gpu_hours_per_run: 1,", "gpu_hours_per_run: 3,")
+    _write_syscall(tmp_path, {"launches": [{"name": "probe", "command": "x", "minutes": 30}]})
+    launched: list = []
+    with pytest.raises(RunParked) as caught:
+        run_climb(tmp_path, [], contract=contract, launcher=_fake_launcher(launched))
+    assert launched
+    assert caught.value.gpu_hours_used == pytest.approx(30 * 2 * nodes / 60)
+    # and the budget is checked against every node: 2 GPU-hours exceed 1
+    from outerloop.contract import load_contract
+    from outerloop.syscall import Launch, SyscallRequest, budget_error
+
+    bench = load_contract(contract, "org/pilot").benchmarks[0]
+    refusal = budget_error(
+        SyscallRequest(launches=(Launch("probe", "x", 30),)),
+        launches_used=0,
+        launch_budget=3,
+        sleeps_used=0,
+        sleep_budget=4,
+        gpu_hours_used=0,
+        gpu_hour_budget=1,
+        gpus=bench.total_gpus,
+    )
+    assert bool(refusal) == (nodes == 2)
+
+
 def test_stale_checkpoint_checks_scope_before_sealing(tmp_path):
     from outerloop.orchestrator import SubmitPreflight
 

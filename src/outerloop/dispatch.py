@@ -345,8 +345,23 @@ def write_eval_job(
     gpus: int = 0,
     array: int = 1,
     seed_cache: Path | None = None,
+    nodes: int = 1,
 ) -> Path:
     """Write the orchestrator-authored job script for one dispatched eval.
+
+    `nodes` > 1 (uncontained only) splits it in two: `job.sh` coordinates on
+    the batch node and `srun`s `node.sh` once per node. Each node checks the
+    snapshot out on its own scratch and runs the command with NNODES,
+    NODE_RANK, MASTER_ADDR, MASTER_PORT and torchrun's PET_* equivalents
+    set, writing `node-<rank>.{stdout,stderr,exit-code,setup.log}` in the job
+    dir. Node 0's stdout and stderr become the eval's; its exit code is the
+    eval's unless another node failed, in which case the first failing
+    node's code is (a node srun stopped because another failed, which reads
+    143 or leaves no code, is not the failure; when every failure is such a
+    stop, its code or srun's is the eval's). A failing
+    node exits nonzero, so srun stops the rest instead of letting them wait
+    at the rendezvous.
+    Artifacts are copied from node 0's tree only.
 
     `seed_cache` names the kernel-warmed seed for this target
     (docs/design/eval-cache.md): the job copies its contents into its own
@@ -410,6 +425,8 @@ def write_eval_job(
         # artifact — including a leftover extracted tree — goes before submission
         for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
             (task_dir / stale).unlink(missing_ok=True)
+        for stale_node in task_dir.glob("node-*"):  # a multi-node eval's per-node results
+            stale_node.unlink(missing_ok=True)
         shutil.rmtree(task_dir / "tree", ignore_errors=True)
         shutil.rmtree(task_dir / "artifacts", ignore_errors=True)
         (task_dir / "command.txt").write_text(command)
@@ -426,6 +443,8 @@ def write_eval_job(
     # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
     # name, unlike -c) so a smudge filter cannot execute during checkout
     neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
+    if nodes > 1 and image:
+        raise ValueError("multi-node evals run uncontained: the jail has no cross-node launcher")
     if array > 1:
         # the task picks its own job dir; under Slurm the index is the array
         # task id, under a local run the caller exports SWEEP_INDEX
@@ -436,11 +455,9 @@ def write_eval_job(
         ]
     else:
         ev_lines = [f"EV={shlex.quote(str(ev))}"]
+    header = ["#!/bin/sh", "set -u", *ev_lines, f"REPO={shlex.quote(str(repo_root))}"]
     lines = [
-        "#!/bin/sh",
-        "set -u",
-        *ev_lines,
-        f"REPO={shlex.quote(str(repo_root))}",
+        *header,
         # the extracted tree lives on NODE-LOCAL scratch, not the shared run
         # dir: it dies with the job (nothing to reap on the shared FS), and
         # the wake needs only stdout/exit-code, which stay in $EV
@@ -528,6 +545,9 @@ def write_eval_job(
                 "UV_LINK_MODE=copy",
                 'UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT"',
             ]
+            # a sweep task's index, as the contained branch passes it
+            + (['SWEEP_INDEX="$SWEEP_INDEX"'] if array > 1 else [])
+            + (_rendezvous_env(gpus) if nodes > 1 else [])
             + [f"{key}={shlex.quote(value)}" for key, value in injected.items()]
         )
         lines += [
@@ -536,6 +556,7 @@ def write_eval_job(
             '> "$EV/stdout" 2> "$EV/stderr"',
             'echo $? > "$EV/exit-code"',
         ]
+    copy_out = len(lines)  # artifacts below come from node 0's tree only
     if artifacts:
         # copy-out runs OUTSIDE the jail, after the command: only declared,
         # caller-validated repo-relative FILES, each size-capped; every skip is
@@ -574,9 +595,108 @@ def write_eval_job(
         "exit 0",
     ]
     script = ev / "job.sh"
-    script.write_text("\n".join(lines) + "\n")
-    script.chmod(0o755)
+    if nodes > 1:
+        node_script = ev / "node.sh"
+        _write_script(node_script, _node_lines(lines[len(header) : copy_out], lines[copy_out:]))
+        lines = [*header, *_coordinator_lines(node_script)]
+    _write_script(script, lines)
     return script
+
+
+def _write_script(path: Path, lines: list[str]) -> None:
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o755)
+
+
+def _rendezvous_env(gpus: int) -> list[str]:
+    """What a multi-node command sees of its node's place in the job: the
+    names torchrun-style launchers expect, and torchrun's own PET_* defaults
+    so a bare `torchrun train.py` joins the job's rendezvous."""
+    env = [
+        'NNODES="$OUTERLOOP_NNODES"',
+        'NODE_RANK="$NODE_RANK"',
+        'MASTER_ADDR="$OUTERLOOP_MASTER_ADDR"',
+        'MASTER_PORT="$OUTERLOOP_MASTER_PORT"',
+        'PET_NNODES="$OUTERLOOP_NNODES"',
+        'PET_NODE_RANK="$NODE_RANK"',
+        'PET_MASTER_ADDR="$OUTERLOOP_MASTER_ADDR"',
+        'PET_MASTER_PORT="$OUTERLOOP_MASTER_PORT"',
+    ]
+    return env + ([f"PET_NPROC_PER_NODE={gpus}"] if gpus > 0 else [])
+
+
+def _node_lines(body: list[str], copy_out: list[str]) -> list[str]:
+    """One node's share of a multi-node eval: the single-node body with its
+    results renamed per node (`node-<rank>.*`), and the artifact copy-out
+    (`copy_out`, ending with the script's exit) run on node 0 only."""
+    per_node = {
+        f'"$EV/{name}"': f'"$NODE_OUT.{name}"'
+        for name in ("exit-code", "stdout", "stderr", "setup.log")
+    }
+    renamed = []
+    for line in body:
+        for old, new in per_node.items():
+            line = line.replace(old, new)
+        if line == "trap 'cleanup' EXIT":
+            # leave with the node's own code, so srun's --kill-on-bad-exit stops
+            # the other nodes instead of leaving them at the rendezvous
+            line = (
+                'trap \'cleanup; exit "$(cat "$NODE_OUT.exit-code" 2>/dev/null || echo 1)"\' EXIT'
+            )
+        renamed.append(line)
+    artifacts, tail = copy_out[:-1], copy_out[-1:]
+    guarded = ['if [ "$NODE_RANK" -eq 0 ]; then', *artifacts, "fi"] if artifacts else []
+    return [
+        "#!/bin/sh",
+        "set -u",
+        # one task per node, so the node id is this node's rank in the job
+        'NODE_RANK="${SLURM_NODEID:-0}"',
+        'NODE_OUT="$EV/node-$NODE_RANK"',
+        *renamed,
+        *guarded,
+        *tail,
+    ]
+
+
+def _coordinator_lines(node_script: Path) -> list[str]:
+    """The batch step of a multi-node eval: name node 0 the rendezvous host,
+    run `node_script` once per node, then publish node 0's output and the
+    first failing node's exit code (node 0 first; a node srun stopped because
+    another failed, which reads 143 or left no code, does not count as the
+    failure) as the eval's."""
+    return [
+        "export EV REPO",
+        '[ -s "$EV/command.txt" ] || { echo 96 > "$EV/exit-code"; exit 0; }',
+        'OUTERLOOP_NNODES="${SLURM_JOB_NUM_NODES:-1}"',
+        'OUTERLOOP_MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)',
+        # per job, below the ephemeral range: two jobs sharing node 0 rarely collide
+        "OUTERLOOP_MASTER_PORT=$((29500 + ${SLURM_JOB_ID:-0} % 1000))",
+        "export OUTERLOOP_NNODES OUTERLOOP_MASTER_ADDR OUTERLOOP_MASTER_PORT",
+        "trap 'echo 143 > \"$EV/exit-code\"; exit 0' TERM INT HUP",
+        # srun no longer inherits the batch job's --cpus-per-task; a step
+        # otherwise gets every GPU and the memory the job holds on its node
+        'srun --nodes="$OUTERLOOP_NNODES" --ntasks="$OUTERLOOP_NNODES" --ntasks-per-node=1 '
+        '--cpus-per-task="${SLURM_CPUS_PER_TASK:-1}" --kill-on-bad-exit=1 '
+        f"sh {shlex.quote(str(node_script))}",
+        "SRUN_RC=$?",
+        'cp "$EV/node-0.stdout" "$EV/stdout" 2>/dev/null || : > "$EV/stdout"',
+        'cp "$EV/node-0.stderr" "$EV/stderr" 2>/dev/null || : > "$EV/stderr"',
+        'cat "$EV"/node-*.setup.log > "$EV/setup.log" 2>/dev/null || true',
+        # srun stops the other nodes when one fails: a stopped node reads 143
+        # (terminated) or leaves no code at all (killed after the grace
+        # period). Report the node that failed; a stopped node's code only
+        # when no node failed any other way
+        'RC=""; STOPPED=""; R=0',
+        'while [ "$R" -lt "$OUTERLOOP_NNODES" ]; do '
+        'C=$(cat "$EV/node-$R.exit-code" 2>/dev/null || echo missing); '
+        'if [ "$C" = missing ]; then [ "$SRUN_RC" = 0 ] && C=1 || C=$SRUN_RC; '
+        '[ -z "$STOPPED" ] && STOPPED=$C; '
+        'elif [ "$C" = 143 ]; then [ -z "$STOPPED" ] && STOPPED=143; '
+        'elif [ -z "$RC" ] && [ "$C" != 0 ]; then RC=$C; fi; '
+        "R=$((R + 1)); done",
+        'echo "${RC:-${STOPPED:-0}}" > "$EV/exit-code"',
+        "exit 0",
+    ]
 
 
 def eval_job_spec(
@@ -594,6 +714,7 @@ def eval_job_spec(
     array: str = "",
     gpu_type: str = "",
     extra: tuple[str, ...] = (),
+    nodes: int = 1,
 ) -> JobSpec:
     """The JobSpec for one dispatched eval: the hint CLAMPED to our ceiling
     plus setup slack — a contract value above EVAL_JOB_MINUTES_CEILING must
@@ -603,7 +724,8 @@ def eval_job_spec(
     job is sized for it: a GPU eval gets at least eval_cpus_per_gpu() cores
     and eval_mem_gb_per_gpu() GB per GPU (a training eval's data loading and
     torch.compile workers do not fit the CPU eval's 4 cores / 8 GB). `nice`
-    lowers the job's priority below the kernel's evals (the launcher sets it)."""
+    lowers the job's priority below the kernel's evals (the launcher sets it).
+    `nodes` > 1 repeats that per-node sizing on every node."""
     if gpus > 0:
         cpus = max(cpus, eval_cpus_per_gpu() * gpus)
         given = _mem_gb(mem)
@@ -622,6 +744,7 @@ def eval_job_spec(
         cpus=cpus,
         mem=mem,
         gpus=gpus,
+        nodes=nodes,
         nice=nice,
         array=array,
         gpu_type=gpu_type,

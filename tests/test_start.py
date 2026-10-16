@@ -1079,6 +1079,8 @@ def test_start_launches_with_resolved_author(clean_env, monkeypatch, backend, re
     monkeypatch.delenv(key)
     monkeypatch.setenv("PATH", str(clean_env) if not recorded else "")
     values = {"OUTERLOOP_AUTHOR_BACKEND": backend}
+    if backend == "codex":
+        values["OUTERLOOP_AUTHOR_MODEL"] = "gpt-x"  # start validates the default author
     if recorded:
         values[key] = str(binary)
     monkeypatch.setattr(

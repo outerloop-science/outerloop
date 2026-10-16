@@ -23,6 +23,7 @@ The knobs that shape a climb, all optional:
 | `seed_env`, `min_delta` / `min_delta_rel` | Paired seeding for resampled evals, and the significance floor a delta must clear — calibrate it from seed variance, the gate enforces it |
 | `regression.free_rel`, `max_rel`, `requires_gain_rel` (or absolute `free`, `max`, `requires_gain`) | Per-benchmark sibling regression allowance, independent of its win floor |
 | `eval_minutes`, `gpus` | Evals that need their own job (and GPUs) are dispatched to the cluster rather than run in the author's job |
+| `nodes` | Multi-node dispatched jobs: `gpus` per node on each of `nodes` nodes. The command runs once per node with `NNODES`, `NODE_RANK`, `MASTER_ADDR`, `MASTER_PORT` (and torchrun's `PET_*` defaults); node 0's output is the result, and budgets charge every node. Uncontained Slurm deployments only |
 | `baseline: paired \| cached` | Re-measure the base tree beside every candidate, or measure it once per base and run only candidates |
 | `depth_k`, `sleep_k` | How many experiments an author may launch and how many times it may sleep for results |
 | `max_active_attempts`, `attempt_cooldown_minutes` | Width: authors abreast on one target; pacing between attempts (0 for a hot loop) |

@@ -59,6 +59,35 @@ Versions follow [SemVer](https://semver.org).
   note to a run's inbox, delivered at the run's next wake — no PR needed.
   Reuses the existing `note`/`kernel` message shape, so older kernels read it
   without a compatibility change.
+- `OUTERLOOP_UNCONTAINED=1` runs a cluster deployment without a container
+  runtime: sessions and evaluations run as Slurm jobs the way local mode runs
+  them without an image, the image is ignored, and the panel stays opt-in
+  (`OUTERLOOP_PANEL_UNCONTAINED=1`, now also carried by the chain's deploy
+  step). Without it, a cluster deployment with no image still services nothing,
+  and its log now names the setting. `outerloop start` now checks the fleet
+  default author with the tick's own author check, as it already did for
+  overrides, so a default the tick would refuse (a Codex or Hermes author
+  without an image, a Codex author without a Codex model) fails at start
+  instead of idling every tick.
+- Multi-node benchmarks: a benchmark's `nodes` (default 1, up to 64) spreads
+  every dispatched job over that many nodes, with `gpus` per node. The eval
+  job `srun`s one task per node; each runs the command in its own checkout
+  with `NNODES`, `NODE_RANK`, `MASTER_ADDR`, `MASTER_PORT` and torchrun's
+  `PET_*` defaults set, node 0's output is the measurement, and a failing node
+  stops the rest. GPU-hour charges, budget checks, sweep pacing and the
+  operator's GPU ceiling count `nodes x gpus`. Uncontained Slurm deployments
+  only: a contained or local deployment refuses to launch attempts on such a
+  contract. Upgrading: one-node benchmarks keep their measurement signatures,
+  eval slots and cached baselines unchanged; cached baselines now record
+  their node count, and entries without one read as one node. A contract
+  that sets `nodes` fails to load on older kernels (unknown keys are
+  refused), so upgrade every fleet that services a target before adding it.
+- `OUTERLOOP_OPERATOR_HARNESSES` lists harness CLIs the operator supplies, such
+  as a site-managed `claude` that authenticates by itself: `outerloop harness
+  upgrade` (and the deployment's automatic `--used` run) never replaces them or
+  rewrites their recorded paths, and `outerloop harness status` reports
+  `OPERATOR` instead of drift. Unknown names are refused. The chain's deploy
+  step re-reads it from `.env` every tick.
 
 ### Documentation
 
@@ -151,6 +180,9 @@ Versions follow [SemVer](https://semver.org).
   Upgrading: run `outerloop harness upgrade codex`; deploys that run harness
   upgrades do this automatically. Existing single-binary installs are detected
   as drift and replaced with a verified pair.
+- Uncontained sweep tasks now receive `SWEEP_INDEX`: the bare evaluation
+  branch runs the command under `env -i` and dropped it, so every task of a
+  sweep without an image ran the default configuration.
 
 ### Changed
 

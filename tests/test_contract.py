@@ -339,6 +339,37 @@ roadmap: docs/roadmap.md
         load_contract(base % ", gpus: 1, eval_minutes: 3", "org/x")
 
 
+def test_benchmark_nodes_field() -> None:
+    """`nodes` spreads every dispatched job over that many nodes (gpus is per
+    node); one node leaves the measurement signature exactly as it was."""
+    base = """
+benchmarks:
+  - {name: speedrun, command: c, metric: m, direction: min%s}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [train.py]}
+roadmap: docs/roadmap.md
+"""
+
+    def bench(extra: str):
+        return load_contract(base % extra, "org/x").benchmarks[0]
+
+    plain = bench(", gpus: 8, eval_minutes: 240")
+    assert plain.nodes == 1 and plain.total_gpus == 8
+    assert bench(", gpus: 8, nodes: 1, eval_minutes: 240").measurement_signature() == (
+        plain.measurement_signature()
+    )
+    wide = bench(", gpus: 8, nodes: 4, eval_minutes: 240")
+    assert wide.total_gpus == 32
+    assert wide.measurement_signature() != plain.measurement_signature()
+    assert bench(", nodes: 2, eval_minutes: 240").total_gpus == 0  # CPU, not metered
+    for bad in (", nodes: 0, eval_minutes: 240", ", nodes: 65, eval_minutes: 240"):
+        with pytest.raises(ValueError):
+            bench(bad)
+    # a multi-node job only exists dispatched, like a GPU one
+    with pytest.raises(ValueError, match=r"2 nodes .*dispatch"):
+        bench(", nodes: 2")
+
+
 def test_review_topup_defaults_and_custom_ceilings():
     from outerloop.contract import ReviewTopup
 
@@ -441,8 +472,9 @@ def test_regression_preserves_legacy_measurement_signature():
     from outerloop.contract import Benchmark
 
     b = Benchmark(name="mem", command="eval", metric="bytes", direction="min")
-    # Signature before this field existed, including omission of default verification.
-    legacy = b.model_dump(exclude={"regression", "verification"})
+    # Signature before this field existed, including omission of default verification
+    # and of the default single node.
+    legacy = b.model_dump(exclude={"regression", "verification", "nodes"})
     expected = tuple(sorted((k, repr(v)) for k, v in legacy.items() if k not in b._WORKFLOW_DIALS))
     assert b.measurement_signature() == expected
     changed = Benchmark.model_validate(b.model_dump() | {"regression": {"free_rel": 0.005}})

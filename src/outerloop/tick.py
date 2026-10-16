@@ -46,6 +46,7 @@ from outerloop.endpoint_wait import EndpointWaitReason
 from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
+from outerloop.image import uncontained_opt_in
 from outerloop.job_names import run_job_name
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.limits import EffectiveLimits, bound_limits, capped_limits, effective_limits
@@ -307,7 +308,19 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: ServiceSpec) -> str:
     park forever on a phantom eval). ANY GPU benchmark in the contract
     counts, not just the climbed one: the suite gate measures siblings.
     A backend without lanes (local compute) runs GPU jobs on the default
-    placement, so the check does not apply."""
+    placement, so the check does not apply. Multi-node benchmarks likewise
+    need an uncontained Slurm deployment: local compute is one machine, and
+    the jail has no cross-node launcher."""
+    multi_node = [
+        b.name for b in getattr(contract, "benchmarks", []) if int(getattr(b, "nodes", 1) or 1) > 1
+    ]
+    if multi_node and (spec.image or not spec.has_lanes):
+        where = "contained (a container image is set)" if spec.has_lanes else "on local compute"
+        return (
+            f"contract has multi-node benchmarks ({', '.join(multi_node)}) but this deployment "
+            f"runs {where}; multi-node jobs need an uncontained Slurm deployment "
+            "(OUTERLOOP_UNCONTAINED=1)"
+        )
     if spec.gpu_partition or spec.target in spec.gpu_lanes or not spec.has_lanes:
         return ""
     gpu_benches = [
@@ -3622,21 +3635,26 @@ def _service_spec_from_env(
     bot_login = os.environ.get("OUTERLOOP_BOT_LOGIN", "").strip()
     image_ok = Path(image).is_file()
     panel = os.environ.get("OUTERLOOP_PANEL", "verify,review")
-    if not image_ok and local_mode():
-        # The local loop on a machine with no container: sessions run under
-        # the harness's own sandbox and evaluations run bare, on the
-        # operator's own machine with the operator's own keys. The panel is
-        # off unless the operator opts in, because an uncontained judge holds
-        # a shell next to its own key file. Said once per process. Contained
-        # local mode needs apptainer and the image (docs/install.md).
+    uncontained = uncontained_opt_in()
+    if uncontained or (not image_ok and local_mode()):
+        # No container: sessions run under the harness's own sandbox and
+        # evaluations run bare, with the operator's own account and keys. The
+        # local loop falls back to this when it has no image; any other
+        # deployment needs OUTERLOOP_UNCONTAINED=1, so a missing image on a
+        # cluster never silently drops containment. The panel is off unless
+        # the operator opts in, because an uncontained judge holds a shell
+        # next to its own key file. Said once per process. Contained runs need
+        # apptainer and the image (docs/install.md).
         global _UNCONTAINED_WARNED
         if not _UNCONTAINED_WARNED:
             _UNCONTAINED_WARNED = True
             log.warning(
-                "local mode: no container image at %s; sessions run under the harness "
-                "sandbox and evaluations run bare on this machine; the panel is %s; a "
-                "codex or hermes author needs the image (docs/install.md, local mode)",
-                image,
+                "%s; sessions run under the harness sandbox and evaluations run bare "
+                "as this account; the panel is %s; a codex or hermes author needs the "
+                "image (docs/install.md, running without a container)",
+                "OUTERLOOP_UNCONTAINED=1: no container"
+                if uncontained
+                else f"local mode: no container image at {image}",
                 "on by OUTERLOOP_PANEL_UNCONTAINED=1"
                 if os.environ.get("OUTERLOOP_PANEL_UNCONTAINED") == "1"
                 else "off (OUTERLOOP_PANEL_UNCONTAINED=1 turns it on)",
@@ -3687,7 +3705,7 @@ def _service_spec_from_env(
         if not value
     ]
     if not image_ok:
-        absent.append(f"image:{image}")
+        absent.append(f"image:{image} (or OUTERLOOP_UNCONTAINED=1)")
     log.info("parked servicing disabled (missing: %s)", ", ".join(absent))
     return None, None
 

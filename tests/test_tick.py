@@ -3012,6 +3012,45 @@ roadmap: docs/roadmap.md
     assert _gpu_lane_error(contract, "tsp", spec("h200")) == ""
 
 
+def test_multi_node_benchmarks_need_an_uncontained_slurm_deployment(tmp_path: Path) -> None:
+    """Any multi-node benchmark in the contract (the suite gate measures
+    siblings) keeps attempts from launching where its jobs cannot run: in the
+    jail, or on local compute."""
+    from outerloop.contract import load_contract
+    from outerloop.tick import ServiceSpec, _gpu_lane_error
+
+    contract = load_contract(
+        """
+benchmarks:
+  - {name: tsp, command: c, metric: m, direction: min}
+  - {name: pretrain, command: t, metric: loss, direction: min, gpus: 8, nodes: 2,
+     eval_minutes: 240}
+budgets: {gpu_hours_per_run: 60, runs_per_week: 40}
+scope: {allowed: [src/]}
+roadmap: docs/roadmap.md
+""",
+        "org/mixed",
+    )
+
+    def spec(image: str, has_lanes: bool = True) -> ServiceSpec:
+        return ServiceSpec(
+            target="org/mixed",
+            account="acct",
+            partition="cpu",
+            run_root=tmp_path,
+            image=image,
+            home=tmp_path,
+            gpu_partition="h200",
+            has_lanes=has_lanes,
+        )
+
+    contained = _gpu_lane_error(contract, "tsp", spec("img.sif"))
+    assert "pretrain" in contained and "contained" in contained
+    assert "OUTERLOOP_UNCONTAINED=1" in contained
+    assert "local compute" in _gpu_lane_error(contract, "tsp", spec("", has_lanes=False))
+    assert _gpu_lane_error(contract, "tsp", spec("")) == ""
+
+
 def _wake_spec(tmp_path: Path):
     from outerloop.tick import ServiceSpec
 
@@ -3643,6 +3682,43 @@ def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path
     env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
     _github, spec = _service_spec_from_env(tmp_path)
     assert spec is not None and spec.panel == "verify,review"
+
+
+def test_uncontained_opt_in_services_a_cluster_without_containers(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A cluster with no container runtime opts in with OUTERLOOP_UNCONTAINED=1:
+    on Slurm the servicing spec comes up with no image (even when one is on
+    disk), jobs get --uncontained, and the panel stays opt-in as in local mode."""
+    from outerloop.tick import _containment, _service_spec_from_env
+
+    image = tmp_path / "agent.sif"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_IMAGE": str(tmp_path / "missing.sif"),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_BOT_LOGIN": "agentic-learning-bot",
+    }
+    import outerloop.tick as tick_mod
+
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    assert _service_spec_from_env(tmp_path) == (None, None)  # no silent fallback
+    for value in ("0", "", "yes"):
+        env["OUTERLOOP_UNCONTAINED"] = value
+        assert _service_spec_from_env(tmp_path) == (None, None)
+    env["OUTERLOOP_UNCONTAINED"] = "1"
+    _github, spec = _service_spec_from_env(tmp_path)
+    assert spec is not None and spec.image == "" and spec.panel == ""
+    assert "OUTERLOOP_IMAGE" not in env
+    assert _containment(spec.image) == ["--uncontained"]
+    env["OUTERLOOP_IMAGE"] = str(image)  # an image on disk does not override the opt-in
+    env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
+    _github, spec = _service_spec_from_env(tmp_path)
+    assert spec is not None and spec.image == "" and spec.panel == "verify,review"
 
 
 def _qrow(
