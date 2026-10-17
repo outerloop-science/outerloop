@@ -528,6 +528,8 @@ def write_eval_job(
                 "UV_LINK_MODE=copy",
                 'UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT"',
             ]
+            # a sweep task's index, as the contained branch passes it
+            + (['SWEEP_INDEX="$SWEEP_INDEX"'] if array > 1 else [])
             + [f"{key}={shlex.quote(value)}" for key, value in injected.items()]
         )
         lines += [

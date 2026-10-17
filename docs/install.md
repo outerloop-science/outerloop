@@ -140,7 +140,13 @@ GPU jobs request at least 8 cores and 64 GB of host memory per GPU. On nodes wit
 
 On a cluster, evals and launches run inside the Apptainer image at `OUTERLOOP_IMAGE` (default `~/outerloop-images/agent-py312.sif`), in a jail that binds only the checked-out tree. An eval that needs data must fetch it into the tree. The published image lives at [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image), built from `containers/agent-py312.def`. On Linux with Apptainer installed, `outerloop init` downloads it (about 200 MB), verifies its published checksum and records it. `--image` points at your own, and `--no-image` keeps runs uncontained even when an image is on disk by writing `OUTERLOOP_IMAGE=`.
 
-Only the local loop supports that uncontained fallback. On Slurm the tick does not service a target without an image, and Codex and Hermes authors need one in every mode.
+Only the local loop falls back to running uncontained on its own. On Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. Codex and Hermes authors need the image in every mode.
+
+### Running a cluster without a container
+
+A Slurm cluster with no container runtime sets `OUTERLOOP_UNCONTAINED=1` in `~/.config/outerloop/.env`. Sessions and evaluations then run as local mode does without an image, but as Slurm jobs on your account. Sessions run under the harness's own sandbox. Evaluations run bare, in a throwaway tree with an allowlisted environment. The image is ignored even when one is on disk.
+
+The local-mode rules carry over. The panel is off unless you set `OUTERLOOP_PANEL_UNCONTAINED=1`, and `start` refuses a Codex or Hermes author. A session can read any file your account can: the bot's credential, the model key files, the evaluator's tree and the kernel's state. Key secrecy and measurement integrity both weaken. Use it where the site already confines processes, or where that exposure is acceptable to you.
 
 When Apptainer is missing or cannot run containers, init says so, prints the install steps for your system and continues uncontained, which the local loop supports as above. Run `outerloop init --force` after installing it. Check a working install with `apptainer exec docker://alpine:3.20 cat /etc/alpine-release`, which prints a version number.
 
@@ -155,7 +161,7 @@ When Apptainer is missing or cannot run containers, init says so, prints the ins
 - Fedora: `sudo dnf install -y apptainer`.
 - RHEL, Rocky, Alma: `sudo dnf install -y epel-release`, then `sudo dnf install -y apptainer`.
 - No root: download the project's unprivileged installer pinned to a release tag, read it, then run it.
-- Slurm clusters: ask the administrators; most already provide it.
+- Slurm clusters: ask the administrators; most already provide it. A cluster without one can run [uncontained](#running-a-cluster-without-a-container).
 
 ## Model backends and keys
 
@@ -210,5 +216,9 @@ With the default settings file, jobs keep the names `outerloop-resident` and `ou
 `outerloop harness upgrade [claude codex hermes bridge]` defaults to all four; `--used` selects only the backends your deployment configures. The resident deployment runs it after a successful kernel sync, and a failure is logged without stopping the tick. Each changed harness is built under `<state-root>/harnesses/<name>/<version>/` and verified before the operator `.env` switches to its new path; a failed candidate is deleted and the old installation stays available. Each install has a 300-second deadline (`OUTERLOOP_HARNESS_TIMEOUT_SECONDS`), and failures back off from five minutes to one day. Concurrent upgrades are refused, and repeating a completed upgrade does no installation work.
 
 To trial a release, set the version and its matching checksum in `.env` and upgrade that harness. Claude and Codex trials take `OUTERLOOP_CLAUDE_VERSION` plus `OUTERLOOP_CLAUDE_SHA256`, or `OUTERLOOP_CODEX_VERSION` plus `OUTERLOOP_CODEX_SHA256`; Codex also needs `OUTERLOOP_CODEX_CODE_MODE_HOST_SHA256` and npm, whose cache lands under the state root. Hermes trials take both `OUTERLOOP_HERMES_REF` and `OUTERLOOP_HERMES_SHA`. Missing checksums are refused. Remove the override and upgrade again to return to the kernel pin.
+
+A site may provide its own build of a harness CLI, such as a managed `claude` that authenticates by itself. List it in `OUTERLOOP_OPERATOR_HARNESSES` and record its path as usual, for example in `OUTERLOOP_CLAUDE_BIN`. Upgrades then leave it alone, the deployment's automatic `--used` run included. `harness status` reports it as `OPERATOR`, or `OPERATOR MISSING` when the path is not executable. Keeping it current is yours, and so is running a version the kernel was not tested against.
+
+The role's key file is still required and still passed to the session. When the CLI ignores it, fill it with a long random placeholder: the kernel redacts the key's text from transcripts, and a short one would garble them. A contained session binds only the binary into the image, so a wrapper that needs other host paths works only uncontained.
 
 The Hermes installer needs `git` and `uv`. It verifies the pinned source and installs a runtime beside the checkout, so install it on the same OS and architecture as the session image. To upgrade an existing install, rerun `bash scripts/install_hermes.sh "$REVIEW_HERMES_REPO"` or run `outerloop init --force` with Hermes configured. If a killed installer leaves a `<checkout>.installing` directory beside the checkout, for example `~/hermes-agent.installing`, confirm no installer is running, remove that empty lock directory and retry.

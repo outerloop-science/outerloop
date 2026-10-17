@@ -68,6 +68,22 @@ Versions follow [SemVer](https://semver.org).
   note to a run's inbox, delivered at the run's next wake — no PR needed.
   Reuses the existing `note`/`kernel` message shape, so older kernels read it
   without a compatibility change.
+- `OUTERLOOP_UNCONTAINED=1` runs a cluster deployment without a container
+  runtime: sessions and evaluations run as Slurm jobs the way local mode runs
+  them without an image, the image is ignored, and the panel stays opt-in
+  (`OUTERLOOP_PANEL_UNCONTAINED=1`, now also carried by the chain's deploy
+  step). Without it, a cluster deployment with no image still services nothing,
+  and its log now names the setting. `outerloop start` now checks the fleet
+  default author with the tick's own author check, as it already did for
+  overrides, so a default the tick would refuse (a Codex or Hermes author
+  without an image, a Codex author without a Codex model) fails at start
+  instead of idling every tick.
+- `OUTERLOOP_OPERATOR_HARNESSES` lists harness CLIs the operator supplies, such
+  as a site-managed `claude` that authenticates by itself: `outerloop harness
+  upgrade` (and the deployment's automatic `--used` run) never replaces them or
+  rewrites their recorded paths, and `outerloop harness status` reports
+  `OPERATOR` instead of drift. Unknown names are refused. The chain's deploy
+  step re-reads it from `.env` every tick.
 
 ### Documentation
 
@@ -160,6 +176,9 @@ Versions follow [SemVer](https://semver.org).
   Upgrading: run `outerloop harness upgrade codex`; deploys that run harness
   upgrades do this automatically. Existing single-binary installs are detected
   as drift and replaced with a verified pair.
+- Uncontained sweep tasks now receive `SWEEP_INDEX`: the bare evaluation
+  branch runs the command under `env -i` and dropped it, so every task of a
+  sweep without an image ran the default configuration.
 
 ### Changed
 

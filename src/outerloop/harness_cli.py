@@ -89,8 +89,22 @@ def identity(name: str, desired: Mapping[str, str]) -> str:
     return desired["sha" if name == "hermes" else "version"]
 
 
+def operator_supplied(env: Mapping[str, str]) -> set[str]:
+    """`OUTERLOOP_OPERATOR_HARNESSES`: harnesses the operator installs and
+    upgrades, such as a site-managed CLI that brings its own authentication.
+    Their recorded paths are used as they are: upgrade never replaces them and
+    status reports them instead of drift, since they need not match a pin."""
+    raw = env.get("OUTERLOOP_OPERATOR_HARNESSES", "")
+    names = {name.strip() for name in raw.split(",") if name.strip()}
+    unknown = sorted(names - set(NAMES))
+    if unknown:
+        raise ValueError(f"OUTERLOOP_OPERATOR_HARNESSES: unknown harness {', '.join(unknown)}")
+    return names
+
+
 CONFIG_KEYS = (
     *OVERRIDE_KEYS,
+    "OUTERLOOP_OPERATOR_HARNESSES",
     "OUTERLOOP_BRIDGE_RUNTIME",
     "OUTERLOOP_AUTHOR_MODEL",
     "OUTERLOOP_AUTHOR_ENDPOINT",
@@ -166,6 +180,11 @@ def run_installer(script: Path, target: Path, env: dict[str, str]) -> None:
 
 def status(env: Mapping[str, str]) -> int:
     failed = False
+    try:
+        operator = operator_supplied(env)
+    except ValueError as exc:
+        print(f"harness: REFUSED: {exc}")
+        return 1
     for name in NAMES:
         pinned = pins(name)
         try:
@@ -177,7 +196,6 @@ def status(env: Mapping[str, str]) -> int:
         path = installed_path(name, env)
         have, ready = probe(name, path)
         override = desired != pinned
-        drift = have != identity(name, desired) or not ready or not verified(name, path, desired)
         label = f"{pinned['ref']} ({pinned['sha']})" if name == "hermes" else pinned["version"]
         runtime = (
             f" runtime .complete={'valid' if ready else 'missing/invalid'}"
@@ -185,10 +203,15 @@ def status(env: Mapping[str, str]) -> int:
             else ""
         )
         trial = f" override={identity(name, desired)}" if override else ""
-        print(
-            f"{name}: pinned={label} installed={have} path={path}{runtime}{trial}"
-            f" {'DRIFT' if drift else 'OK'}"
-        )
+        if name in operator:
+            # a wrapper may print no version; what matters is that it runs
+            verdict = "OPERATOR" if os.access(path, os.X_OK) else "OPERATOR MISSING"
+        else:
+            drift = (
+                have != identity(name, desired) or not ready or not verified(name, path, desired)
+            )
+            verdict = "DRIFT" if drift else "OK"
+        print(f"{name}: pinned={label} installed={have} path={path}{runtime}{trial} {verdict}")
     return int(failed)
 
 
@@ -385,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             env = {**env_file_values(env_file, keys=CONFIG_KEYS), **os.environ}
             names = args.names or (used_harnesses(env) if args.used else list(NAMES))
+            operator = operator_supplied(env)
             root = (
                 Path(args.root or env.get("OUTERLOOP_ROOT") or Path.home() / ".outerloop")
                 .expanduser()
@@ -392,6 +416,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             failed = False
             for name in dict.fromkeys(names):
+                if name in operator:
+                    print(f"{name}: operator-supplied at {installed_path(name, env)}; left alone")
+                    continue
                 try:
                     upgrade_one(name, env, env_file, root)
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:

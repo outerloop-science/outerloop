@@ -33,6 +33,7 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_ENV_FILE`](#outerloop_env_file) | path to the operator settings file | `~/.config/outerloop/.env` |
 | [`OUTERLOOP_PAT_FILE`](#outerloop_pat_file) | path to the GitHub PAT file | unset |
 | [`OUTERLOOP_IMAGE`](#outerloop_image) | Apptainer image for sessions and evals | `~/outerloop-images/agent-py312.sif` |
+| [`OUTERLOOP_UNCONTAINED`](#outerloop_uncontained) | run a cluster deployment without a container | off |
 | [`OUTERLOOP_APPTAINER_BIN`](#outerloop_apptainer_bin) | apptainer binary | `apptainer` on PATH |
 | [`OUTERLOOP_CACHE_ROOT`](#outerloop_cache_root) | where downloaded runtimes are cached | `<root>/cache` |
 | [`OUTERLOOP_BRIDGE_RUNTIME`](#outerloop_bridge_runtime) | where the bridge runtime is installed | `<cache>/bridge` |
@@ -71,6 +72,7 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_HERMES_SHA`](#outerloop_hermes_ref-and-outerloop_hermes_sha) | Hermes commit SHA override | required with the ref |
 | [`OUTERLOOP_CLAUDE_BIN`](#outerloop_claude_bin) | absolute path of the Claude CLI | PATH lookup |
 | [`OUTERLOOP_CODEX_BIN`](#outerloop_codex_bin) | absolute path of the Codex CLI | PATH lookup |
+| [`OUTERLOOP_OPERATOR_HARNESSES`](#outerloop_operator_harnesses) | harness CLIs the site supplies, left alone by upgrades | unset |
 | [`REVIEW_HERMES_REPO`](#review_hermes_repo) | Hermes source checkout | `~/hermes-agent` |
 | [`REVIEW_HERMES_PROVIDER`](#review_hermes_provider) | native Hermes provider, `openai` or `openrouter` | unset |
 | [`OUTERLOOP_CODEX_WEB_SEARCH`](#outerloop_codex_web_search) | Codex's built-in web search | `auto` |
@@ -193,6 +195,16 @@ is on disk. On Slurm the tick does not service a target without an image,
 and Codex and Hermes authors need one in every mode.
 
 - Default: `~/outerloop-images/agent-py312.sif`
+
+### `OUTERLOOP_UNCONTAINED`
+
+`1` runs a Slurm deployment without a container: sessions under the
+harness's own sandbox, evaluations bare, as jobs on your account. The image
+is ignored. A session can then read any file the account can, keys
+included. See [running a cluster without a container](../install.md#running-a-cluster-without-a-container).
+
+- Values: `1`
+- Default: off
 
 ### `OUTERLOOP_APPTAINER_BIN`
 
@@ -332,7 +344,6 @@ default, because an uncontained judge holds a shell on the launch node.
 
 - Values: `1`
 - Default: off
-- Configuration: the shell only
 
 ### `OUTERLOOP_STEWARD_KEY_FILE`
 
@@ -462,6 +473,15 @@ start.
 The absolute path of the Codex CLI, recorded like the Claude one.
 
 - Default: PATH lookup, then `~/.local/bin/codex`
+
+### `OUTERLOOP_OPERATOR_HARNESSES`
+
+Harness CLIs the site supplies itself, comma-separated from `claude`,
+`codex`, `hermes` and `bridge`. Upgrades leave them alone, and
+`harness status` reports them as `OPERATOR`. See [harness pins and
+upgrades](../install.md#harness-pins-and-upgrades).
+
+- Default: unset
 
 ### `REVIEW_HERMES_REPO`
 

@@ -16,7 +16,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,16 @@ PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
 def apptainer_from_env() -> str:
     """The operator's container executable, resolved without running it."""
     return os.environ.get("OUTERLOOP_APPTAINER_BIN", "").strip() or "apptainer"
+
+
+def uncontained_opt_in(environ: Mapping[str, str] | None = None) -> bool:
+    """`OUTERLOOP_UNCONTAINED=1`: every session and evaluation runs without a
+    container on any compute backend, and the image is ignored. The local loop
+    already falls back to this without an image; a cluster without a container
+    runtime needs the explicit opt-in, so a missing image never silently drops
+    containment there."""
+    env = os.environ if environ is None else environ
+    return env.get("OUTERLOOP_UNCONTAINED", "").strip() == "1"
 
 
 def image_dir(home: Path | None = None) -> Path:

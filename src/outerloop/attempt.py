@@ -3646,8 +3646,8 @@ def _panel_lenses_from_args(
         try:
             if not args.image:
                 log.warning(
-                    "panel lens %s runs uncontained (local mode, no image): the judge "
-                    "shares this machine with the operator's keys",
+                    "panel lens %s runs uncontained (no image): the judge shares "
+                    "this account with the operator's keys",
                     backend,
                 )
             judge = build_harness(
