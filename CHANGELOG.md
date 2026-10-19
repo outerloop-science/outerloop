@@ -17,6 +17,19 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- A harness upgrade that hits its deadline keeps its unpublished staging
+  directory, so a later attempt resumes there instead of starting a new one.
+  Only the bridge installer reuses partial work (its interpreter, venv and
+  download cache); the hermes, claude and codex installers keep the staging
+  directory but redo their own downloads and venv setup. A first bridge install
+  on a slow filesystem therefore finishes across ticks without an operator
+  raising `OUTERLOOP_HARNESS_TIMEOUT_SECONDS`. A published installation is never
+  reused as staging, so a failed repair leaves the live path intact. A
+  concurrent upgrade now reports that another upgrade is running and to retry.
+  Upgrading: a timed-out bridge install needs no manual rerun with a larger
+  timeout, and an operator who sees another upgrade running should retry after
+  it finishes.
+
 - The author verb `end` is renamed `stop` (`stop --report FILE`,
   `stop --withdraw REASON`), with no alias: agents read `end` as "end this
   turn" and called it when they meant to wait for results, so the refusals

@@ -158,9 +158,17 @@ def run_installer(script: Path, target: Path, env: dict[str, str]) -> None:
             code = process.wait()
             if code:
                 raise subprocess.CalledProcessError(code, process.args)
+        except BaseException:
+            # An interrupted install must exit normally enough to run its EXIT
+            # trap, which releases the installer's own lock, before the hard kill.
+            with contextlib.suppress(OSError):
+                os.killpg(process.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            raise
         finally:
             # Also reap descendants when the shell exits before its children.
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(OSError):
                 os.killpg(process.pid, signal.SIGKILL)
 
 
@@ -311,9 +319,14 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
         if time.time() < saved["retry_after"]:
             raise ValueError(f"retry backoff active until {saved['retry_after']}")
     candidate = None
+    timed_out = False
 
     def expired(signum: int, frame: object) -> None:
-        raise TimeoutError(f"upgrade timed out after {timeout:g} seconds")
+        nonlocal timed_out
+        timed_out = True
+        raise TimeoutError(
+            f"upgrade timed out after {timeout:g} seconds; partial install kept to resume"
+        )
 
     handler = signal.signal(signal.SIGALRM, expired)
     signal.setitimer(signal.ITIMER_REAL, timeout)
@@ -325,7 +338,12 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
             return
         parent = root / "harnesses" / name / identity(name, desired)
         parent.mkdir(parents=True, exist_ok=True)
-        candidate = Path(tempfile.mkdtemp(prefix="install-", dir=parent))
+        # One unpublished staging directory per harness and identity. A
+        # timed-out installer keeps its work here, so the next attempt resumes
+        # in the same place; a published installation is never reused as
+        # staging, so a later repair cannot delete or overwrite the live path.
+        candidate = parent / "staging"
+        candidate.mkdir(exist_ok=True)
         target = candidate / name
         script = Path(__file__).resolve().parents[2] / "scripts" / f"install_{name}.sh"
         if not script.is_file():
@@ -337,13 +355,28 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
                 f"verification failed: installed {got}, wanted {identity(name, desired)}"
                 " with verified hash"
             )
-        # Verification finishes within the deadline; publishing the path is atomic.
+        # Verification finishes within the deadline; publishing the path is
+        # atomic. Rename the verified staging directory to a fresh,
+        # never-reused name first, so no later attempt can treat the live
+        # installation as its staging directory.
         signal.setitimer(signal.ITIMER_REAL, 0)
         state.unlink(missing_ok=True)
-        record_path(env_file, path_key(name), target)
+        published = Path(tempfile.mkdtemp(prefix="install-", dir=parent))
+        try:
+            os.replace(candidate, published)
+        except BaseException:
+            shutil.rmtree(published, ignore_errors=True)
+            raise
         candidate = None
-        env[path_key(name)] = str(target)
-        print(f"{name}: {have} at {previous} -> {got} at {target}")
+        try:
+            record_path(env_file, path_key(name), published / name)
+        except BaseException:
+            # The operator .env never pointed here, so the orphan is safe to
+            # remove; the previous installation is untouched.
+            shutil.rmtree(published, ignore_errors=True)
+            raise
+        env[path_key(name)] = str(published / name)
+        print(f"{name}: {have} at {previous} -> {got} at {published / name}")
     except (OSError, ValueError, subprocess.SubprocessError):
         signal.setitimer(signal.ITIMER_REAL, 0)
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -360,7 +393,7 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, handler)
-        if candidate is not None:
+        if candidate is not None and not timed_out:
             shutil.rmtree(candidate)
 
 
@@ -381,15 +414,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             return status(env)
         env_file.parent.mkdir(parents=True, exist_ok=True)
-        with (env_file.parent / ".harness-upgrade.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        root = (
+            Path(args.root or env.get("OUTERLOOP_ROOT") or Path.home() / ".outerloop")
+            .expanduser()
+            .resolve()
+        )
+        # The lock belongs to the shared install root, not the settings file:
+        # deployments with separate settings files still mutate one root.
+        (root / "harnesses").mkdir(parents=True, exist_ok=True)
+        with (root / "harnesses" / ".harness-upgrade.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError(
+                    "another harness upgrade is already running; wait for it to finish and retry"
+                ) from exc
             env = {**env_file_values(env_file, keys=CONFIG_KEYS), **os.environ}
             names = args.names or (used_harnesses(env) if args.used else list(NAMES))
-            root = (
-                Path(args.root or env.get("OUTERLOOP_ROOT") or Path.home() / ".outerloop")
-                .expanduser()
-                .resolve()
-            )
             failed = False
             for name in dict.fromkeys(names):
                 try:
