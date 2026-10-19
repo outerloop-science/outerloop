@@ -17,15 +17,18 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
-- A harness upgrade that hits its deadline keeps its unpublished staging
-  directory, so a later attempt resumes there instead of starting a new one.
-  Only the bridge installer reuses partial work (its interpreter, venv and
-  download cache); the hermes, claude and codex installers keep the staging
-  directory but redo their own downloads and venv setup. A first bridge install
-  on a slow filesystem therefore finishes across ticks without an operator
-  raising `OUTERLOOP_HARNESS_TIMEOUT_SECONDS`. A published installation is never
-  reused as staging, so a failed repair leaves the live path intact. A
-  concurrent upgrade now reports that another upgrade is running and to retry.
+- A harness upgrade that hits its deadline keeps its unpublished install
+  directory and a resume pointer, so a later attempt resumes there instead of
+  starting a new one. The directory is built under its final name, because a
+  Python venv embeds the absolute path it was built at, and publishing is just
+  the settings-file write (no rename). Only the bridge installer reuses partial
+  work (its interpreter, venv and download cache); the hermes, claude and codex
+  installers keep the directory but redo their own downloads and venv setup. A
+  first bridge install on a slow filesystem therefore finishes across ticks
+  without an operator raising `OUTERLOOP_HARNESS_TIMEOUT_SECONDS`. A published
+  installation is never resumed, so a failed repair leaves the live path intact.
+  Concurrent upgrades are refused on either the settings file or the shared
+  state root, reporting that another upgrade is running and to retry.
   Upgrading: a timed-out bridge install needs no manual rerun with a larger
   timeout, and an operator who sees another upgrade running should retry after
   it finishes.

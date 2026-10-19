@@ -417,7 +417,7 @@ def test_timeout_cleanup_and_backoff(tmp_path, monkeypatch):
     assert not child.exists()
 
 
-def test_timed_out_install_resumes_in_the_same_staging_directory(tmp_path, monkeypatch):
+def test_timed_out_install_resumes_in_the_same_directory(tmp_path, monkeypatch):
     import json
 
     old = tmp_path / "old"
@@ -449,6 +449,9 @@ def test_timed_out_install_resumes_in_the_same_staging_directory(tmp_path, monke
     with pytest.raises(TimeoutError, match="partial install kept to resume"):
         harness_cli.upgrade_one("claude", env, env_file, tmp_path)
     stage = targets[0].parent
+    pointer = stage.parent / "resume"
+    assert stage.name.startswith("install-")
+    assert pointer.read_text().strip() == stage.name
     assert (stage / "partial").is_file()
     # The interrupted installer released its own lock, so the build can resume.
     assert not (stage / ".installing").exists()
@@ -458,12 +461,14 @@ def test_timed_out_install_resumes_in_the_same_staging_directory(tmp_path, monke
     state.write_text(json.dumps(saved))
     harness_cli.upgrade_one("claude", env, env_file, tmp_path)
     assert targets[1] == targets[0]
-    assert targets[0].parent.name == "staging"
     recorded = env_file_values(env_file, keys=None)["OUTERLOOP_CLAUDE_BIN"]
     assert recorded == env["OUTERLOOP_CLAUDE_BIN"]
-    assert Path(recorded).parent.name.startswith("install-")
+    # Publishing records the directory the build ran in; there is no rename.
+    assert Path(recorded) == targets[0]
     assert Path(recorded).is_file()
-    assert not (stage / "claude").exists()
+    # No renamed copy was made: the one install directory is the one built in.
+    assert list(stage.parent.iterdir()) == [stage]
+    assert not pointer.exists()
 
 
 def test_failed_repair_keeps_published_install(tmp_path, monkeypatch):
@@ -473,15 +478,21 @@ def test_failed_repair_keeps_published_install(tmp_path, monkeypatch):
     env_file.write_text(f"OUTERLOOP_CLAUDE_BIN={old}\n")
     env = {"OUTERLOOP_CLAUDE_BIN": str(old)}
     monkeypatch.setattr(harness_cli, "verified", lambda *a: True)
-    monkeypatch.setattr(
-        harness_cli,
-        "run_installer",
-        lambda script, target, install_env: binary(target, pins("claude")["version"]),
-    )
+    builds = []
+
+    def install(script, target, install_env):
+        builds.append(target)
+        binary(target, pins("claude")["version"])
+
+    monkeypatch.setattr(harness_cli, "run_installer", install)
     harness_cli.upgrade_one("claude", env, env_file, tmp_path)
     live = Path(env_file_values(env_file, keys=None)["OUTERLOOP_CLAUDE_BIN"])
     assert live.is_file()
     assert live.parent.name.startswith("install-")
+    # Publishing is the settings-file write: the recorded path is exactly the
+    # directory the build ran in, and no renamed copy was made beside it.
+    assert live == builds[0]
+    assert [path for path in live.parent.parent.iterdir() if path.is_dir()] == [live.parent]
     body = live.read_text()
 
     # Same identity, but integrity now fails, so the fast path is skipped and a
@@ -497,9 +508,47 @@ def test_failed_repair_keeps_published_install(tmp_path, monkeypatch):
     assert live.is_file()
     assert live.read_text() == body
     assert env_file_values(env_file, keys=None)["OUTERLOOP_CLAUDE_BIN"] == str(live)
+    # A non-timeout failure discards its own directory and the resume pointer.
+    assert list(live.parent.parent.iterdir()) == [live.parent]
 
 
-def test_settings_files_sharing_a_root_serialize_on_one_lock(tmp_path, monkeypatch, capsys):
+def test_resume_never_reuses_the_live_install(tmp_path, monkeypatch):
+    old = tmp_path / "old"
+    binary(old, "0.0.1")
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"OUTERLOOP_CLAUDE_BIN={old}\n")
+    env = {"OUTERLOOP_CLAUDE_BIN": str(old)}
+    monkeypatch.setattr(harness_cli, "verified", lambda *a: True)
+    monkeypatch.setattr(
+        harness_cli,
+        "run_installer",
+        lambda script, target, install_env: binary(target, pins("claude")["version"]),
+    )
+    harness_cli.upgrade_one("claude", env, env_file, tmp_path)
+    live = Path(env_file_values(env_file, keys=None)["OUTERLOOP_CLAUDE_BIN"])
+    body = live.read_text()
+
+    # A stale or corrupt pointer may name the published directory. A repair
+    # must ignore it and build in a fresh directory instead.
+    (live.parent.parent / "resume").write_text(f"{live.parent.name}\n")
+    monkeypatch.setattr(harness_cli, "verified", lambda _name, path, _desired: path != live)
+    builds = []
+
+    def install(script, target, install_env):
+        builds.append(target)
+        binary(target, pins("claude")["version"])
+
+    monkeypatch.setattr(harness_cli, "run_installer", install)
+    harness_cli.upgrade_one("claude", env, env_file, tmp_path)
+    assert builds[0] != live
+    assert builds[0].parent != live.parent
+    assert live.is_file() and live.read_text() == body
+    assert Path(env_file_values(env_file, keys=None)["OUTERLOOP_CLAUDE_BIN"]) == builds[0]
+    assert not (live.parent.parent / "resume").exists()
+
+
+@pytest.mark.parametrize("shared", ["root", "settings"])
+def test_upgrades_sharing_a_root_or_settings_file_serialize(tmp_path, monkeypatch, capsys, shared):
     import time
 
     first_env = tmp_path / "first" / ".env"
@@ -538,11 +587,17 @@ def test_settings_files_sharing_a_root_serialize_on_one_lock(tmp_path, monkeypat
             time.sleep(0.02)
         assert marker.is_file(), f"first upgrade exited {process.returncode}"
 
-        # A different settings file, same state root: one shared lock refuses it.
-        monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(second_env))
+        # Sharing either the settings file or the state root must refuse the
+        # second upgrade, each on its own lock.
+        if shared == "root":
+            monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(second_env))
+            second_root = root
+        else:
+            monkeypatch.setenv("OUTERLOOP_ENV_FILE", str(first_env))
+            second_root = tmp_path / "other-root"
         calls = []
         monkeypatch.setattr(harness_cli, "upgrade_one", lambda *a: calls.append(a))
-        assert harness_cli.main(["upgrade", "claude", "--root", str(root)]) == 1
+        assert harness_cli.main(["upgrade", "claude", "--root", str(second_root)]) == 1
         err = capsys.readouterr().err
         assert "another harness upgrade is already running" in err
         assert "wait for it to finish and retry" in err

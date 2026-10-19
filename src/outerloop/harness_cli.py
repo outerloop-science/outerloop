@@ -287,6 +287,31 @@ def write_atomic(path: Path, content: str) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+RESUME_POINTER = "resume"
+
+
+def resumable(parent: Path, live: Path) -> Path | None:
+    """The unpublished install directory a timed-out attempt kept, if resumable."""
+    try:
+        name = (parent / RESUME_POINTER).read_text().strip()
+    except (OSError, UnicodeError):
+        return None
+    if not name or name in {".", ".."} or Path(name).name != name:
+        return None
+    candidate = parent / name
+    try:
+        location = candidate.resolve()
+        if (
+            not candidate.is_dir()
+            or location == live.parent.resolve()
+            or not location.is_relative_to(parent.resolve())
+        ):
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> None:
     desired = effective(name, env)
     timeout = float(env.get("OUTERLOOP_HARNESS_TIMEOUT_SECONDS", "300"))
@@ -338,12 +363,15 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
             return
         parent = root / "harnesses" / name / identity(name, desired)
         parent.mkdir(parents=True, exist_ok=True)
-        # One unpublished staging directory per harness and identity. A
-        # timed-out installer keeps its work here, so the next attempt resumes
-        # in the same place; a published installation is never reused as
-        # staging, so a later repair cannot delete or overwrite the live path.
-        candidate = parent / "staging"
-        candidate.mkdir(exist_ok=True)
+        # Build in the final directory: a Python venv embeds the absolute path
+        # it was built at, so the directory must not move after the build. The
+        # resume pointer names an unpublished directory that a timed-out
+        # attempt kept; it is cleared once that directory is published or
+        # discarded. The live installation is never resumed as staging.
+        candidate = resumable(parent, previous)
+        if candidate is None:
+            candidate = Path(tempfile.mkdtemp(prefix="install-", dir=parent))
+            (parent / RESUME_POINTER).write_text(f"{candidate.name}\n")
         target = candidate / name
         script = Path(__file__).resolve().parents[2] / "scripts" / f"install_{name}.sh"
         if not script.is_file():
@@ -355,28 +383,18 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
                 f"verification failed: installed {got}, wanted {identity(name, desired)}"
                 " with verified hash"
             )
-        # Verification finishes within the deadline; publishing the path is
-        # atomic. Rename the verified staging directory to a fresh,
-        # never-reused name first, so no later attempt can treat the live
-        # installation as its staging directory.
+        # Verification finishes within the deadline. The directory was built
+        # under its final name, so publishing is just the settings-file write;
+        # nothing is renamed. Record the path first, then forget the resume
+        # pointer: from here on a cleanup must not touch this directory.
         signal.setitimer(signal.ITIMER_REAL, 0)
         state.unlink(missing_ok=True)
-        published = Path(tempfile.mkdtemp(prefix="install-", dir=parent))
-        try:
-            os.replace(candidate, published)
-        except BaseException:
-            shutil.rmtree(published, ignore_errors=True)
-            raise
+        record_path(env_file, path_key(name), target)
+        env[path_key(name)] = str(target)
         candidate = None
-        try:
-            record_path(env_file, path_key(name), published / name)
-        except BaseException:
-            # The operator .env never pointed here, so the orphan is safe to
-            # remove; the previous installation is untouched.
-            shutil.rmtree(published, ignore_errors=True)
-            raise
-        env[path_key(name)] = str(published / name)
-        print(f"{name}: {have} at {previous} -> {got} at {published / name}")
+        with contextlib.suppress(OSError):
+            (parent / RESUME_POINTER).unlink(missing_ok=True)
+        print(f"{name}: {have} at {previous} -> {got} at {target}")
     except (OSError, ValueError, subprocess.SubprocessError):
         signal.setitimer(signal.ITIMER_REAL, 0)
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -394,6 +412,7 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, handler)
         if candidate is not None and not timed_out:
+            (parent / RESUME_POINTER).unlink(missing_ok=True)
             shutil.rmtree(candidate)
 
 
@@ -419,16 +438,22 @@ def main(argv: list[str] | None = None) -> int:
             .expanduser()
             .resolve()
         )
-        # The lock belongs to the shared install root, not the settings file:
-        # deployments with separate settings files still mutate one root.
+        # Hold two locks in a fixed order. The settings-file lock serializes
+        # record_path's read/modify/replace; the state-root lock serializes
+        # installs shared by deployments with separate settings files.
         (root / "harnesses").mkdir(parents=True, exist_ok=True)
-        with (root / "harnesses" / ".harness-upgrade.lock").open("a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise ValueError(
-                    "another harness upgrade is already running; wait for it to finish and retry"
-                ) from exc
+        with (
+            (env_file.parent / ".harness-upgrade.lock").open("a") as settings_lock,
+            (root / "harnesses" / ".harness-upgrade.lock").open("a") as root_lock,
+        ):
+            for lock in (settings_lock, root_lock):
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise ValueError(
+                        "another harness upgrade is already running; "
+                        "wait for it to finish and retry"
+                    ) from exc
             env = {**env_file_values(env_file, keys=CONFIG_KEYS), **os.environ}
             names = args.names or (used_harnesses(env) if args.used else list(NAMES))
             failed = False

@@ -599,11 +599,11 @@ disarm comes from touching `<root>/DISARM_WAKE`.
 The deadline for one harness upgrade, installation and verification
 together. A longer install, such as the Hermes runtime, is cut off at this
 deadline. The deadline is per attempt: a timed-out install keeps its unpublished
-staging directory, and the next attempt resumes there instead of starting over.
-Only the bridge installer reuses partial work (its venv and download cache); the
-other installers redo their own setup, so raising this value only shortens a
-large first bridge install to fewer, longer attempts. Probes in
-`outerloop harness status` use their own short fixed timeouts.
+install directory and a resume pointer, and the next attempt resumes there
+instead of starting over. Only the bridge installer reuses partial work (its
+venv and download cache); the other installers redo their own setup, so raising
+this value only shortens a large first bridge install to fewer, longer attempts.
+Probes in `outerloop harness status` use their own short fixed timeouts.
 
 - Default: 300
 - Constraint: positive and finite
