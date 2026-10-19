@@ -385,15 +385,15 @@ def upgrade_one(name: str, env: dict[str, str], env_file: Path, root: Path) -> N
             )
         # Verification finishes within the deadline. The directory was built
         # under its final name, so publishing is just the settings-file write;
-        # nothing is renamed. Record the path first, then forget the resume
-        # pointer: from here on a cleanup must not touch this directory.
+        # nothing is renamed. Forget the resume pointer BEFORE recording the
+        # path: a crash in between leaves an unreferenced directory, never a
+        # published one that another deployment on this root could resume.
         signal.setitimer(signal.ITIMER_REAL, 0)
         state.unlink(missing_ok=True)
+        (parent / RESUME_POINTER).unlink(missing_ok=True)
+        candidate = None
         record_path(env_file, path_key(name), target)
         env[path_key(name)] = str(target)
-        candidate = None
-        with contextlib.suppress(OSError):
-            (parent / RESUME_POINTER).unlink(missing_ok=True)
         print(f"{name}: {have} at {previous} -> {got} at {target}")
     except (OSError, ValueError, subprocess.SubprocessError):
         signal.setitimer(signal.ITIMER_REAL, 0)
