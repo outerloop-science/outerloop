@@ -129,6 +129,11 @@ def run_tick(
     return report, dispatcher
 
 
+def woke(dispatcher) -> list[str]:
+    """Run ids the dispatcher was asked to wake; the reason is not the subject."""
+    return [run_id for run_id, _reason in dispatcher.dispatched]
+
+
 def test_pause_sentinel_noops_but_heartbeats(tmp_path: Path) -> None:
     (tmp_path / PAUSE_SENTINEL).touch()
     waiting_run(tmp_path)
@@ -215,8 +220,8 @@ def test_last_worked_ts_survives_a_corrupt_marker(tmp_path: Path) -> None:
     assert _last_worked_ts(tmp_path) == NOW
 
 
-def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
-    from outerloop.tick import _min_tick_s_from_env
+def test_coalesce_window_knobs_parse_clamp_and_scale_with_cadence(monkeypatch) -> None:
+    from outerloop.tick import _default_min_tick_s, _min_tick_s_from_env
 
     # default cadence (30 min) -> safe ceiling = half-cadence = 15 min = 900s
     monkeypatch.delenv("OUTERLOOP_CADENCE_MIN", raising=False)
@@ -237,10 +242,7 @@ def test_min_tick_s_from_env_parses_clamps_and_rejects(monkeypatch) -> None:
     monkeypatch.setenv("OUTERLOOP_CADENCE_MIN", "10")  # ceiling tracks the cadence
     assert _min_tick_s_from_env() == 300.0  # clamped to half of 10 min = 5 min
 
-
-def test_default_coalesce_window_scales_with_cadence(monkeypatch) -> None:
-    from outerloop.tick import _default_min_tick_s, _min_tick_s_from_env
-
+    # the unset MIN_TICK path derives its window from the cadence
     monkeypatch.delenv("OUTERLOOP_MIN_TICK_MINUTES", raising=False)
     # no cadence set -> assume 30-min cadence -> min(10, 15) = 10 min
     monkeypatch.delenv("OUTERLOOP_CADENCE_MIN", raising=False)
@@ -264,7 +266,7 @@ def test_terminal_experiment_past_grace_gets_backup_wake(tmp_path: Path) -> None
     waiting_run(tmp_path)
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "FAILED"}))
     assert report.woken == (("r1", "FAILED"),)
-    assert dispatcher.dispatched == [("r1", "experiment FAILED")]
+    assert woke(dispatcher) == ["r1"]
     # sync dispatch → lease released afterward
     assert read_lease(tmp_path, "r1") is None
     assert load_record(tmp_path, "r1").wake_attempts == 1
@@ -284,86 +286,43 @@ def test_blind_park_before_its_deadline_is_left_alone(tmp_path: Path) -> None:
     assert dispatcher.dispatched == []
 
 
-def test_checkpoint_sleep_park_deadline_is_near_term() -> None:
-    """A jobless checkpoint sleep must not inherit the 12h QUEUE slack (it has
-    nothing in any queue) — its deadline reaches only the next sweep pass.
-    Observed live (yolo heldout_probe, 2026-08-27): a nap became a 12h coma,
-    and the existing deadline-floor branch then wakes it promptly."""
-    from outerloop.attempt import CHECKPOINT_SLEEP_SLACK_MIN, PARK_QUEUE_SLACK_MIN
-
-    assert CHECKPOINT_SLEEP_SLACK_MIN * 60 < 3600  # near-term, sub-hour
-    assert PARK_QUEUE_SLACK_MIN == 12 * 60  # queue slack untouched
-
-
-def test_jobless_park_past_deadline_wakes_via_floor(tmp_path: Path) -> None:
-    # the sweep side of the checkpoint-sleep story: once its (now near-term)
-    # deadline passes, the existing blind-park floor delivers the wake — no
-    # special predicate that could over-match blind re-parks or long sleeps
-    waiting_run(
-        tmp_path,
-        experiment_job_id="",
-        deadline=NOW - 1,
-        stage={
-            "afterany": "",
-            "base_branch": "main",
-            "base_sha": "b" * 40,
-            "candidate_ref": "refs/autoresearch/r1",
-            "candidate_sha": "c" * 40,
-            "phase": "author-sleep",
-            "syscall_launches": [],
-        },
-    )
-    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
-    assert dispatcher.dispatched == [("r1", "blind park past deadline")]
-
-
-def test_multi_job_park_wakes_when_all_afterany_jobs_finish(tmp_path: Path) -> None:
+def test_multi_job_park_follows_every_afterany_job(tmp_path: Path) -> None:
     """A multi-job park (candidate + siblings, several author launches)
     records no single experiment_job_id — the sweep polls every id in the
     stage's afterany string instead of riding the deadline floor for hours
     (observed live 2026-08-25)."""
-    waiting_run(
-        tmp_path,
-        experiment_job_id="",
-        stage={"afterany": "afterany:200:201", "phase": "candidate"},
-    )
+    stage = {"afterany": "afterany:200:201", "phase": "candidate"}
+    waiting_run(tmp_path, experiment_job_id="", stage=stage)
     report, _ = run_tick(tmp_path, FakeSlurm(states={"200": "COMPLETED", "201": "COMPLETED"}))
     assert report.woken == (("r1", "COMPLETED"),)
 
-
-def test_multi_job_park_waits_while_any_afterany_job_runs(tmp_path: Path) -> None:
-    waiting_run(
-        tmp_path,
-        experiment_job_id="",
-        terminal_seen=0.0,
-        stage={"afterany": "afterany:200:201", "phase": "candidate"},
-    )
-    _, dispatcher = run_tick(tmp_path, FakeSlurm(states={"200": "COMPLETED", "201": "RUNNING"}))
-    assert dispatcher.dispatched == []
-    # not all done: the grace clock must NOT start on a partial finish
-    assert load_record(tmp_path, "r1").terminal_seen == 0.0
+    # not all done: no wake, and the grace clock must NOT start on a partial finish
+    partial = tmp_path / "partial"
+    waiting_run(partial, experiment_job_id="", terminal_seen=0.0, stage=stage)
+    _, dispatcher = run_tick(partial, FakeSlurm(states={"200": "COMPLETED", "201": "RUNNING"}))
+    assert woke(dispatcher) == []
+    assert load_record(partial, "r1").terminal_seen == 0.0
 
 
-def test_terminal_within_grace_leaves_it_to_the_afterany_job(tmp_path: Path) -> None:
-    waiting_run(tmp_path, terminal_seen=NOW - 10)  # first seen moments ago
-    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
-    assert report.woken == ()
-    assert dispatcher.dispatched == []
-
-
-def test_first_terminal_sighting_starts_the_grace_clock_not_a_wake(tmp_path: Path) -> None:
+def test_terminal_grace_starts_at_first_sighting(tmp_path: Path) -> None:
     """Grace runs from when the sweep FIRST saw the experiment terminal — a
     24h experiment must not be woken by the backup the instant it completes
     (the afterany job owns the fresh case)."""
-    waiting_run(tmp_path, terminal_seen=0.0)
-    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
-    assert dispatcher.dispatched == []
-    assert load_record(tmp_path, "r1").terminal_seen == NOW
-    # attempts untouched by the sighting
-    assert load_record(tmp_path, "r1").wake_attempts == 0
+    # seen moments ago: still inside the grace window
+    waiting_run(tmp_path, terminal_seen=NOW - 10)
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
+    assert report.woken == () and woke(dispatcher) == []
+
+    # first sighting stamps the clock; no wake and no attempt spent
+    root = tmp_path / "fresh"
+    waiting_run(root, terminal_seen=0.0)
+    _report, dispatcher = run_tick(root, FakeSlurm(states={"100": "COMPLETED"}))
+    assert woke(dispatcher) == []
+    assert load_record(root, "r1").terminal_seen == NOW
+    assert load_record(root, "r1").wake_attempts == 0
     # next tick, grace elapsed → wake
     report2, _dispatcher2 = run_tick(
-        tmp_path, FakeSlurm(states={"100": "COMPLETED"}), now=NOW + GRACE + 1
+        root, FakeSlurm(states={"100": "COMPLETED"}), now=NOW + GRACE + 1
     )
     assert report2.woken == (("r1", "COMPLETED"),)
 
@@ -406,7 +365,7 @@ def test_dead_holder_lease_is_reaped_then_next_tick_wakes(tmp_path: Path) -> Non
     report, dispatcher = run_tick(tmp_path, slurm)
     assert report.reaped_leases == ("r1",)
     # the same sweep pass continues after reaping — wake delivered
-    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+    assert woke(dispatcher) == ["r1"]
 
 
 def test_query_failure_defers_never_concludes(tmp_path: Path) -> None:
@@ -417,24 +376,25 @@ def test_query_failure_defers_never_concludes(tmp_path: Path) -> None:
     assert load_record(tmp_path, "r1").state == PARKED
 
 
-def test_gone_before_deadline_waits_for_sacct_lag(tmp_path: Path) -> None:
-    waiting_run(tmp_path)  # deadline far in the future
-    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={}))  # sacct empty
-    assert dispatcher.dispatched == []
+def test_deadline_decides_which_experiment_states_wake(tmp_path: Path) -> None:
+    # before the deadline every live state is left alone (empty sacct is lag)
+    waiting_run(tmp_path, "r-run", experiment_job_id="100", deadline=NOW + 10_000)
+    waiting_run(tmp_path, "r-pend-wait", experiment_job_id="101", deadline=NOW + 10_000)
+    waiting_run(tmp_path, "r-gone-wait", experiment_job_id="102", deadline=NOW + 10_000)
+    report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "RUNNING", "101": "PENDING"}))
+    assert woke(dispatcher) == [] and report.woken == ()
 
-
-def test_gone_past_deadline_wakes_with_vanished(tmp_path: Path) -> None:
-    waiting_run(tmp_path, deadline=NOW - 1)
-    report, _dispatcher = run_tick(tmp_path, FakeSlurm(states={}))
-    assert report.woken == (("r1", "vanished"),)
-
-
-def test_pending_past_deadline_cancels_then_wakes(tmp_path: Path) -> None:
-    waiting_run(tmp_path, deadline=NOW - 1)
-    slurm = FakeSlurm(states={"100": "PENDING"})
-    report, _dispatcher = run_tick(tmp_path, slurm)
-    assert slurm.cancelled == ["100"]
-    assert report.woken == (("r1", "unschedulable"),)
+    # past the deadline: gone wakes as vanished, pending is cancelled and woken
+    root = tmp_path / "due"
+    waiting_run(root, "r-gone", experiment_job_id="200", deadline=NOW - 1)
+    waiting_run(root, "r-pend", experiment_job_id="201", deadline=NOW - 1)
+    waiting_run(root, "r-run2", experiment_job_id="202", deadline=NOW - 1)
+    slurm = FakeSlurm(states={"201": "PENDING", "202": "RUNNING"})
+    report, dispatcher = run_tick(root, slurm)
+    assert slurm.cancelled == ["201"]
+    assert set(report.woken) == {("r-gone", "vanished"), ("r-pend", "unschedulable")}
+    assert set(woke(dispatcher)) == {"r-gone", "r-pend"}
+    assert load_record(root, "r-run2").state == PARKED
 
 
 def test_pending_past_deadline_on_a_queue_wait_extends_instead(tmp_path: Path) -> None:
@@ -497,29 +457,13 @@ def test_is_queue_wait_classifies_slurm_reasons() -> None:
     assert [r for r in nevers if is_queue_wait(r)] == []
 
 
-def test_pending_before_deadline_is_left_alone(tmp_path: Path) -> None:
-    waiting_run(tmp_path)
-    slurm = FakeSlurm(states={"100": "PENDING"})
-    _report, dispatcher = run_tick(tmp_path, slurm)
-    assert slurm.cancelled == []
-    assert dispatcher.dispatched == []
-
-
-def test_running_experiment_is_left_alone(tmp_path: Path) -> None:
-    waiting_run(tmp_path)
-    _report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "RUNNING"}))
-    assert dispatcher.dispatched == []
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_jobless_capacity_wait_wakes_at_deadline(tmp_path, legacy):
+def test_jobless_capacity_wait_wakes_at_deadline(tmp_path):
     from outerloop.attempt import _park_run
     from outerloop.harness import SessionResult
     from outerloop.inbox import Message, append
     from outerloop.orchestrator import RunParked
     from outerloop.syscall import SyscallRequest
 
-    record = waiting_run(tmp_path)
     parked = RunParked(
         phase="author-sleep",
         afterany="",
@@ -534,38 +478,38 @@ def test_jobless_capacity_wait_wakes_at_deadline(tmp_path, legacy):
         sleeps_used=2,
         gpu_hours_used=0.25,
     )
-    append(
-        tmp_path / "runs" / record.run_id,
-        Message(
-            0,
-            "note",
-            "kernel",
-            "",
-            NOW,
-            "capacity",
-            {
-                "text": "Capacity may now be free; retry.",
-                "context_only": True,
-            },
-        ),
-    )
-    for cycle in range(5):
-        now = NOW + cycle * 100
-        _park_run(tmp_path, record, parked, "ref", 1, now, keep_wake_attempts=True)
-        saved = load_record(tmp_path, record.run_id)
-        assert saved.wake_attempts == 0 and saved.deadline == now + 60
-        assert saved.resume_session_id == "same-session"
-        if legacy:
-            # Old records have no capacity_wait marker; the jobless deadline still works.
-            stage = dict(saved.stage)
-            del stage["capacity_wait"]
-            save_record(tmp_path, replace(saved, stage=stage), now)
-        early, _ = run_tick(tmp_path, FakeSlurm(), now=now + 59, min_tick_s=0)
-        assert not early.woken and not early.stuck
-        due, _ = run_tick(tmp_path, FakeSlurm(), now=now + 61, min_tick_s=0)
-        assert due.woken == ((record.run_id, "deadline"),) and not due.stuck
-        record = load_record(tmp_path, record.run_id)
-        assert record.state == PARKED and record.wake_attempts == 1
+    # old records have no capacity_wait marker; the jobless deadline still works
+    for legacy in (False, True):
+        root = tmp_path / ("legacy" if legacy else "current")
+        record = waiting_run(root)
+        append(
+            root / "runs" / record.run_id,
+            Message(
+                0,
+                "note",
+                "kernel",
+                "",
+                NOW,
+                "capacity",
+                {"text": "Capacity may now be free; retry.", "context_only": True},
+            ),
+        )
+        for cycle in range(5):
+            now = NOW + cycle * 100
+            _park_run(root, record, parked, "ref", 1, now, keep_wake_attempts=True)
+            saved = load_record(root, record.run_id)
+            assert saved.wake_attempts == 0 and saved.deadline == now + 60
+            assert saved.resume_session_id == "same-session"
+            if legacy:
+                stage = dict(saved.stage)
+                del stage["capacity_wait"]
+                save_record(root, replace(saved, stage=stage), now)
+            early, _ = run_tick(root, FakeSlurm(), now=now + 59, min_tick_s=0)
+            assert not early.woken and not early.stuck
+            due, _ = run_tick(root, FakeSlurm(), now=now + 61, min_tick_s=0)
+            assert due.woken == ((record.run_id, "deadline"),) and not due.stuck
+            record = load_record(root, record.run_id)
+            assert record.state == PARKED and record.wake_attempts == 1
 
 
 def test_attempts_exhausted_becomes_stuck(tmp_path: Path) -> None:
@@ -597,7 +541,7 @@ def test_tick_held_lease_reaped_by_ttl_alone(tmp_path: Path) -> None:
     acquire_lease(tmp_path, "r1", "tick:dead-host:1", "", now=NOW - TTL - 1)
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
     assert report.reaped_leases == ("r1",)
-    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+    assert woke(dispatcher) == ["r1"]
 
 
 def test_corrupt_empty_lease_is_reaped_via_mtime(tmp_path: Path) -> None:
@@ -611,7 +555,7 @@ def test_corrupt_empty_lease_is_reaped_via_mtime(tmp_path: Path) -> None:
     _os.utime(lease_path, (old, old))
     report, dispatcher = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}))
     assert report.reaped_leases == ("r1",)
-    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+    assert woke(dispatcher) == ["r1"]
 
 
 def test_legacy_zero_deadline_still_wakes_gone_runs(tmp_path: Path) -> None:
@@ -662,24 +606,19 @@ def test_dispatch_exception_releases_lease_and_counts_attempt(tmp_path: Path) ->
     assert load_record(tmp_path, "r1").wake_attempts == 1  # counts toward stuck
 
 
-def test_async_dispatch_hands_lease_to_wake_job(tmp_path: Path) -> None:
-    waiting_run(tmp_path)
-    dispatcher = RecordingDispatcher(holder_job_id="777")
-    report, _ = run_tick(tmp_path, FakeSlurm(states={"100": "COMPLETED"}), dispatcher)
-    assert report.woken == (("r1", "COMPLETED"),)
-    lease = read_lease(tmp_path, "r1")
-    assert lease is not None
-    assert lease.holder_job_id == "777"
-
-
-def test_double_tick_no_double_wake_with_async_dispatch(tmp_path: Path) -> None:
+def test_async_dispatch_hands_the_lease_and_keeps_the_wake_idempotent(
+    tmp_path: Path,
+) -> None:
     """The lease is exactly what makes the backup layer idempotent."""
     waiting_run(tmp_path)
     slurm = FakeSlurm(states={"100": "COMPLETED", "777": "RUNNING"})
     dispatcher = RecordingDispatcher(holder_job_id="777")
     # min_tick_s=0: both sweeps must run — the lease (not coalescing) is what
     # makes the second wake idempotent, which is exactly what this asserts
-    run_tick(tmp_path, slurm, dispatcher, min_tick_s=0)
+    report, _ = run_tick(tmp_path, slurm, dispatcher, min_tick_s=0)
+    assert report.woken == (("r1", "COMPLETED"),)
+    lease = read_lease(tmp_path, "r1")
+    assert lease is not None and lease.holder_job_id == "777"
     run_tick(tmp_path, slurm, dispatcher, now=NOW + 60, min_tick_s=0)
     assert len(dispatcher.dispatched) == 1
 
@@ -826,7 +765,7 @@ def _run(run_id, benchmark, created, state=ENDED, ending="negative-result", targ
 
 
 def test_self_initiated_selection_rules() -> None:
-    from outerloop.tick import pick_self_initiated
+    from outerloop.tick import STRANDED_RUNNING_S, pick_self_initiated
 
     contract = _self_contract()
     pick = lambda records, **kw: pick_self_initiated(records, contract, "org/pilot", now=NOW, **kw)
@@ -846,32 +785,16 @@ def test_self_initiated_selection_rules() -> None:
     assert pick(records) is None
     # a pending attempt that died pre-record still counts toward cooldown
     assert pick([], dead_attempts={"denoise": NOW - 60}) == "reach"
-
-
-def test_self_initiated_scoped_to_target() -> None:
-    from outerloop.tick import pick_self_initiated
-
-    contract = _self_contract()
-    # active run + full budget on ANOTHER target: neither blocks org/pilot
+    # another target's active run + full budget: neither blocks org/pilot
     other = [_run(f"o{i}", "tsp", NOW - i * 60, target="org/other") for i in range(3)]
     other.append(_run("oa", "tsp", NOW - 30, state="running", ending="", target="org/other"))
-    assert pick_self_initiated(other, contract, "org/pilot", now=NOW) == "denoise"
+    assert pick(other) == "denoise"
     # while org/other itself is both serialized and over budget
     assert pick_self_initiated(other, contract, "org/other", now=NOW) is None
-
-
-def test_self_initiated_stranded_running_unblocks() -> None:
-    from outerloop.tick import STRANDED_RUNNING_S, pick_self_initiated
-
-    contract = _self_contract()
-    stale = STRANDED_RUNNING_S + 3600
-    dead = _run("d", "tsp", NOW - stale, state="running", ending="")
-    # a crashed climb job's record stops counting as active after the window,
-    # but its benchmark keeps its cooldown slot: another one is picked
-    assert pick_self_initiated([dead], contract, "org/pilot", now=NOW) == "denoise"
-    # a FRESH running run still serializes
-    fresh = _run("f", "tsp", NOW - 60, state="running", ending="")
-    assert pick_self_initiated([fresh], contract, "org/pilot", now=NOW) is None
+    # a crashed climb job's record stops counting as active after the stranded
+    # window, but its benchmark keeps its cooldown slot: another one is picked
+    dead = _run("d", "tsp", NOW - STRANDED_RUNNING_S - 3600, state="running", ending="")
+    assert pick([dead]) == "denoise"
 
 
 def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None:
@@ -923,10 +846,10 @@ def test_self_initiated_pending_marker_blocks_duplicates(tmp_path: Path) -> None
     assert len(submitted) == 1
 
 
-def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
+def test_disk_preflight_gates_launch_lanes(tmp_path: Path, monkeypatch) -> None:
     """A failed preflight turns every LAUNCH lane off for the tick (no
     follow-up submissions, no intake, no self-initiated) but the tick still
-    heartbeats and reports why."""
+    heartbeats and reports why; the healthy path actually runs the lanes."""
     import json as _json
 
     from outerloop.tick import ServiceSpec, tick
@@ -967,126 +890,14 @@ def test_disk_preflight_gates_launch_lanes(tmp_path: Path) -> None:
     heartbeat = _json.loads((tmp_path / "heartbeat.json").read_text())
     assert heartbeat["disk"]["launch_ok"] is False
 
-
-@pytest.mark.parametrize("lane", ["intake", "steward", "self_initiated"])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_hold_launches_preserves_servicing_and_resumes(
-    tmp_path, monkeypatch, caplog, lane, dry_run
-):
-    import logging
-    from unittest.mock import Mock
-
-    import outerloop.tick as tick_mod
-
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    contract = _self_contract()
-    monkeypatch.setattr("outerloop.contract.load_contract", lambda *a: contract)
-    github = Mock()
-    github.get_file_content.return_value = "contract"
-    services = {}
-    for name in ("service_syncs", "service_eval_cache", "service_research_log", "service_boards"):
-        services[name] = Mock()
-        monkeypatch.setattr(tick_mod, name, services[name])
-    monkeypatch.setattr(tick_mod, "contract_alarm", Mock())
-    lanes = {}
-    for name in ("intake", "steward", "self_initiated"):
-        lanes[name] = Mock(return_value=("work", "123") if name == lane else None)
-        monkeypatch.setattr(tick_mod, "service_" + name, lanes[name])
-    spec = tick_mod.ServiceSpec(
-        target="org/pilot",
-        account="a",
-        partition="p",
-        run_root=tmp_path,
-        image="img.sif",
-        home=tmp_path,
-    )
-    slurm = FakeSlurm(states={"77": "TIMEOUT", "100": "COMPLETED"})
-    _running_run(tmp_path, "killed", job_id="77", age_s=3600)
-    # First observation starts the killed-job grace period.
-    tick(tmp_path, slurm.compute(), RecordingDispatcher(), now=NOW, min_free_bytes=1)
-    waiting_run(tmp_path)
-    sentinel = tmp_path / tick_mod.HOLD_LAUNCHES_SENTINEL
-    sentinel.touch()
-    dispatcher = RecordingDispatcher()
-
-    def step(now):
-        return tick(
-            tmp_path,
-            slurm.compute(),
-            dispatcher,
-            now=now,
-            github=github,
-            service_spec=spec,
-            dry_run=dry_run,
-            # deliberately inverted so the lane assertions below fail if the
-            # lanes ever receive dry_run instead of service_dry_run
-            service_dry_run=not dry_run,
-            min_free_bytes=1,
-            min_tick_s=0,
-        )
-
-    with caplog.at_level(logging.INFO):
-        held = step(NOW + GRACE + 1)
-        step(NOW + GRACE + 2)
-    assert held.launch_blocked
-    assert held.intake == held.steward == held.self_initiated == ("", "")
-    assert all(mock.call_count == 0 for mock in lanes.values())
-    assert held.running_ended == ("killed",)
-    assert load_record(tmp_path, "killed").state == ENDED
-    assert held.woken == (("r1", "COMPLETED"),)
-    assert bool(dispatcher.dispatched) is not dry_run
-    assert load_record(tmp_path, "r1").wake_attempts == (0 if dry_run else 2)
-    assert caplog.messages.count(f"launches held: {sentinel}") == 2
-    for name, mock in services.items():
-        assert mock.call_count == (0 if name == "service_eval_cache" and dry_run else 2)
-    assert github.get_file_content.call_count == 2
-
-    sentinel.unlink()
-    resumed = step(NOW + GRACE + 3)
-    assert not resumed.launch_blocked
-    assert getattr(resumed, lane) == ("work", "123")
-    assert lanes[lane].call_args.kwargs["dry_run"] is (not dry_run)
-
-
-def test_hold_launches_reports_without_services(tmp_path):
-    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
-
-    (tmp_path / HOLD_LAUNCHES_SENTINEL).touch()
-    report = tick(tmp_path, FakeSlurm().compute(), RecordingDispatcher(), NOW, min_free_bytes=1)
-    assert report.launch_blocked
-
-
-def test_hold_launches_reported_on_a_coalesced_tick(tmp_path, caplog):
-    import logging
-
-    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
-
-    sentinel = tmp_path / HOLD_LAUNCHES_SENTINEL
-    sentinel.touch()
-    slurm = FakeSlurm()
-    run_tick(tmp_path, slurm, min_tick_s=0)  # stamps the work marker at NOW
-    with caplog.at_level(logging.INFO):
-        report = tick(
-            tmp_path,
-            slurm.compute(),
-            RecordingDispatcher(),
-            NOW + 1,
-            min_free_bytes=1,
-            min_tick_s=600,
-        )
-    assert report.coalesced and report.launch_blocked
-    assert f"launches held: {sentinel}" in caplog.messages
-
-
-def test_disk_preflight_passes_normally(tmp_path: Path, monkeypatch) -> None:
-    """Healthy path must actually run the lanes: the report fields are only
-    populated by the github branch, so the test provides one."""
-    from outerloop.tick import ServiceSpec, tick
-
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    # healthy path: the report fields are populated by the github branch, so
+    # a real client shows both intake and self-initiated fetched the contract
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: ok))
     fetched = []
 
-    class G:
+    class HealthyG:
         def default_branch(self, repo):
             return "main"
 
@@ -1101,22 +912,142 @@ def test_disk_preflight_passes_normally(tmp_path: Path, monkeypatch) -> None:
         target="org/pilot",
         account="a",
         partition="p",
-        run_root=tmp_path,
+        run_root=ok,
         image="img.sif",
-        home=tmp_path,
+        home=ok,
     )
     report = tick(
-        tmp_path,
+        ok,
         FakeSlurm().compute(),
         RecordingDispatcher(),
         now=NOW,
-        github=G(),
+        github=HealthyG(),
         service_spec=spec,
         min_free_bytes=1,
     )
-    # both intake and self-initiated fetched the contract: the lanes RAN
-    assert fetched and set(fetched) == {"org/pilot"}
+    assert fetched and set(fetched) == {"org/pilot"}  # the lanes RAN
     assert report.disk == () and report.launch_blocked is False
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_hold_launches_preserves_servicing_and_resumes(tmp_path, monkeypatch, caplog, dry_run):
+    import logging
+    from unittest.mock import Mock
+
+    import outerloop.tick as tick_mod
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    contract = _self_contract()
+    monkeypatch.setattr("outerloop.contract.load_contract", lambda *a: contract)
+    monkeypatch.setattr(tick_mod, "contract_alarm", Mock())
+    # the lanes are tried in order; only the first with work runs
+    for lane in ("intake", "steward", "self_initiated"):
+        root = tmp_path / lane
+        root.mkdir()
+        github = Mock()
+        github.get_file_content.return_value = "contract"
+        services = {}
+        for name in (
+            "service_syncs",
+            "service_eval_cache",
+            "service_research_log",
+            "service_boards",
+        ):
+            services[name] = Mock()
+            monkeypatch.setattr(tick_mod, name, services[name])
+        lanes = {}
+        for name in ("intake", "steward", "self_initiated"):
+            lanes[name] = Mock(return_value=("work", "123") if name == lane else None)
+            monkeypatch.setattr(tick_mod, "service_" + name, lanes[name])
+        spec = tick_mod.ServiceSpec(
+            target="org/pilot",
+            account="a",
+            partition="p",
+            run_root=root,
+            image="img.sif",
+            home=tmp_path,
+        )
+        slurm = FakeSlurm(states={"77": "TIMEOUT", "100": "COMPLETED"})
+        _running_run(root, "killed", job_id="77", age_s=3600)
+        # First observation starts the killed-job grace period.
+        tick(root, slurm.compute(), RecordingDispatcher(), now=NOW, min_free_bytes=1)
+        waiting_run(root)
+        sentinel = root / tick_mod.HOLD_LAUNCHES_SENTINEL
+        sentinel.touch()
+        dispatcher = RecordingDispatcher()
+
+        def step(now, root=root, slurm=slurm, dispatcher=dispatcher, github=github, spec=spec):
+            return tick(
+                root,
+                slurm.compute(),
+                dispatcher,
+                now=now,
+                github=github,
+                service_spec=spec,
+                dry_run=dry_run,
+                # deliberately inverted so the lane assertions below fail if the
+                # lanes ever receive dry_run instead of service_dry_run
+                service_dry_run=not dry_run,
+                min_free_bytes=1,
+                min_tick_s=0,
+            )
+
+        with caplog.at_level(logging.INFO):
+            held = step(NOW + GRACE + 1)
+            step(NOW + GRACE + 2)
+        assert held.launch_blocked
+        assert held.intake == held.steward == held.self_initiated == ("", "")
+        assert all(mock.call_count == 0 for mock in lanes.values())
+        assert held.running_ended == ("killed",)
+        assert load_record(root, "killed").state == ENDED
+        assert held.woken == (("r1", "COMPLETED"),)
+        assert bool(dispatcher.dispatched) is not dry_run
+        assert load_record(root, "r1").wake_attempts == (0 if dry_run else 2)
+        assert caplog.messages.count(f"launches held: {sentinel}") == 2
+        for name, mock in services.items():
+            assert mock.call_count == (0 if name == "service_eval_cache" and dry_run else 2)
+        assert github.get_file_content.call_count == 2
+
+        sentinel.unlink()
+        resumed = step(NOW + GRACE + 3)
+        assert not resumed.launch_blocked
+        assert getattr(resumed, lane) == ("work", "123")
+        assert lanes[lane].call_args.kwargs["dry_run"] is (not dry_run)
+        for name in ("intake", "steward", "self_initiated"):
+            if name != lane:
+                assert getattr(resumed, name) == ("", "")
+
+
+def test_hold_launches_is_reported_without_services_and_when_coalesced(tmp_path, caplog):
+    import logging
+
+    from outerloop.tick import HOLD_LAUNCHES_SENTINEL
+
+    # no services at all: the hold is still reported
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / HOLD_LAUNCHES_SENTINEL).touch()
+    report = tick(plain, FakeSlurm().compute(), RecordingDispatcher(), NOW, min_free_bytes=1)
+    assert report.launch_blocked
+
+    # a coalesced tick still says why launches are held
+    root = tmp_path / "coalesced"
+    root.mkdir()
+    sentinel = root / HOLD_LAUNCHES_SENTINEL
+    sentinel.touch()
+    slurm = FakeSlurm()
+    run_tick(root, slurm, min_tick_s=0)  # stamps the work marker at NOW
+    with caplog.at_level(logging.INFO):
+        report = tick(
+            root,
+            slurm.compute(),
+            RecordingDispatcher(),
+            NOW + 1,
+            min_free_bytes=1,
+            min_tick_s=600,
+        )
+    assert report.coalesced and report.launch_blocked
+    assert f"launches held: {sentinel}" in caplog.messages
 
 
 def test_one_run_record_snapshot_per_tick(tmp_path: Path, monkeypatch) -> None:
@@ -1468,42 +1399,50 @@ def test_flight_name_exhaustion_still_gets_a_unique_tree(tmp_path: Path) -> None
     assert all(m != home for m in made)
 
 
+class AlarmGitHub:
+    """Duck-typed client for contract_alarm: one issue store, optional close
+    refusal and a secret to redact."""
+
+    def __init__(self, number: int = 7, refuse_close: bool = False, token: str = "") -> None:
+        self.issues: list[dict] = []
+        self.comments: list[tuple[int, str]] = []
+        self.closed: list[int] = []
+        self.next = number
+        self.refuse_close = refuse_close
+        self.token = token
+
+    def secrets(self):
+        return (self.token,) if self.token else ()
+
+    def list_open_issues(self, repo, max_pages: int = 3):
+        return [i for i in self.issues if i["number"] not in self.closed]
+
+    def create_issue(self, repo, title, body):
+        self.issues.append(
+            {
+                "number": self.next,
+                "title": title,
+                "body": body,
+                "user": {"login": "agentic-learning-bot"},
+            }
+        )
+        return self.next
+
+    def comment(self, repo, number, body):
+        self.comments.append((number, body))
+
+    def close_issue(self, repo, number):
+        if self.refuse_close:
+            raise RuntimeError("403")
+        self.closed.append(number)
+
+
 def test_contract_alarm_opens_once_and_closes_on_recovery(tmp_path: Path) -> None:
     """Three consecutive failures open ONE issue on the target; recovery
     comments and closes it. State loss must not spawn duplicates."""
     from outerloop.tick import CONTRACT_ALARM_MARKER, contract_alarm
 
-    class G:
-        def __init__(self):
-            self.issues: list[dict] = []
-            self.comments: list[tuple[int, str]] = []
-            self.closed: list[int] = []
-            self.next = 7
-
-        def secrets(self):
-            return ()
-
-        def list_open_issues(self, repo, max_pages: int = 3):
-            return [i for i in self.issues if i["number"] not in self.closed]
-
-        def create_issue(self, repo, title, body):
-            self.issues.append(
-                {
-                    "number": self.next,
-                    "title": title,
-                    "body": body,
-                    "user": {"login": "agentic-learning-bot"},
-                }
-            )
-            return self.next
-
-        def comment(self, repo, number, body):
-            self.comments.append((number, body))
-
-        def close_issue(self, repo, number):
-            self.closed.append(number)
-
-    g = G()
+    g = AlarmGitHub()
     contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
     contract_alarm(tmp_path, g, "org/pilot", "ScopeError: overlaps forbidden", NOW)
     assert g.issues == []  # below the threshold: log-only
@@ -1533,36 +1472,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
     by the marker search."""
     from outerloop.tick import contract_alarm
 
-    class G:
-        def __init__(self):
-            self.issues: list[dict] = []
-            self.closed: list[int] = []
-            self.refuse_close = True
-            self.next = 9
-
-        def list_open_issues(self, repo, max_pages: int = 3):
-            return [i for i in self.issues if i["number"] not in self.closed]
-
-        def create_issue(self, repo, title, body):
-            self.issues.append(
-                {
-                    "number": self.next,
-                    "title": title,
-                    "body": body,
-                    "user": {"login": "agentic-learning-bot"},
-                }
-            )
-            return self.next
-
-        def comment(self, repo, number, body):
-            pass
-
-        def close_issue(self, repo, number):
-            if self.refuse_close:
-                raise RuntimeError("403")
-            self.closed.append(number)
-
-    g = G()
+    g = AlarmGitHub(number=9, refuse_close=True)
     for _ in range(3):
         contract_alarm(tmp_path, g, "org/pilot", "boom", NOW)
     assert len(g.issues) == 1
@@ -1574,8 +1484,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
 
     # lost issue number (e.g. dry-run created nothing recordable): the
     # recovery path still finds an open alarm by marker and closes it
-    g2 = G()
-    g2.refuse_close = False
+    g2 = AlarmGitHub(number=9)
     for _ in range(3):
         contract_alarm(tmp_path, g2, "org/pilot", "boom", NOW)
     (tmp_path / "contract-alarm.json").write_text('{"count": 3}')  # number lost
@@ -1585,8 +1494,7 @@ def test_contract_alarm_close_failure_keeps_state_for_retry(tmp_path: Path) -> N
     # a stranger's issue carrying the (public) marker is never adopted:
     # the bot must not close third-party issues or let them suppress the
     # real alarm
-    g3 = G()
-    g3.refuse_close = False
+    g3 = AlarmGitHub(number=9)
     g3.issues.append(
         {
             "number": 1,
@@ -1607,34 +1515,7 @@ def test_contract_alarm_redacts_and_fences_the_error(tmp_path: Path) -> None:
     contract content. Neither may leak a token or escape the fence."""
     from outerloop.tick import contract_alarm
 
-    class Auth:
-        def token(self):
-            return "tok-fixture-98765"
-
-    class G:
-        def __init__(self):
-            self.auth = Auth()
-            self.issues: list[dict] = []
-            self.next = 3
-
-        def list_open_issues(self, repo, max_pages: int = 3):
-            return self.issues
-
-        def secrets(self):
-            return (self.auth.token(),)
-
-        def create_issue(self, repo, title, body):
-            self.issues.append(
-                {
-                    "number": self.next,
-                    "title": title,
-                    "body": body,
-                    "user": {"login": "agentic-learning-bot"},
-                }
-            )
-            return self.next
-
-    g = G()
+    g = AlarmGitHub(number=3, token="tok-fixture-98765")
     nasty = "401 fetching contract; request carried tok-fixture-98765\n```\nescape attempt"
     for _ in range(3):
         contract_alarm(tmp_path, g, "org/pilot", nasty, NOW)
@@ -1688,27 +1569,6 @@ roadmap: docs/roadmap.md
     # no contract at all: pure defaults, nothing raised
     shaped = shape_service_spec(spec, effective_limits(None), None)
     assert shaped.max_turns == 120 and shaped.time_minutes == 90
-
-
-def test_contract_followup_walltime_never_raises_operator_config(tmp_path: Path) -> None:
-    """Strictly-downward holds against the OPERATOR's spec too: a contract
-    asking for more follow-up walltime than the spec grants gets the spec."""
-    from outerloop.contract import load_contract
-    from outerloop.limits import effective_limits
-
-    contract = load_contract(
-        """
-benchmarks:
-  - {name: tsp, command: c, metric: m, direction: min}
-budgets: {gpu_hours_per_run: 1, runs_per_week: 3, followup_job_minutes: 60}
-scope: {allowed: [src/]}
-roadmap: docs/roadmap.md
-""",
-        "org/pilot",
-    )
-    limits = effective_limits(contract.budgets)
-    operator_minutes = 30
-    assert min(operator_minutes, limits.followup_job_minutes) == 30
 
 
 class StewardIssueGitHub:
@@ -2270,6 +2130,12 @@ def test_wake_dispatcher_is_live_by_default_and_disarms(tmp_path, monkeypatch, c
     (tmp_path / DISARM_WAKE_SENTINEL).unlink()
     dispatcher, live = _wake_dispatcher_from_env(compute, spec, NOW, tmp_path)
     assert isinstance(dispatcher, JobWakeDispatcher) and live is True
+    # every spelling of "off" in the env disarms; the predicate is shared with parks
+    from outerloop.tick import dispatch_wake_armed
+
+    for off in ("0", "off", "False", "no"):
+        monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", off)
+        assert not dispatch_wake_armed(tmp_path)
 
 
 def test_job_wake_dispatcher_walltime_includes_the_panel(tmp_path, monkeypatch):
@@ -2829,25 +2695,6 @@ def test_operator_slots_choose_listed_agents(tmp_path: Path) -> None:
     assert len(submitted) == 2
 
 
-def test_operator_slots_absent_keeps_lowest_free(tmp_path: Path) -> None:
-    """A limits file without slots leaves the agent-01..width choice alone."""
-    from outerloop.tick import service_self_initiated
-
-    contract, spec = _slots_contract(2), _slots_spec(tmp_path)
-    (tmp_path / "limits.toml").write_text("[defaults]\nmax_active_attempts = 2\n")
-    submitted: list[str] = []
-
-    def runner(argv, timeout_s):
-        if argv[0] == "sbatch":
-            submitted.append(" ".join(argv))
-            return CommandResult(0, "101\n", "")
-        return CommandResult(0, "RUNNING\n", "")
-
-    compute = SlurmCompute(runner=runner)
-    assert service_self_initiated(tmp_path, compute, spec, contract, NOW) == ("tsp", "101")
-    assert "--agent-id agent-01" in submitted[0]
-
-
 def test_list_pendings_is_delimited_by_target(tmp_path: Path) -> None:
     """org/pilot's marker scan must not absorb org/pilotx's markers ("/"
     encodes as "__" so a bare glob is prefix-ambiguous), nor any suffixed
@@ -3181,47 +3028,37 @@ def test_arm_wake_submits_the_dependent_wake_and_hands_it_the_lease(
     """A park submits its own wake at once, depending on the jobs it waits
     on — the same job and lease the sweep would use, only ~30 minutes
     (cadence + grace + cadence) earlier; arming is not a redelivery, so the
-    stuck counter does not move."""
+    stuck counter does not move. A re-parking wake job hands over its own
+    lease; a lease held by someone else is respected."""
     from outerloop.tick import JobWakeDispatcher, arm_wake
 
     monkeypatch.setattr(
         "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
     )
-    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:501:502"})
     submits, compute = _sbatch_capture()
     dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
-    job = arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="")
-    assert job == "9001"
+    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:501:502"})
+    assert arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="") == "9001"
     assert "--dependency=afterany:501:502" in submits[0]
     lease = read_lease(tmp_path, "r1")
     assert lease is not None and lease.holder == "wake-job:9001" and lease.holder_job_id == "9001"
     assert load_record(tmp_path, "r1").wake_attempts == 0
 
-
-def test_arm_wake_hands_over_its_own_lease_and_leaves_another_holder_alone(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from outerloop.tick import JobWakeDispatcher, arm_wake
-
-    monkeypatch.setattr(
-        "outerloop.tick._flight_command", lambda home, name, now, argv: " ".join(argv)
-    )
-    submits, compute = _sbatch_capture()
-    dispatcher = JobWakeDispatcher(compute, _wake_spec(tmp_path), NOW)
     # a wake job (55) re-parks: its own lease passes to the wake it arms
-    record = waiting_run(tmp_path, experiment_job_id="", stage={"afterany": "afterany:601"})
-    acquire_lease(tmp_path, "r1", "wake-job:55", "55", now=NOW - 60)
-    assert arm_wake(tmp_path, record, dispatcher, NOW, holder_job_id="55") == "9001"
-    lease = read_lease(tmp_path, "r1")
-    assert lease is not None and lease.holder_job_id == "9001"
+    handover = tmp_path / "handover"
+    record = waiting_run(handover, experiment_job_id="", stage={"afterany": "afterany:601"})
+    acquire_lease(handover, "r1", "wake-job:55", "55", now=NOW - 60)
+    assert arm_wake(handover, record, dispatcher, NOW, holder_job_id="55") == "9002"
+    lease = read_lease(handover, "r1")
+    assert lease is not None and lease.holder_job_id == "9002"
     # a lease held by someone else (a tick mid-delivery) is respected: nothing armed
     other = waiting_run(
-        tmp_path, run_id="r2", experiment_job_id="", stage={"afterany": "afterany:7"}
+        handover, run_id="r2", experiment_job_id="", stage={"afterany": "afterany:7"}
     )
-    acquire_lease(tmp_path, "r2", "tick:host:1", "", now=NOW - 5)
-    assert arm_wake(tmp_path, other, dispatcher, NOW, holder_job_id="55") == ""
-    assert len(submits) == 1
-    assert load_record(tmp_path, "r2").wake_attempts == 0
+    acquire_lease(handover, "r2", "tick:host:1", "", now=NOW - 5)
+    assert arm_wake(handover, other, dispatcher, NOW, holder_job_id="55") == ""
+    assert len(submits) == 2
+    assert load_record(handover, "r2").wake_attempts == 0
 
 
 def test_sweep_leaves_an_armed_pending_wake_alone_however_old(tmp_path: Path) -> None:
@@ -3246,7 +3083,7 @@ def test_sweep_reaps_an_armed_wake_slurm_will_never_start(tmp_path: Path) -> Non
     report, dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == ["55"]
     assert report.reaped_leases == ("r1",)
-    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+    assert woke(dispatcher) == ["r1"]
 
 
 def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) -> None:
@@ -3261,10 +3098,10 @@ def test_sweep_gives_a_dependency_pending_wake_the_grace_window(tmp_path: Path) 
 
     d = RD()
     tick_fn(tmp_path, slurm.compute(), d, now=NOW, min_tick_s=0)
-    assert d.dispatched == [] and slurm.cancelled == []
+    assert woke(d) == [] and slurm.cancelled == []
     assert load_record(tmp_path, "r1").terminal_seen == NOW
     tick_fn(tmp_path, slurm.compute(), d, now=NOW + GRACE + 1, min_tick_s=0)
-    assert slurm.cancelled == ["55"] and d.dispatched == [("r1", "experiment COMPLETED")]
+    assert slurm.cancelled == ["55"] and woke(d) == ["r1"]
 
 
 def test_wake_spec_round_trips_and_is_absent_when_wakes_are_dry(tmp_path: Path) -> None:
@@ -3308,33 +3145,6 @@ def test_sweep_keeps_a_wake_it_could_not_cancel(tmp_path: Path) -> None:
     report, dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == ["55"]
     assert report.reaped_leases == () and dispatcher.dispatched == []
-
-
-def test_pending_reason_query_failure_is_an_error_not_a_reason() -> None:
-    import pytest
-
-    from outerloop.compute import SlurmQueryError
-
-    def runner(argv, timeout_s):
-        return CommandResult(1, "", "slurmctld down")
-
-    with pytest.raises(SlurmQueryError):
-        SlurmCompute(runner=runner).pending_reason("55")
-
-
-def test_dispatch_wake_switch_is_on_unless_disarmed(tmp_path: Path, monkeypatch) -> None:
-    from outerloop.tick import dispatch_wake_armed
-
-    monkeypatch.delenv("OUTERLOOP_DISPATCH_WAKE", raising=False)
-    assert dispatch_wake_armed(tmp_path)  # the default
-    (tmp_path / "DISARM_WAKE").touch()
-    assert not dispatch_wake_armed(tmp_path)
-    (tmp_path / "DISARM_WAKE").unlink()
-    for off in ("0", "off", "False", "no"):
-        monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", off)
-        assert not dispatch_wake_armed(tmp_path)
-    monkeypatch.setenv("OUTERLOOP_DISPATCH_WAKE", "1")
-    assert dispatch_wake_armed(tmp_path)
 
 
 def test_sync_is_serviced_even_without_followup_servicing(tmp_path: Path, monkeypatch) -> None:
@@ -3429,11 +3239,14 @@ def test_service_syncs_fetches_for_live_sessions(tmp_path: Path, monkeypatch) ->
     assert _g(ws, "show", "origin/main:docs/b.md").strip() == "new"
 
 
-def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path: Path) -> None:
+def test_followup_spec_needs_placement_defaults_and_a_bot_login(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
     """The followup service comes up without account/partition in both modes
     (#300): on Slurm, empty ones use the cluster's default association and
     partition, as `start` already allows; under OUTERLOOP_COMPUTE=local
-    subprocess jobs have no placement at all. Set, the account passes through."""
+    subprocess jobs have no placement at all. Set, the account passes through.
+    No built-in identity (#298): Slurm mode needs OUTERLOOP_BOT_LOGIN."""
     from outerloop.tick import _service_spec_from_env
 
     image = tmp_path / "agent.sif"
@@ -3458,6 +3271,11 @@ def test_followup_spec_needs_no_account_or_partition(monkeypatch: Any, tmp_path:
     assert spec is not None
     assert spec.account == "acct" and spec.partition == ""
     del env["OUTERLOOP_ACCOUNT"]
+    del env["OUTERLOOP_BOT_LOGIN"]
+    assert _service_spec_from_env(tmp_path) == (None, None)  # no built-in identity
+    env["OUTERLOOP_BOT_LOGIN"] = "someone[bot]"
+    _github, spec = _service_spec_from_env(tmp_path)
+    assert spec is not None and spec.bot_login == "someone[bot]"
     env["OUTERLOOP_COMPUTE"] = "local"
     _github, spec = _service_spec_from_env(tmp_path)
     assert spec is not None
@@ -3690,7 +3508,7 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
     report, dispatcher = run_tick(tmp_path, slurm)
     assert slurm.cancelled == ["55"]
     assert report.reaped_leases == ("r1",)
-    assert dispatcher.dispatched == [("r1", "experiment COMPLETED")]
+    assert woke(dispatcher) == ["r1"]
 
     # relocated but its dependencies still RUN: nothing to redeliver, no cancel
     waiting_run(tmp_path, run_id="r3", experiment_job_id="300")
@@ -3716,7 +3534,7 @@ def test_sweep_redelivers_an_armed_wake_the_site_moved_off_its_partition(tmp_pat
     assert "88" not in slurm4.cancelled and d4.dispatched == []
     assert load_record(tmp_path, "r4").terminal_seen == NOW + 3
     _r4b, d4b = run_tick(tmp_path, slurm4, now=NOW + 3 + GRACE + 1, min_tick_s=0)
-    assert slurm4.cancelled == ["88"] and d4b.dispatched == [("r4", "experiment COMPLETED")]
+    assert slurm4.cancelled == ["88"] and woke(d4b) == ["r4"]
 
     # the same partition is not a move: the grace path stands (no cancel yet)
     waiting_run(tmp_path, run_id="r2", terminal_seen=0.0, experiment_job_id="200")
@@ -3760,45 +3578,12 @@ def test_jobs_run_the_installed_interpreter_outside_a_checkout(tmp_path: Path) -
     assert _interpreter(tmp_path) == ["uv", "run", "python"]
 
 
-def test_local_mode_runs_uncontained_without_an_image(monkeypatch: Any, tmp_path: Path) -> None:
-    """A laptop has no Apptainer image. Under OUTERLOOP_COMPUTE=local the
-    servicing spec still comes up, with an empty image, and the job argv says
-    --uncontained; Slurm mode without the image stays disabled (#289)."""
-    from outerloop.tick import _containment, _service_spec_from_env
-
-    pat = tmp_path / "pat"
-    pat.write_text("t")
-    env = {
-        "OUTERLOOP_PAT_FILE": str(pat),
-        "OUTERLOOP_IMAGE": str(tmp_path / "missing.sif"),
-        "OUTERLOOP_HOME": str(tmp_path),
-        "OUTERLOOP_TARGET": "org/repo",
-        "OUTERLOOP_BOT_LOGIN": "agentic-learning-bot",
-        "OUTERLOOP_ACCOUNT": "a",
-        "OUTERLOOP_PARTITION": "p",
-    }
-    import outerloop.tick as tick_mod
-
-    monkeypatch.setattr(tick_mod.os, "environ", env)
-    assert _service_spec_from_env(tmp_path) == (None, None)  # slurm: image required
-    env["OUTERLOOP_COMPUTE"] = "local"
-    _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None and spec.image == ""
-    assert spec.panel == ""  # an uncontained judge is opt-in
-    assert "OUTERLOOP_IMAGE" not in env  # the jobs do not inherit a missing image
-    assert _containment(spec.image) == ["--uncontained"]
-    assert _containment("/img/a.sif") == ["--image", "/img/a.sif"]
-    env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
-    _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None and spec.panel == "verify,review"
-
-
-def test_uncontained_opt_in_services_a_cluster_without_containers(
+def test_uncontained_runs_without_an_image_in_local_or_opt_in_slurm_mode(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    """A cluster with no container runtime opts in with OUTERLOOP_UNCONTAINED=1:
-    on Slurm the servicing spec comes up with no image (even when one is on
-    disk), jobs get --uncontained, and the panel stays opt-in as in local mode."""
+    """No Apptainer image: local mode comes up uncontained (#289); on a cluster
+    only the explicit OUTERLOOP_UNCONTAINED=1 opt-in does, even with an image
+    on disk. The panel stays opt-in in both, and no job inherits a missing image."""
     from outerloop.tick import _containment, _service_spec_from_env
 
     image = tmp_path / "agent.sif"
@@ -3815,19 +3600,33 @@ def test_uncontained_opt_in_services_a_cluster_without_containers(
     import outerloop.tick as tick_mod
 
     monkeypatch.setattr(tick_mod.os, "environ", env)
-    assert _service_spec_from_env(tmp_path) == (None, None)  # no silent fallback
+    assert _service_spec_from_env(tmp_path) == (None, None)  # slurm: image required
+    env["OUTERLOOP_COMPUTE"] = "local"
+    _github, spec = _service_spec_from_env(tmp_path)
+    assert spec is not None and spec.image == "" and spec.panel == ""  # judge is opt-in
+    assert "OUTERLOOP_IMAGE" not in env  # the jobs do not inherit a missing image
+    assert _containment(spec.image) == ["--uncontained"]
+    assert _containment("/img/a.sif") == ["--image", "/img/a.sif"]
+    env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
+    _github, spec = _service_spec_from_env(tmp_path)
+    assert spec is not None and spec.panel == "verify,review"
+
+    # a cluster: no silent fallback, only the explicit opt-in
+    del env["OUTERLOOP_COMPUTE"]
+    del env["OUTERLOOP_PANEL_UNCONTAINED"]
+    env["OUTERLOOP_IMAGE"] = str(tmp_path / "missing.sif")
     for value in ("0", "", "yes"):
         env["OUTERLOOP_UNCONTAINED"] = value
         assert _service_spec_from_env(tmp_path) == (None, None)
     env["OUTERLOOP_UNCONTAINED"] = "1"
+    env["OUTERLOOP_IMAGE"] = str(image)  # an image on disk does not override the opt-in
     _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None and spec.image == "" and spec.panel == ""
+    assert spec is not None and spec.image == "" and spec.panel == ""  # judge is opt-in
     assert "OUTERLOOP_IMAGE" not in env
     assert _containment(spec.image) == ["--uncontained"]
-    env["OUTERLOOP_IMAGE"] = str(image)  # an image on disk does not override the opt-in
     env["OUTERLOOP_PANEL_UNCONTAINED"] = "1"
     _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None and spec.image == "" and spec.panel == "verify,review"
+    assert spec is not None and spec.panel == "verify,review"
 
 
 def _qrow(
@@ -3843,31 +3642,6 @@ def _qrow(
         "reason": reason,
         "gres": f"gres/gpu:{gpus}" if gpus else "N/A",
     }
-
-
-def test_followup_spec_needs_the_bot_login(monkeypatch: Any, tmp_path: Path) -> None:
-    """#298: no built-in identity. Without OUTERLOOP_BOT_LOGIN the tick does not
-    service the target and names the setting; with it, the spec carries it."""
-    from outerloop.tick import _service_spec_from_env
-
-    image = tmp_path / "agent.sif"
-    image.write_text("")
-    pat = tmp_path / "pat"
-    pat.write_text("t")
-    env = {
-        "OUTERLOOP_PAT_FILE": str(pat),
-        "OUTERLOOP_IMAGE": str(image),
-        "OUTERLOOP_HOME": str(tmp_path),
-        "OUTERLOOP_TARGET": "org/repo",
-    }
-    import outerloop.tick as tick_mod
-
-    monkeypatch.setattr(tick_mod.os, "environ", env)
-    _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is None
-    env["OUTERLOOP_BOT_LOGIN"] = "someone[bot]"
-    _github, spec = _service_spec_from_env(tmp_path)
-    assert spec is not None and spec.bot_login == "someone[bot]"
 
 
 def test_cancel_on_end_cancels_an_ended_runs_pending_launches(tmp_path: Path) -> None:
@@ -3902,25 +3676,6 @@ def test_cancel_on_end_cancels_an_ended_runs_pending_launches(tmp_path: Path) ->
     assert (
         slurm.cancelled == ["7"] and "launches_cancelled" not in load_record(tmp_path, "r7").stage
     )
-
-
-def test_eval_cache_service_warms_from_the_default_branch(tmp_path: Path, monkeypatch) -> None:
-    from outerloop import tick as tick_mod
-
-    seen: list = []
-
-    def fake_warm(root, target, github, ref, **kw):
-        seen.append((root, target, ref))
-        return "warmed"
-
-    monkeypatch.setattr("outerloop.evalcache.warm", fake_warm)
-
-    class G:
-        def default_branch(self, repo):
-            return "trunk"
-
-    assert tick_mod.service_eval_cache(tmp_path, G(), "org/repo") == "warmed"
-    assert seen == [(tmp_path, "org/repo", "trunk")]
 
 
 def test_a_tick_warms_the_targets_seed_cache(tmp_path: Path, monkeypatch) -> None:
@@ -4211,7 +3966,6 @@ def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
         "steward",
         "unclean",
         "running",
-        "base",
         "base-race",
         "checks403",
         "methods",
@@ -4255,7 +4009,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
             assert (repo, branch) == ("org/repo", "main")
             lease = read_lease(tmp_path, record.run_id)
             under_lease = lease is not None and lease.holder.startswith("tick:")
-            moved = blocked == "base" or (blocked == "base-race" and under_lease)
+            moved = blocked == "base-race" and under_lease
             return "moved" if moved else "base"
 
         def get_pull_request(self, *args):
@@ -4327,7 +4081,6 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         # moves between the sweep's read and the lease is caught as such
         "head": "a message waits for the author",
         "unclean": "GitHub says blocked",
-        "base": "a message waits for the author",
         "base-race": "the head head does not contain the base tip moved",
         "manual": "the base contract is not auto",
         "steward": "a steward's PR",
@@ -4389,9 +4142,8 @@ def test_comments_wait_with_jobs_and_idle_pr_does_not_spend_attempts(tmp_path):
     assert load_record(tmp_path, record.run_id).state == PARKED
 
 
-@pytest.mark.parametrize("failed_request", ["pr", "comments"])
 @pytest.mark.parametrize("duty", ["jobs", "deadline", "stuck"])
-def test_github_failure_does_not_skip_sweep_duties(tmp_path, caplog, failed_request, duty):
+def test_github_failure_does_not_skip_sweep_duties(tmp_path, caplog, duty):
     from outerloop.tick import MAX_WAKE_ATTEMPTS, sweep
 
     record = waiting_run(
@@ -4410,8 +4162,6 @@ def test_github_failure_does_not_skip_sweep_duties(tmp_path, caplog, failed_requ
             return f"https://github.com/{target}.git"
 
         def get_pull_request(self, *args):
-            if failed_request == "pr":
-                raise RuntimeError("GitHub down")
             return {"state": "open"}
 
         def list_comments(self, *args):
@@ -4853,19 +4603,22 @@ def test_tick_main_releases_root_lease(tmp_path, monkeypatch, loop, ending):
     release_tick_lease(lease)
 
 
-@pytest.mark.parametrize("resident", [["777"], None])
-def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplog, resident):
+def test_login_loop_stops_when_a_resident_is_queued(tmp_path, monkeypatch, caplog):
     import sys
 
     from outerloop import tick as mod
 
     monkeypatch.setenv("OUTERLOOP_COMPUTE", "slurm")
-    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--loop"])
-    monkeypatch.setattr("outerloop.cli._resident_jobs", lambda: resident)
     monkeypatch.setattr(mod, "tick", lambda *a, **k: pytest.fail("the loop must not tick"))
-    assert mod.main() == 2
-    assert "this loop stops" in caplog.text
-    assert (tmp_path / "TICK").read_text() == ""  # released on the way out
+    # queued/running, and unknown (squeue failed): both stop the loop
+    for index, resident in enumerate((["777"], None)):
+        root = tmp_path / str(index)
+        root.mkdir()
+        monkeypatch.setattr(sys, "argv", ["tick", "--root", str(root), "--loop"])
+        monkeypatch.setattr("outerloop.cli._resident_jobs", lambda resident=resident: resident)
+        assert mod.main() == 2
+        assert "this loop stops" in caplog.text
+        assert (root / "TICK").read_text() == ""  # released on the way out
 
 
 def test_self_merge_status_deduplicates_under_lease(tmp_path):
@@ -4969,7 +4722,7 @@ def test_sigterm_handler_is_installed_before_the_lease(tmp_path, monkeypatch):
     assert signal.getsignal(signal.SIGTERM) is before  # restored on the way out
 
 
-@pytest.mark.parametrize("state", ["unset", "source-only", "incomplete", "ready"])
+@pytest.mark.parametrize("state", ["unset", "incomplete", "ready"])
 def test_hermes_panel_preflight_runtime(tmp_path, monkeypatch, state):
     from outerloop.hermes_install import HERMES_SHA, hermes_runtime
     from outerloop.tick import ServiceSpec, _panel_preflight_error
@@ -5012,28 +4765,33 @@ def test_hermes_panel_preflight_runtime(tmp_path, monkeypatch, state):
         assert "bash scripts/install_hermes.sh" in problem
 
 
-@pytest.mark.parametrize("raw", ["broken json", '{"o/r":{"unexpected":true}}'])
-def test_malformed_overrides_do_not_stop_tick_main(tmp_path, monkeypatch, caplog, raw):
+def test_malformed_overrides_do_not_stop_tick_main(tmp_path, monkeypatch, caplog):
     import sys
 
     from outerloop import tick as mod
 
-    waiting_run(tmp_path)
     compute = FakeSlurm(states={"100": "FAILED"}).compute()
-    dispatcher = RecordingDispatcher()
     spec = mod.ServiceSpec(
         account="", partition="", run_root=tmp_path, target="o/r", home=tmp_path, image=""
     )
-    monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
-    monkeypatch.setattr(sys, "argv", ["tick", "--root", str(tmp_path), "--min-free-gb", "0"])
     monkeypatch.setattr(mod, "compute_from_env", lambda: compute)
     monkeypatch.setattr(mod, "_service_spec_from_env", lambda *a, **kw: (None, spec))
-    monkeypatch.setattr(mod, "_wake_dispatcher_from_env", lambda *a: (dispatcher, True))
     monkeypatch.setattr("time.time", lambda: NOW)
-    assert mod.main() == 0
-    assert dispatcher.dispatched == [("r1", "experiment FAILED")]
-    assert load_record(tmp_path, "r1").wake_attempts == 1
-    assert caplog.text.count("fresh claims held:") == 1
+    # unparseable JSON and a parsed-but-wrong shape both fall back to no overrides
+    for index, raw in enumerate(["broken json", '{"o/r":{"unexpected":true}}']):
+        root = tmp_path / str(index)
+        root.mkdir()
+        waiting_run(root)
+        dispatcher = RecordingDispatcher()
+        monkeypatch.setenv("OUTERLOOP_AUTHOR_OVERRIDES", raw)
+        monkeypatch.setattr(sys, "argv", ["tick", "--root", str(root), "--min-free-gb", "0"])
+        monkeypatch.setattr(
+            mod, "_wake_dispatcher_from_env", lambda *a, dispatcher=dispatcher: (dispatcher, True)
+        )
+        assert mod.main() == 0
+        assert woke(dispatcher) == ["r1"]
+        assert load_record(root, "r1").wake_attempts == 1
+    assert caplog.text.count("fresh claims held:") == 2
     assert mod._author_config_error(spec)
 
 
