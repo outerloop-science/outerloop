@@ -110,6 +110,7 @@ def test_self_report_skips_measurement_panel_and_compute(
             "credited": True,
             "outcome": "improved",
             "head_sha": result.candidate_sha,
+            "ruler": "",
         }
     ]
     assert evaluator.calls == [] and result.panel_rounds == 0

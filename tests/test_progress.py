@@ -128,6 +128,9 @@ def test_pending_roundtrip_and_rejection():
     assert parse_pending(record_pending(p)[p.path]) == p
     assert parse_pending(reject(p)[p.path]) is None
     assert LEADER_FILE not in record_pending(p) and LEADER_FILE not in reject(p)
+    # a field from a newer kernel is ignored, not a ledger read failure
+    newer = json.loads(record_pending(p)[p.path]) | {"added_later": "x"}
+    assert parse_pending(json.dumps(newer)) == p
 
 
 @pytest.mark.parametrize("direction,better,worse", [("max", 3.0, 1.0), ("min", 1.0, 3.0)])

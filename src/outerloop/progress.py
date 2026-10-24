@@ -6,7 +6,7 @@ import json
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -132,7 +132,12 @@ def parse_pending(content: str) -> PendingSubmission | None:
         raw = json.loads(content)
         if raw is None:
             return None
-        pending = PendingSubmission(**raw)
+        if not isinstance(raw, dict):
+            raise ValueError("not a record")
+        # Fields a newer kernel adds are ignored, so a release can add one
+        # without breaking the ledger read of the release before it.
+        known = {f.name for f in fields(PendingSubmission)}
+        pending = PendingSubmission(**{k: v for k, v in raw.items() if k in known})
         for field, value in asdict(pending).items():
             if field in {"baseline", "candidate", "min_delta", "min_delta_rel"}:
                 if type(value) not in (int, float) or not math.isfinite(value):

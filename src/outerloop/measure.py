@@ -17,9 +17,11 @@ phase flows straight through to the decision.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +38,37 @@ from outerloop.job_names import run_job_name
 from outerloop.orchestrator import EvalError
 
 log = logging.getLogger(__name__)
+
+# A container image is large and identical across measures in one process;
+# (path, size, mtime) says when a re-hash is actually needed.
+_image_digests: dict[tuple[str, int, int], str] = {}
+
+
+def image_digest(image: str) -> str:
+    """SHA-256 of the container image file, or "" when none is used/readable."""
+    if not image:
+        return ""
+    try:
+        stat = os.stat(image)
+        key = (image, stat.st_size, stat.st_mtime_ns)
+        if key not in _image_digests:
+            with open(image, "rb") as stream:
+                _image_digests[key] = hashlib.file_digest(stream, "sha256").hexdigest()
+        return _image_digests[key]
+    except OSError:
+        return ""
+
+
+def measured_image(image: str, eval_files: tuple[Path, ...]) -> str:
+    """The image digest(s) the measures ran under: those recorded at dispatch,
+    comma-joined when baseline and candidate differ, else the image's digest now."""
+    recorded = set()
+    for path in eval_files:
+        if path.name == "image-sha256":
+            with contextlib.suppress(OSError):
+                recorded.add(path.read_text().strip())
+    recorded.discard("")
+    return ",".join(sorted(recorded)) if recorded else image_digest(image)
 
 
 class MeasurementPending(Exception):
@@ -354,6 +387,22 @@ class DispatchedMeasurer:
     def _ev(self, m: Measure) -> Path:
         return self.run_dir / f"eval-{self._slot(m)}"
 
+    def result_files(self, measures: list[Measure]) -> tuple[Path, ...]:
+        """The eval result files the kernel reads, when they exist.
+
+        `read_eval_result` reads exit-code and stdout for the metric, and
+        stderr to explain a failure; provenance refs name the same files, plus
+        the image digest recorded at dispatch.
+        """
+        files: list[Path] = []
+        for m in measures:
+            ev = self._ev(m)
+            for name in ("exit-code", "stdout", "stderr", "image-sha256"):
+                path = ev / name
+                if path.exists():
+                    files.append(path)
+        return tuple(files)
+
     def _job_name(self, m: Measure) -> str:
         # A LIVENESS HINT, not a durable key: the cluster is asked "is this
         # measure's job live" by name. Slurm caps name length, so this hash is
@@ -505,6 +554,11 @@ class DispatchedMeasurer:
                 raise MeasurementPending(
                     (), capacity_wait=True, note="retry state could not be saved; parked uncharged"
                 ) from None
+        # recorded before submission: the image file may be replaced while the
+        # run parks, and a crash after submit must not lose the digest
+        digest = image_digest(self.image)
+        if digest:
+            (self._ev(m) / "image-sha256").write_text(digest)
         try:
             job_id = submit_batch(
                 state_root(self.run_dir),

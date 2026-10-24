@@ -424,7 +424,15 @@ def write_eval_job(
         task_dir.mkdir(parents=True, exist_ok=True)
         # a resubmitted eval must never be read as its predecessor: every prior
         # artifact — including a leftover extracted tree — goes before submission
-        for stale in ("exit-code", "stdout", "stderr", "setup.log", "submitted", "artifacts.log"):
+        for stale in (
+            "exit-code",
+            "stdout",
+            "stderr",
+            "setup.log",
+            "submitted",
+            "artifacts.log",
+            "image-sha256",
+        ):
             (task_dir / stale).unlink(missing_ok=True)
         for stale_node in task_dir.glob("node-[0-9]*"):  # a multi-node eval's per-node results
             stale_node.unlink(missing_ok=True)

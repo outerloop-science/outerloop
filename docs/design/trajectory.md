@@ -38,4 +38,12 @@ The chain detects internal edits and missing lines, but without a trusted
 external anchor cannot detect a rewritten chain or removal of its tail.
 Verification checks the event chain, not the contents of referenced artifacts.
 
-Tool calls, full measurement provenance and attestation are later steps.
+`measure` events carry provenance. They record the ledger's ruler digest (the
+measurement signature plus the non-solver tree entries, the value a pending
+submission also computes), the container image digest when one is configured,
+and refs to the evaluation result files the kernel read under the run
+directory. Self-reported measures record the ruler alone: they have no
+evaluation image or result files. A pending submission does not yet name the
+trajectory head: kernels before this one reject unknown pending fields, so the
+pending reader now ignores them, and a later release can add the field without
+breaking this one. Tool calls and attestation are later steps.

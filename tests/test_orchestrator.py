@@ -176,6 +176,41 @@ def test_improvement_end_to_end(tmp_path: Path) -> None:
     )
 
 
+def test_measure_event_records_ruler_image_and_result_refs(tmp_path: Path) -> None:
+    import hashlib
+
+    from outerloop.trajectory import read
+
+    evaluator = FakeEvaluator(values=[13.876, 13.10])
+    measurer, snapshot = _wire(evaluator, tmp_path)
+    image = tmp_path / "image.sif"
+    image.write_bytes(b"container image bytes")
+    measurer.image = str(image)
+    directory = run_dir(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    files = []
+    for name, body in (("candidate-exit-code", b"0"), ("candidate-stdout", b'{"v": 13.1}')):
+        path = directory / name
+        path.write_bytes(body)
+        files.append(path)
+
+    measurer.result_files = lambda measures: tuple(files)
+    run_climb(
+        tmp_path,
+        measurer=measurer,
+        snapshot=snapshot,
+        ruler_sha=lambda sha: f"ruler-{sha}",
+    )
+
+    event = next(e for e in read(directory) if e["type"] == "measure")
+    assert event["data"]["ruler"] == "ruler-cand1"
+    assert event["data"]["image_sha256"] == hashlib.sha256(image.read_bytes()).hexdigest()
+    assert event["refs"] == [
+        {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in files
+    ]
+
+
 def test_brief_carries_the_ledger_baseline_and_leaves_publishing_to_the_author(
     tmp_path: Path,
 ) -> None:

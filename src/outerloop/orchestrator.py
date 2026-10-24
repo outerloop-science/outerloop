@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from outerloop.containment import executable_roots, seatbelt_available, seatbelt_wrap
 from outerloop.image import apptainer_from_env
+from outerloop.trajectory import file_refs
 from outerloop.trajectory import record as record_event
 
 if TYPE_CHECKING:
@@ -575,6 +576,8 @@ class AttemptResult:
     # In-memory ending guard: rejected trees must never reach line snapshots.
     tree_rejected: bool = False
     provenance: str = "measured"
+    # the eval result files this decision read, for the measure event's refs
+    eval_files: tuple[Path, ...] = ()
 
     def report(self, config: RunConfig, redact_secrets: tuple[str, ...] = ()) -> str:
         lines = [
@@ -932,6 +935,8 @@ class MeasureOK:
     # how the baseline number was obtained when it was NOT measured beside
     # this candidate (`baseline: cached`) — surfaces on the credited result
     baseline_note: str = ""
+    # the eval result files this decision read, for the measure event's refs
+    eval_files: tuple[Path, ...] = ()
 
 
 def measure_and_decide(
@@ -974,6 +979,11 @@ def measure_and_decide(
         read_baseline_cache,
         write_baseline_cache,
     )
+
+    def result_files(measures: Sequence[object]) -> tuple[Path, ...]:
+        """The measurer's result files, when its backend writes them."""
+        fn = getattr(measurer, "result_files", None)
+        return tuple(fn(list(measures))) if callable(fn) else ()
 
     # Scope BEFORE measurement: an out-of-scope tree is never evaluated,
     # because the out-of-scope edit could be to the ruler itself.
@@ -1050,7 +1060,13 @@ def measure_and_decide(
     try:
         main = measurer.results(plan)
     except EvalError as exc:
-        return AttemptResult(outcome="eval-error", note=str(exc), run_seed=seed)
+        return AttemptResult(
+            outcome="eval-error",
+            note=str(exc),
+            run_seed=seed,
+            eval_files=result_files(plan),
+        )
+    main_files = result_files(plan)
 
     baseline_note = ""
     if cached is not None:
@@ -1084,6 +1100,7 @@ def measure_and_decide(
             baseline=baseline,
             candidate=candidate,
             run_seed=seed,
+            eval_files=main_files,
         )
     # The contract's OWN significance floor, when the benchmark declares one.
     # Same-seed pairing removes pool noise but not training stochasticity —
@@ -1109,13 +1126,19 @@ def measure_and_decide(
                 baseline=baseline,
                 candidate=candidate,
                 run_seed=seed,
+                eval_files=main_files,
             )
 
     # PHASE 2 — suite gate, only for a credited candidate whose diff touched
     # shared code. A second measure set (a second park for a dispatched
     # backend): an extra CPU wake, never a wasted GPU sibling eval.
     if not (siblings and shared_touched(measured_paths, contract)):
-        return MeasureOK(baseline=baseline, candidate=candidate, baseline_note=baseline_note)
+        return MeasureOK(
+            baseline=baseline,
+            candidate=candidate,
+            baseline_note=baseline_note,
+            eval_files=main_files,
+        )
 
     # every seeded sibling runs its pair under the ONE suite_seed, read through
     # its own seed var (mirrors the in-job gate).
@@ -1156,7 +1179,9 @@ def measure_and_decide(
             candidate=candidate,
             note=str(exc),
             run_seed=seed,
+            eval_files=main_files + result_files(sib_plan),
         )
+    sib_files = main_files + result_files(sib_plan)
 
     # Exact decimal gain avoids rounding an inclusive unlock boundary down.
     main_base, main_cand = Fraction(repr(baseline)), Fraction(repr(candidate))
@@ -1198,6 +1223,7 @@ def measure_and_decide(
             run_seed=seed,
             suite=suite,
             suite_seed=suite_seed,
+            eval_files=sib_files,
         )
 
     return MeasureOK(
@@ -1206,6 +1232,7 @@ def measure_and_decide(
         suite=suite,
         suite_seed=suite_seed,  # reached only on the suite path
         baseline_note=baseline_note,
+        eval_files=sib_files,
     )
 
 
@@ -1291,6 +1318,7 @@ def resume_attempt(
         suite_seed=outcome.suite_seed,
         candidate_sha=candidate_sha,
         note=outcome.baseline_note,
+        eval_files=outcome.eval_files,
     )
 
 
@@ -1378,6 +1406,9 @@ def attempt_once(
     sleeps_used: int = 0,
     gpu_hours_used: float = 0.0,
     tree_of: Callable[[str], str] | None = None,
+    # the ledger's ruler digest for a measured sha (git work stays with the
+    # caller, like tree_of); the measure event records it as provenance
+    ruler_sha: Callable[[str], str] | None = None,
     judged: tuple[str, str, AttemptResult] | None = None,
     on_replies: Callable[[tuple[dict, ...]], object] | None = None,
     on_stop: Callable[[SessionResult], AttemptResult] | None = None,
@@ -1432,6 +1463,20 @@ def attempt_once(
     contract = load_contract(contract_text, config.target)
     bench = contract.benchmark(config.benchmark)
     spec = spec or author_spec()
+
+    def _ruler(sha: str) -> str:
+        """Best-effort provenance: a git read must never fail the climb."""
+        try:
+            return ruler_sha(sha) if ruler_sha is not None else ""
+        except Exception as exc:
+            log.warning("could not compute ruler identity: %s", exc)
+            return ""
+
+    def _image_sha(eval_files: tuple[Path, ...]) -> str:
+        from outerloop.measure import measured_image
+
+        return measured_image(str(getattr(measurer, "image", "") or ""), eval_files)
+
     leg_start_seq = inbox_seq  # the cursor before this leg delivers anything
     if not spec.execution.can_execute:
         raise ValueError("attempt_once runs an editing role; the spec must allow execution")
@@ -1726,6 +1771,7 @@ def attempt_once(
     suite: tuple[SuiteMeasurement, ...] = ()
     suite_seed_ran = 0
     baseline_note = ""
+    eval_files: tuple[Path, ...] = ()
     measured: tuple[str, ...] = ()
     refused_once = False
     # A session that stops without staging anything (an empty reply, a line of
@@ -2394,6 +2440,7 @@ def attempt_once(
                     "credited": passed,
                     "outcome": "improved" if passed else "no-improvement",
                     "head_sha": candidate_sha,
+                    "ruler": _ruler(candidate_sha),
                 },
             )
             return AttemptResult(
@@ -2455,17 +2502,26 @@ def attempt_once(
                 )
                 # a scope refusal returns before measuring; a failed eval was attempted
                 if verdict_outcome != "scope-violation":
+                    data = {
+                        "baseline": outcome.baseline,
+                        "candidate": outcome.candidate,
+                        "metric": bench.metric,
+                        "credited": verdict_outcome == "improved",
+                        "outcome": verdict_outcome,
+                        "head_sha": candidate_sha,
+                        "ruler": _ruler(candidate_sha),
+                    }
+                    digest = _image_sha(outcome.eval_files)
+                    if digest:
+                        data["image_sha256"] = digest
+                    # a cached baseline was not measured here: the digest is the candidate's
+                    if isinstance(outcome, MeasureOK) and outcome.baseline_note:
+                        data["baseline_note"] = outcome.baseline_note
                     record_event(
                         inbox_dir,
                         "measure",
-                        {
-                            "baseline": outcome.baseline,
-                            "candidate": outcome.candidate,
-                            "metric": bench.metric,
-                            "credited": verdict_outcome == "improved",
-                            "outcome": verdict_outcome,
-                            "head_sha": candidate_sha,
-                        },
+                        data,
+                        refs=file_refs(inbox_dir, *outcome.eval_files),
                     )
         except MeasurementPending as pending:
             # PARK 2 (dispatched candidate/suite, after the session): the wake
@@ -2632,6 +2688,7 @@ def attempt_once(
         suite = outcome.suite
         suite_seed_ran = outcome.suite_seed
         baseline_note = outcome.baseline_note  # cached-baseline provenance, to the report
+        eval_files = outcome.eval_files
 
         if panel_runner is None:
             break
@@ -2704,6 +2761,7 @@ def attempt_once(
         panel_rounds=panel_reads,
         panel_blocking_open=panel_blocking_open,
         panel_degraded=panel_degraded,
+        eval_files=eval_files,
     )
 
 

@@ -50,6 +50,25 @@ def display_leader(github: Forge, target: str) -> dict[str, LeaderEntry]:
         return {}
 
 
+def ruler_identity(
+    ws: Workspace, contract: Contract, bench: Benchmark, measured_sha: str
+) -> tuple[str, str]:
+    """The ledger's ruler digest and measurement signature for a measured tree.
+
+    Ruler identity includes harness contents, not just its command. Solver
+    edits do not change it; stewardship edits do, even with the same contract.
+    """
+    signature = json.dumps(bench.measurement_signature(), separators=(",", ":"))
+    ruler_files = []
+    for entry in ws.git("ls-tree", "-rz", measured_sha).split("\0"):
+        if entry:
+            _, path = entry.split("\t", 1)
+            if not steward_out_of_scope([path], contract):
+                ruler_files.append(entry)
+    ruler = hashlib.sha256((signature + "\0".join(sorted(ruler_files))).encode()).hexdigest()
+    return ruler, signature
+
+
 def measurement_pending(
     ws: Workspace,
     contract: Contract,
@@ -66,16 +85,7 @@ def measurement_pending(
     kind: str,
     provenance: str = "measured",
 ) -> PendingSubmission:
-    signature = json.dumps(bench.measurement_signature(), separators=(",", ":"))
-    # Ruler identity includes harness contents, not just its command. Solver
-    # edits do not change it; stewardship edits do, even with the same contract.
-    ruler_files = []
-    for entry in ws.git("ls-tree", "-rz", measured_sha).split("\0"):
-        if entry:
-            _, path = entry.split("\t", 1)
-            if not steward_out_of_scope([path], contract):
-                ruler_files.append(entry)
-    ruler = hashlib.sha256((signature + "\0".join(sorted(ruler_files))).encode()).hexdigest()
+    ruler, signature = ruler_identity(ws, contract, bench, measured_sha)
     return PendingSubmission(
         bench.name,
         bench.metric,

@@ -89,6 +89,27 @@ def test_first_pass_dispatches_all_and_parks(tmp_path):
     assert exc.value.afterany() == "afterany:101:102"
 
 
+def test_dispatch_records_the_image_it_ran_under(tmp_path):
+    import hashlib
+
+    from outerloop.measure import measured_image
+
+    image = tmp_path / "img.sif"
+    image.write_bytes(b"old image")
+    m = _measurer(tmp_path, [])
+    m.image = str(image)
+    with pytest.raises(MeasurementPending):
+        m.results(_measures())
+    base, cand = _measures()
+    _land(m, base, 0.50)
+    _land(m, cand, 0.61)
+    image.write_bytes(b"new image, same path")  # replaced while the run parked
+    files = m.result_files(_measures())
+    assert {p.name for p in files} == {"exit-code", "stdout", "image-sha256"}
+    old = hashlib.sha256(b"old image").hexdigest()
+    assert measured_image(str(image), files) == old
+
+
 def test_resume_reads_completed_without_resubmitting(tmp_path):
     submitted: list = []
     m = _measurer(tmp_path, submitted)

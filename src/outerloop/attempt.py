@@ -89,10 +89,11 @@ from outerloop.ledger_events import (
     measurement_pending,
     observe_target,
     queue_pending,
+    ruler_identity,
 )
 from outerloop.limits import bound_limits, capped_limits, clamp_bound_limits, effective_limits
 from outerloop.markers import has_marker, marker
-from outerloop.measure import DispatchedMeasurer, DispatchSettings
+from outerloop.measure import DispatchedMeasurer, DispatchSettings, measured_image
 from outerloop.orchestrator import (
     MAX_REPORT_BODY,
     AttemptResult,
@@ -164,6 +165,16 @@ def _pr_number(pr_url: str) -> int:
 
 
 log = logging.getLogger(__name__)
+
+
+def _ruler_provenance(ws: Workspace, contract: Contract, bench: Benchmark, sha: str) -> str:
+    """Best-effort ledger ruler digest; a git read must not fail a wake."""
+    try:
+        return ruler_identity(ws, contract, bench, sha)[0]
+    except Exception as exc:
+        log.warning("could not compute ruler identity: %s", exc)
+        return ""
+
 
 # Where a climb job reads its keys unless the CLI flags say otherwise. The
 # tick preflights the panel key (and compares it against the author key —
@@ -3369,17 +3380,26 @@ def _resume_run(
     # more experiments, or concludes — instead of being decided by policy here.
     # Falls back to the plain-finish behavior (negative terminal / draft PR)
     # when the session cannot be resumed.
+    measure_data = {
+        "baseline": result.baseline,
+        "candidate": result.candidate,
+        "metric": bench.metric,
+        "credited": result.outcome == "improved",
+        "outcome": result.outcome,
+        "head_sha": candidate_sha,
+        "ruler": _ruler_provenance(ws, contract, bench, candidate_sha),
+    }
+    image_sha256 = measured_image(str(getattr(measurer, "image", "") or ""), result.eval_files)
+    if image_sha256:
+        measure_data["image_sha256"] = image_sha256
+    if result.outcome == "improved" and result.note:
+        # resume_attempt carries the cached-baseline note here on a credit
+        measure_data["baseline_note"] = result.note
     record_event(
         run_dir,
         "measure",
-        {
-            "baseline": result.baseline,
-            "candidate": result.candidate,
-            "metric": bench.metric,
-            "credited": result.outcome == "improved",
-            "outcome": result.outcome,
-            "head_sha": candidate_sha,
-        },
+        measure_data,
+        refs=file_refs(run_dir, *result.eval_files),
     )
     submitted_park = bool(stage.get("submitted"))
     if stage.get("panel_skip"):
@@ -5316,6 +5336,10 @@ def live_attempt(
 
         parked: RunParked | None = None
         kept_ref = ""  # the ONE candidate snapshot ref that must outlive a park
+
+        def ruler_sha(sha: str) -> str:
+            return _ruler_provenance(ws, contract, _bench, sha)
+
         try:
             # the last-known score orients the brief only; the gate re-measures
             # both sides after the session, so None (a first run) is fine.
@@ -5365,6 +5389,7 @@ def live_attempt(
                     else None
                 ),
                 tree_of=lambda sha: ws.git("rev-parse", f"{sha}^{{tree}}").strip(),
+                ruler_sha=ruler_sha,
             )
         except EndpointUnavailable as exc:
             # Reuse a jobless capacity park; its first wake starts the author.
