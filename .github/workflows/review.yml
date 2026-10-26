@@ -71,5 +71,8 @@ jobs:
       hermes_provider: openai
       model: gpt-5.6-terra
       opinion_label: terra
+      # a maintainer's review label approves a fork PR; the fork's head is
+      # never checked out, but its diff reaches the model
+      allow_labeled_forks: true
     secrets:
       openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
