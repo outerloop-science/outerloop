@@ -1,4 +1,10 @@
-"""Run the pinned Hermes CLI unchanged, retaining its reported session evidence.
+"""Run the pinned Hermes CLI, retaining its reported session evidence.
+
+The one behavior change is the author's effort level. `run_agent.main` builds
+its agent without a reasoning config, so the `agent.reasoning_effort` the
+harness writes to config.yaml would never reach a request. When the harness
+sets OUTERLOOP_HERMES_EFFORT, the agent gets the reasoning config Hermes's own
+CLI would build from that level. Unset, nothing changes.
 
 This file runs with Hermes's Python, without an outerloop installation.
 """
@@ -17,6 +23,19 @@ def main() -> None:
     sys.path.insert(0, repo)
     import run_agent
     from agent.legacy_cli import main as cli_main
+
+    if effort := os.environ.get("OUTERLOOP_HERMES_EFFORT", ""):
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning = parse_reasoning_effort(effort)
+        original_init = run_agent.AIAgent.__init__
+
+        def init(agent: Any, *args: Any, **kwargs: Any) -> None:
+            if kwargs.get("reasoning_config") is None:
+                kwargs["reasoning_config"] = reasoning
+            original_init(agent, *args, **kwargs)
+
+        run_agent.AIAgent.__init__ = init
 
     original = run_agent.AIAgent.run_conversation
     root_agent: Any = None

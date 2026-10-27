@@ -90,6 +90,25 @@ def default_claude_model() -> str:
     return model
 
 
+# The effort levels all three author harnesses accept: Claude Code's
+# `--effort`, Codex's `model_reasoning_effort` and Hermes's
+# `agent.reasoning_effort`.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def author_effort(env: Mapping[str, str] | None = None) -> str:
+    """The author's effort level from OUTERLOOP_AUTHOR_EFFORT, for any backend.
+    Unset or blank keeps the harness's own default. Raises ValueError for a
+    value outside EFFORT_LEVELS. Judges and the steward never read it."""
+    value = (os.environ if env is None else env).get("OUTERLOOP_AUTHOR_EFFORT", "")
+    value = value.strip().lower()
+    if value and value not in EFFORT_LEVELS:
+        raise ValueError(
+            f"OUTERLOOP_AUTHOR_EFFORT must be one of {', '.join(EFFORT_LEVELS)} (got {value!r})"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class SessionResult:
     """What happened in one session — everything the orchestrator needs to
@@ -657,6 +676,9 @@ class ClaudeCodeHarness:
     # ignored when set. Contained sessions get the ADC file bind-mounted.
     vertex: VertexConfig | None = None
     endpoint: EndpointProfile | None = None
+    # `--effort` level; "" keeps Claude Code's default. Only the author sets it
+    # (OUTERLOOP_AUTHOR_EFFORT), so judges keep their default depth.
+    effort: str = ""
 
     CONTAINER_CLAUDE = "/opt/agent/claude"
     CONTAINER_ADC = "/opt/agent/adc.json"
@@ -706,6 +728,7 @@ class ClaudeCodeHarness:
             "--permission-mode",
             permission_mode,
             *([("--safe-mode" if oauth else "--bare")] if self.bare else []),
+            *(["--effort", self.effort] if self.effort else []),
             *self.extra_args,
         ]
         if resume_session_id:
@@ -1173,6 +1196,9 @@ class CodexHarness:
     # (the deployment's runner is the boundary)
     container_image: str = ""
     apptainer_binary: str = field(default_factory=apptainer_from_env)
+    # `model_reasoning_effort`; "" keeps Codex's default. Only the author sets
+    # it (OUTERLOOP_AUTHOR_EFFORT).
+    effort: str = ""
     # in-container path the host codex binary is bound to (bind-from-host, like
     # ClaudeCodeHarness.CONTAINER_CLAUDE — the image stays codex-free, and codex
     # is updated by swapping one host binary, no rebuild). A bare class attribute
@@ -1399,6 +1425,8 @@ class CodexHarness:
         kernel_owned: tuple[str, ...] = ("-c", "features.multi_agent=false")
         if not codex_web_search(bool(self.endpoint)):
             kernel_owned += ("-c", 'web_search="disabled"')
+        if self.effort:
+            kernel_owned += ("-c", f"model_reasoning_effort={json.dumps(self.effort)}")
         codex_argv = _codex_command(
             self.CONTAINER_CODEX if self.container_image else self.binary,
             self.model,
@@ -1682,6 +1710,9 @@ class HermesHarness:
     apptainer_binary: str = field(default_factory=apptainer_from_env)
 
     resume_max_chars: int | None = None
+    # `agent.reasoning_effort`; "" keeps Hermes's default. Only the author sets
+    # it (OUTERLOOP_AUTHOR_EFFORT).
+    effort: str = ""
 
     @capture_session("hermes")
     def run(
@@ -1749,6 +1780,8 @@ class HermesHarness:
                         f"    key_env: {json.dumps(self.key_env)}\n"
                         "    api_mode: chat_completions\n"
                     )
+                if self.effort:
+                    config_lines.append(f"agent:\n  reasoning_effort: {json.dumps(self.effort)}\n")
                 if self.approvals_deny:
                     config_lines.append("approvals:\n  deny:\n")
                     config_lines += [f'    - "{glob}"\n' for glob in self.approvals_deny]
@@ -1812,12 +1845,18 @@ class HermesHarness:
             env = session_env(self.api_key, self.key_env, session_home)
             env["TERMINAL_CWD"] = str(workspace.resolve())
             env["OUTERLOOP_CAPTURE_ID"] = capture_id
+            if self.effort:
+                # run_agent.main builds its agent without the config's
+                # reasoning_effort; hermes_capture applies it (see there)
+                env["OUTERLOOP_HERMES_EFFORT"] = self.effort
             if self.container_image:
                 # --cleanenv drops the host env except APPTAINERENV_*: the key
                 # travels via the environment, never argv
                 env[f"APPTAINERENV_{self.key_env}"] = env[self.key_env]
                 env["APPTAINERENV_TERMINAL_CWD"] = env["TERMINAL_CWD"]
                 env["APPTAINERENV_OUTERLOOP_CAPTURE_ID"] = capture_id
+                if self.effort:
+                    env["APPTAINERENV_OUTERLOOP_HERMES_EFFORT"] = self.effort
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).

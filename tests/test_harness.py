@@ -18,6 +18,7 @@ from outerloop.harness import (
     ClaudeCodeHarness,
     CodexHarness,
     SessionResult,
+    author_effort,
     budget_exhausted,
     outage,
     redact,
@@ -163,6 +164,32 @@ def test_argv_carries_the_controls(tmp_path: Path) -> None:
     assert "--max-turns 7" in argv
     assert "--output-format json" in argv
     assert "--permission-mode acceptEdits" in argv
+
+
+@pytest.mark.parametrize("effort", ["", "low"])
+def test_effort_reaches_argv_only_when_set(tmp_path: Path, effort: str) -> None:
+    run_session(tmp_path, effort=effort)
+    argv = seen(tmp_path, "seen_argv").split()
+    assert ("--effort" in argv) is bool(effort)
+    if effort:
+        assert argv[argv.index("--effort") + 1] == effort
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({}, ""),
+        ({"OUTERLOOP_AUTHOR_EFFORT": " "}, ""),
+        ({"OUTERLOOP_AUTHOR_EFFORT": " XHigh "}, "xhigh"),
+    ],
+)
+def test_author_effort_reads_the_setting(env: dict[str, str], expected: str) -> None:
+    assert author_effort(env) == expected
+
+
+def test_author_effort_refuses_an_unknown_level() -> None:
+    with pytest.raises(ValueError, match="OUTERLOOP_AUTHOR_EFFORT must be one of"):
+        author_effort({"OUTERLOOP_AUTHOR_EFFORT": "minimal"})
 
 
 def test_brief_travels_on_stdin_never_argv(tmp_path: Path) -> None:

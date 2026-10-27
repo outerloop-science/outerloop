@@ -254,6 +254,57 @@ def test_exact_client_configuration_at_process_boundary(
 
 
 @pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
+@pytest.mark.parametrize("effort", ["", "low"])
+def test_author_effort_reaches_each_backend(
+    profile: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    effort: str,
+) -> None:
+    seen: dict[str, Any] = {}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(harness_mod, "hermes_ready", lambda _: True)
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs: Any):
+            seen.update(argv=command, env=kwargs["env"])
+            path = Path(kwargs["env"]["HOME"]) / ".hermes/config.yaml"
+            if path.is_file():
+                seen["config"] = yaml.safe_load(path.read_text())
+
+        def communicate(self, **kwargs: Any) -> tuple[str, str]:
+            return '{"type":"result","subtype":"success","result":"done"}', ""
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", Process)
+    harness = build_harness(
+        "ignored-key",
+        author_spec(),
+        backend=backend,
+        endpoint="local",
+        binary="/opt/agent-cli",
+        hermes_repo=tmp_path / "hermes",
+        effort=effort,
+    )
+    harness.run("brief", workspace)
+    argv, env = seen["argv"], seen["env"]
+    if backend == "claude":
+        assert (argv[argv.index("--effort") + 1] == "low") if effort else "--effort" not in argv
+    elif backend == "codex":
+        setting = 'model_reasoning_effort="low"'
+        assert (setting in argv) is bool(effort)
+        if effort:  # kernel-owned: after the operator's own -c settings
+            assert argv.index(setting) > argv.index("features.multi_agent=false")
+    else:
+        agent = seen["config"].get("agent", {})
+        assert agent.get("reasoning_effort") == (effort or None)
+        assert env.get("OUTERLOOP_HERMES_EFFORT") == (effort or None)
+
+
+@pytest.mark.parametrize("backend", ["claude", "codex", "hermes"])
 def test_reviewer_endpoint(
     profile: dict[str, str], monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:

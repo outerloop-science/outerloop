@@ -98,6 +98,7 @@ def build_harness(
     hermes_repo: Path | None = None,
     hermes_provider: str = "",
     endpoint: str = "",
+    effort: str = "",
 ) -> Harness:
     """Construct the harness for any role on any backend — the ONE deployment
     wiring (`spec.tools` → native flags, `spec.budget` → turns/walltime,
@@ -118,7 +119,9 @@ def build_harness(
     Containment is NOT decided here: pass `container_image` where the
     deployment has a jail (the cluster), pass none where the runner itself is
     the ephemeral boundary (CI). The tokenless split keeps credentials out of
-    the session either way."""
+    the session either way. `effort` is each backend's own reasoning-effort
+    setting (`--effort`, `model_reasoning_effort`, `agent.reasoning_effort`);
+    callers pass it for the author only."""
     model, profile = resolve_endpoint(model or "", backend, endpoint)
     if profile:
         api_key = profile.key()
@@ -135,6 +138,7 @@ def build_harness(
             timeout_s=spec.budget.walltime_s,
             container_image=container_image,
             extra_args=(*codex_extra_args, *web),
+            effort=effort,
         )
     if backend == "hermes":
         if hermes_repo is None:
@@ -165,6 +169,7 @@ def build_harness(
             enabled_toolsets=enabled,
             disabled_toolsets=tuple(t for t in _HERMES_TOOLSETS if t not in enabled),
             container_image=container_image,
+            effort=effort,
         )
     if backend != "claude":
         raise ValueError(f"unknown backend: {backend!r}")
@@ -185,6 +190,7 @@ def build_harness(
         # role on every CLI flips together and the API key stays the fallback
         vertex=None if profile else vertex_from_env(),
         endpoint=profile,
+        effort=effort,
     )
 
 

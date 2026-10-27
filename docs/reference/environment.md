@@ -45,6 +45,7 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_IDENTITY`](#outerloop_identity) | `personal` when the kernel posts as you | unset |
 | [`OUTERLOOP_AUTHOR_BACKEND`](#outerloop_author_backend) | the author's harness | `claude` |
 | [`OUTERLOOP_AUTHOR_MODEL`](#outerloop_author_model) | the author's model | unset |
+| [`OUTERLOOP_AUTHOR_EFFORT`](#outerloop_author_effort) | the author's effort level | unset |
 | [`OUTERLOOP_CLAUDE_MODEL`](#outerloop_claude_model) | model for every Claude role | unset |
 | [`OUTERLOOP_AUTHOR_ENDPOINT`](#outerloop_author_endpoint) | endpoint profile for the author | unset |
 | [`OUTERLOOP_AUTHOR_OVERRIDES`](#outerloop_author_overrides) | per-target author selection | unset |
@@ -304,6 +305,22 @@ The author's model, overriding `OUTERLOOP_CLAUDE_MODEL` for the author
 only. A Hermes author needs it, in your provider's model ID.
 
 - Default: unset
+
+### `OUTERLOOP_AUTHOR_EFFORT`
+
+The effort level the author runs at, on every backend: Claude Code's
+`--effort`, Codex's `model_reasoning_effort`, or Hermes's
+`agent.reasoning_effort`. Lower levels spend fewer tokens per turn. Panel
+judges and the steward ignore it. An author on an endpoint profile gets it
+too, so set it there only when the server accepts the backend's effort
+parameter. Hermes is the exception: it sends a top-level `reasoning_effort`
+field and drops the field for the rest of the session if the server rejects
+it. Start, the tick and each wake refuse a value outside the list. Unlike
+the author's model, it is not stored in the run's record, so a parked run
+picks up a change at its next wake.
+
+- Values: `low`, `medium`, `high`, `xhigh` or `max`
+- Default: unset, which keeps each harness's own default
 
 ### `OUTERLOOP_CLAUDE_MODEL`
 

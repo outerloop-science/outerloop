@@ -323,6 +323,47 @@ def test_hermes_wrapper_keeps_reported_usage_and_full_messages(tmp_path, monkeyp
     assert result.tokens["output_tokens"] == 12
 
 
+@pytest.mark.parametrize("effort", ["", "low"])
+def test_hermes_wrapper_applies_the_author_effort(tmp_path, monkeypatch, effort):
+    import sys
+    from types import ModuleType
+
+    from outerloop import hermes_capture
+
+    built: list[object] = []
+
+    class Agent:
+        model = "test-model"
+
+        def __init__(self, **kwargs):
+            built.append(kwargs.get("reasoning_config"))
+
+        def run_conversation(self, query):
+            return {"messages": [], "completed": True}
+
+    module = ModuleType("run_agent")
+    module.__dict__["AIAgent"] = Agent
+    module.__dict__["main"] = lambda: Agent(model="test-model").run_conversation("prompt")
+    cli = ModuleType("agent.legacy_cli")
+    cli.__dict__["main"] = lambda run: run() and 0
+    constants = ModuleType("hermes_constants")
+    constants.__dict__["parse_reasoning_effort"] = lambda level: {"enabled": True, "effort": level}
+    monkeypatch.setitem(sys.modules, "run_agent", module)
+    monkeypatch.setitem(sys.modules, "agent", ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.legacy_cli", cli)
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OUTERLOOP_CAPTURE_ID", "session-1-invocation-1")
+    if effort:
+        monkeypatch.setenv("OUTERLOOP_HERMES_EFFORT", effort)
+    else:
+        monkeypatch.delenv("OUTERLOOP_HERMES_EFFORT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["capture.py", str(tmp_path)])
+    with pytest.raises(SystemExit):
+        hermes_capture.main()
+    assert built == [{"enabled": True, "effort": "low"} if effort else None]
+
+
 def test_redaction_at_cap_boundary_and_issued_tokens(tmp_path, monkeypatch):
     import outerloop.appauth as appauth
 
