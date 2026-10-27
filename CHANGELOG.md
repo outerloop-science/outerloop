@@ -6,6 +6,27 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-26
+
+### Upgrading
+
+No operator action is needed before upgrading; details in each entry.
+
+What changes for runs in flight: runs started before the upgrade have no
+trajectory until their next recorded event, and their earlier session events
+count as author sessions. The first run to end creates the attestation key
+`trajectory_attest.key`, owner-only, beside the operator settings file. On
+macOS without an image, sessions, evaluations and panel lenses now run under
+the Seatbelt profile, which allows outbound connections only to TCP port 443,
+DNS and local ports.
+
+Before rolling back: if you switched the author to a Claude subscription
+token, switch back to an API key, since older kernels send the token as
+`ANTHROPIC_API_KEY`. Older kernels ignore `trajectory.jsonl`, the attestation
+key and `OUTERLOOP_AUTHOR_EFFORT`, and pending ledger records are unchanged.
+
+### Changes
+
 - `OUTERLOOP_AUTHOR_EFFORT` sets the author's effort level (`low`, `medium`, `high`, `xhigh` or `max`) on every backend: Claude Code's `--effort` (the pinned 2.1.285 has the flag), Codex's `model_reasoning_effort` as a kernel-owned `-c` setting, and Hermes's `agent.reasoning_effort`. For Hermes the setting is written to the seeded `config.yaml`, and the capture wrapper also hands it to the agent, because `run_agent.main` builds its agent without a reasoning config and would otherwise ignore it. Unset keeps each harness's default. Panel judges and the steward ignore it, so a cheaper author does not change how its work is reviewed. Start, the tick and each wake refuse an unknown level. The setting is read when each session starts and is not stored in run records.
 - Run endings append one `attest` trajectory event: an HMAC-SHA256 over the run id and chain head with a deployment key created owner-only beside the operator settings file, and `outerloop trajectory --verify` reports `attested` or `attestation mismatch`. Older kernels ignore the event; no ledger or PR-body change.
 - The PR body gains a report-only Number check that lists values in the author's report matching no `measure` event or Experiments result when rounded to the report's decimals; nothing is blocked and no trajectory event is added.
