@@ -6,6 +6,10 @@ Versions follow [SemVer](https://semver.org).
 
 ## [Unreleased]
 
+### Changed
+
+- `merge: auto` merges a blessed head even while its author is still at work. Before, the merge waited until the run had no jobs in flight and no unread messages, so an author that kept revising on each panel round's advisory findings held its own cleared pull request open for days. A human's comment still holds the merge until the author has read it. Merging ends the run and cancels its jobs, as before; further work comes back as a new pull request.
+
 ## [0.6.0] - 2026-10-26
 
 ### Upgrading

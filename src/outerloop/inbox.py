@@ -925,3 +925,10 @@ def gather_github_messages(
 
 def wake_pending(directory: Path, record: RunRecord) -> bool:
     return any(not m.payload.get("context_only") for m in pending(directory, record.inbox_seq))
+
+
+def human_pending(directory: Path, record: RunRecord) -> bool:
+    return any(
+        m.source == "human" and not m.payload.get("context_only")
+        for m in pending(directory, record.inbox_seq)
+    )

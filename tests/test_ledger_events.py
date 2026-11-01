@@ -569,7 +569,7 @@ def test_sweep_rebless_refusals(tmp_path, rebless_run, monkeypatch, blocked):
     elif blocked == "message":
         append(
             run_dir(tmp_path, r.run_id),
-            Message(0, "note", "kernel", "org/repo#1", 2, "note", {"text": "feedback"}),
+            Message(0, "comment", "human", "org/repo#1", 2, "comment:1", {"body": "why?"}),
         )
     else:
         reason = {
