@@ -154,7 +154,9 @@ vouches for the measurement, and what taste the agents carry.
 
 - `merge` controls the end of a clean pull request. The default, `manual`,
   waits for a human. `merge: auto` lets the kernel merge a clean pull request
-  at the blessed head. Set branch protection with your repo's own required
+  at the blessed head, even while its author is still running experiments;
+  only an unread human comment holds it. Merging ends the run and cancels its
+  jobs. Set branch protection with your repo's own required
   checks under strict up-to-date enforcement and no required review.
 - `verification` controls who measures. The default, `gate`, is the kernel's
   own measurement, suite checks and panel. `self_report` accepts an

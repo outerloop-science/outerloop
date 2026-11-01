@@ -491,6 +491,11 @@ def render(brief: SessionBrief) -> str:
                     "Stopping without a submit ends unmeasured; with a PR open it returns "
                     "to review. An edit in review is measured and pushed only on submit. "
                     'Withdraw a superseded open PR with `stop --withdraw "<reason>"`.',
+                    "When the contract sets merge to auto, the kernel merges a PR as soon "
+                    "as its head is credited with no blocking finding, without waiting for "
+                    "you; advisory "
+                    "findings never hold it. The merge ends this run and cancels its jobs, "
+                    "so work you want on top of it belongs in a later PR.",
                 ]
                 if brief.verification == "gate"
                 else []

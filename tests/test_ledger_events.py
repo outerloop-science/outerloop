@@ -344,7 +344,7 @@ def test_sweep_waits_for_deferred_reset_before_observing_solvers(tmp_path, monke
     ):
         monkeypatch.setattr(function, lambda *args, name=function: polled.append(name))
     sweep(tmp_path, FakeSlurm().compute(), RecordingDispatcher(), 3, github=github)
-    assert len(polled) == 6
+    assert len(polled) == 4 and "outerloop.tick._merge_blessed_pr" not in polled
     assert LEDGER_RETRY in load_record(tmp_path, reset_record.run_id).stage
     assert not fake.ledger_writes
 
@@ -569,7 +569,7 @@ def test_sweep_rebless_refusals(tmp_path, rebless_run, monkeypatch, blocked):
     elif blocked == "message":
         append(
             run_dir(tmp_path, r.run_id),
-            Message(0, "note", "kernel", "org/repo#1", 2, "note", {"text": "feedback"}),
+            Message(0, "comment", "human", "org/repo#1", 2, "comment:1", {"body": "why?"}),
         )
     else:
         reason = {
@@ -637,12 +637,12 @@ def test_refused_merge_keeps_the_saved_blessing_for_the_next_tick(
     assert load_record(tmp_path, r.run_id).state == ENDED
 
 
-def test_same_tick_merge_observation_respects_ledger_hold(tmp_path, rebless_run, monkeypatch):
+def test_merge_waits_for_ledger_hold(tmp_path, rebless_run, monkeypatch):
     r, fake, merges, _bodies = rebless_run
     save_record(tmp_path, replace(r, stage={**r.stage, LEDGER_RETRY: {"waiting": True}}), 2)
     monkeypatch.setattr("outerloop.ledger_events.retry_pending", lambda root, r, *a: r)
     run_rebless_sweep(tmp_path, fake)
-    assert merges == [1]
+    assert merges == []
     assert load_record(tmp_path, r.run_id).state == PARKED
     assert LEADER_FILE not in fake.ledger_files
     r = load_record(tmp_path, r.run_id)

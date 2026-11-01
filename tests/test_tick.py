@@ -3958,8 +3958,8 @@ def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
     "blocked",
     [
         "",
-        "message",
-        "job",
+        "busy",
+        "comment",
         "lease",
         "draft",
         "head",
@@ -3979,7 +3979,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
 
     record = waiting_run(
         tmp_path,
-        experiment_job_id="100" if blocked == "job" else "",
+        experiment_job_id="100" if blocked == "busy" else "",
         deadline=NOW + 1000,
         pr_url="https://github.com/org/repo/pull/9",
         auto_blessed_head="head",
@@ -3988,10 +3988,16 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
     )
     if blocked == "running":
         save_record(tmp_path, replace(record, state=RUNNING), NOW)
-    if blocked == "message":
+    if blocked == "busy":
+        # an author still at work (a job in flight, a verdict unread) does not hold a cleared head
         append(
             run_dir(tmp_path, record.run_id),
             Message(0, "note", "kernel", "org/repo#9", NOW, "note", {"text": "feedback"}),
+        )
+    if blocked == "comment":
+        append(
+            run_dir(tmp_path, record.run_id),
+            Message(0, "comment", "human", "org/repo#9", NOW, "comment:1", {"body": "why?"}),
         )
     if blocked == "lease":
         acquire_lease(tmp_path, record.run_id, "wake", "100", NOW)
@@ -4063,7 +4069,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         bot_login="bot",
     )
     assert github.merged == (
-        [] if blocked not in ("", "checks403") else [("org/repo", 9, "squash", "head")]
+        [] if blocked not in ("", "busy", "checks403") else [("org/repo", 9, "squash", "head")]
     )
     if blocked == "checks403":
         assert "cannot read check runs" in caplog.text
@@ -4074,13 +4080,9 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
         assert "no allowed merge methods" in caplog.text
     # a blessed PR that is not merged says why in the tick log
     waits = {
-        "message": "a message waits for the author",
-        "job": "the run sleeps on jobs",
+        "comment": "a comment waits for the author",
         "draft": "the PR is a draft",
-        # a moved head or base is first a MESSAGE to the author (head-moved,
-        # base-moved), so that is the reason the sweep names; only a base that
-        # moves between the sweep's read and the lease is caught as such
-        "head": "a message waits for the author",
+        "head": "the head changed is not the blessed one",
         "unclean": "GitHub says blocked",
         "base-race": "the head head does not contain the base tip moved",
         "manual": "the base contract is not auto",
@@ -4088,7 +4090,7 @@ def test_sweep_merges_only_quiet_blessed_pr(tmp_path, blocked, caplog):
     }
     if blocked in waits:
         assert waits[blocked] in caplog.text
-    if blocked in ("", "checks403", "methods"):
+    if blocked in ("", "busy", "checks403", "methods"):
         assert read_lease(tmp_path, record.run_id) is None
 
     if not blocked:
@@ -4445,8 +4447,7 @@ def test_auto_sweep_honors_the_stage_arm_record(
         "",
         "running",
         "unblessed",
-        "job",
-        "wake",
+        "comment",
         "base",
         "tip-error",
         "tip-empty",
@@ -4479,11 +4480,10 @@ def test_merge_holds_lease_and_reloads_record(tmp_path, monkeypatch, caplog, cha
             updated = replace(record, state="running")
         elif changed == "unblessed":
             updated = replace(record, auto_blessed_head="")
-        elif changed == "job":
-            updated = replace(record, experiment_job_id="100", deadline=NOW + 100)
-        elif changed == "wake":
+        elif changed == "comment":
             append(
-                run_dir(root, run_id), Message(0, "note", "kernel", "org/repo#9", now, "wake", {})
+                run_dir(root, run_id),
+                Message(0, "comment", "human", "org/repo#9", now, "comment:1", {"body": "why?"}),
             )
         save_record(root, updated, now)
         return True

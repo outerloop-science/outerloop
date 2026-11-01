@@ -760,7 +760,7 @@ def _merge_blessed_pr(
     bot_login: str = "",
 ) -> bool:
     from outerloop.github import GitHubError
-    from outerloop.inbox import wake_pending
+    from outerloop.inbox import human_pending
 
     number = int(record.pr_url.rstrip("/").split("/")[-1])
 
@@ -775,8 +775,10 @@ def _merge_blessed_pr(
                 "no head was blessed at publish"
                 + (f": {record.auto_bless_reason}" if record.auto_bless_reason else ""),
             ),
-            (bool(_poll_targets(record)), "the run sleeps on jobs"),
-            (wake_pending(run_dir(root, record.run_id), record), "a message waits for the author"),
+            # the author's jobs and the loop's own messages (verdicts, results, CI)
+            # do not hold a cleared head, or an author that keeps revising never
+            # lets it merge; a human's comment still waits for the author
+            (human_pending(run_dir(root, record.run_id), record), "a comment waits for the author"),
             (pr.get("state") != "open" or bool(pr.get("merged")), "the PR is not open"),
             (bool(pr.get("draft")), "the PR is a draft"),
             (head != record.auto_blessed_head, f"the head {head[:8]} is not the blessed one"),
@@ -1266,8 +1268,12 @@ def sweep(
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        merged = _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
-                        if merged and record.target not in ledger_blocked:
+                        # a held ledger defers close_if_done, which would leave a busy
+                        # author's jobs running past the merge; merge once it clears
+                        merged = record.target not in ledger_blocked and _merge_blessed_pr(
+                            root, record, github, pr, holder, now, bot_login
+                        )
+                        if merged:
                             ending = close_if_done(
                                 root, load_record(root, record.run_id), github, now
                             )
