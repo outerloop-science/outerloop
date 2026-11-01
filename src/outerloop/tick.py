@@ -1268,8 +1268,12 @@ def sweep(
                         gather_github_messages(
                             run_dir(root, record.run_id), record, github, bot_login, now, pr
                         )
-                        merged = _merge_blessed_pr(root, record, github, pr, holder, now, bot_login)
-                        if merged and record.target not in ledger_blocked:
+                        # a held ledger defers close_if_done, which would leave a busy
+                        # author's jobs running past the merge; merge once it clears
+                        merged = record.target not in ledger_blocked and _merge_blessed_pr(
+                            root, record, github, pr, holder, now, bot_login
+                        )
+                        if merged:
                             ending = close_if_done(
                                 root, load_record(root, record.run_id), github, now
                             )

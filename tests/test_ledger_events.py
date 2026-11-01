@@ -637,12 +637,12 @@ def test_refused_merge_keeps_the_saved_blessing_for_the_next_tick(
     assert load_record(tmp_path, r.run_id).state == ENDED
 
 
-def test_same_tick_merge_observation_respects_ledger_hold(tmp_path, rebless_run, monkeypatch):
+def test_merge_waits_for_ledger_hold(tmp_path, rebless_run, monkeypatch):
     r, fake, merges, _bodies = rebless_run
     save_record(tmp_path, replace(r, stage={**r.stage, LEDGER_RETRY: {"waiting": True}}), 2)
     monkeypatch.setattr("outerloop.ledger_events.retry_pending", lambda root, r, *a: r)
     run_rebless_sweep(tmp_path, fake)
-    assert merges == [1]
+    assert merges == []
     assert load_record(tmp_path, r.run_id).state == PARKED
     assert LEADER_FILE not in fake.ledger_files
     r = load_record(tmp_path, r.run_id)
