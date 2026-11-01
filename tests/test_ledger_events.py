@@ -344,7 +344,7 @@ def test_sweep_waits_for_deferred_reset_before_observing_solvers(tmp_path, monke
     ):
         monkeypatch.setattr(function, lambda *args, name=function: polled.append(name))
     sweep(tmp_path, FakeSlurm().compute(), RecordingDispatcher(), 3, github=github)
-    assert len(polled) == 6
+    assert len(polled) == 4 and "outerloop.tick._merge_blessed_pr" not in polled
     assert LEDGER_RETRY in load_record(tmp_path, reset_record.run_id).stage
     assert not fake.ledger_writes
 
