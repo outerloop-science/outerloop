@@ -12,6 +12,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Changed
 
+- Codex review sessions move to `gpt-6.1-terra`, the pinned review model (was `gpt-5.6-terra`).
 - The reviewer, summarizer and maintenance digest default to Codex, on a model the kernel pins next to the Codex CLI version (`model` in the `[codex]` table of `harnesses.toml`). A caller that leaves `model` unset follows the pin, so moving it in a release moves every such caller. A `model` input still wins.
 - `merge: auto` merges a blessed head even while its author is still at work. Before, the merge waited until the run had no jobs in flight and no unread messages, so an author that kept revising on each panel round's advisory findings held its own cleared pull request open for days. A human's comment still holds the merge until the author has read it. Merging ends the run and cancels its jobs, as before; further work comes back as a new pull request.
 
