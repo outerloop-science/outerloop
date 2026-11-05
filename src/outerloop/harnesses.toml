@@ -10,7 +10,7 @@ version = "0.160.0"
 sha256 = "306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13"
 code_mode_host_sha256 = "ac6cd6288f0e39f46a33eba1cfd37711651f14f33dbc73d6a1b82eb45e038cac"
 # review sessions on codex use this model when the caller names none
-model = "gpt-5.6-terra"
+model = "gpt-6.1-terra"
 
 [hermes]
 ref = "v2026.9.24"
