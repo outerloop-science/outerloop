@@ -54,21 +54,21 @@ jobs:
       reviewer_ref: v0             # keep on the same ref as the line above
       bot_login: my-bot            # PRs by this login are never reviewed
       # personal: true             # personal mode: skip only this login's marked PRs
-      model: claude-sonnet-5-5     # required: the claude backend has no default
     secrets:
-      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
 ```
 
 3. Add the key as a repository secret. Under
    `Settings → Secrets and variables → Actions`, create
-   `ANTHROPIC_REVIEWER_KEY` with your Anthropic key. A dedicated, spend-capped
+   `OPENAI_REVIEWER_KEY` with your OpenAI key. A dedicated, spend-capped
    key is strongly recommended.
 
 Open a pull request and a review appears within a minute or two. The same
 file ships as [`examples/review.yml`](https://github.com/outerloop-science/outerloop/blob/main/examples/review.yml).
-The claude backend has no built-in model, so a review workflow needs `model`
-or a repository variable `OUTERLOOP_CLAUDE_MODEL` it inherits; without one,
-every PR gets a could-not-run stub.
+The reviewer runs on Codex with the model Outerloop pins for it. A release
+that moves the pin moves every workflow on `@v0` that leaves `model` unset,
+so you get model upgrades with kernel releases. Set `model` to stay on a
+model of your own choosing.
 
 ## Re-review and opt-out
 
@@ -79,16 +79,18 @@ label opts a PR out entirely.
 
 ## Backends and second opinions
 
-`backend: claude` is the default. Two other backends work with the same
+`backend: codex` is the default. Two other backends work with the same
 workflow and their own key:
 
+- `backend: claude` uses the `ANTHROPIC_REVIEWER_KEY` secret
+  (`anthropic_reviewer_key`). It has no built-in model: set `model`, or a
+  repository variable `OUTERLOOP_CLAUDE_MODEL` the workflow inherits;
+  without one, every PR gets a could-not-run stub.
 - `backend: hermes` uses `hermes_provider: openrouter` by default with the
   `OPENROUTER_API_KEY` secret and an OpenRouter model id such as
   `openai/gpt-5.6-terra`. Add `hermes_provider: openai` to run directly
   against the OpenAI API with the `OPENAI_REVIEWER_KEY` secret and a
   provider-native id such as `gpt-5.6-terra`.
-- `backend: codex` uses the `OPENAI_REVIEWER_KEY` secret and a Codex model
-  id.
 
 Every input of the reusable workflow is documented in
 [`advisory-review-agent.yml`](https://github.com/outerloop-science/outerloop/blob/main/.github/workflows/advisory-review-agent.yml).
@@ -162,9 +164,8 @@ jobs:
     uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@v0
     with:
       reviewer_ref: v0
-      model: claude-sonnet-5-5   # required: the claude backend has no default
     secrets:
-      anthropic_reviewer_key: ${{ secrets.ANTHROPIC_REVIEWER_KEY }}
+      openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}
 ```
 
 The `backend`, `model` and `hermes_provider` inputs select the model as they

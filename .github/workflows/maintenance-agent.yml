@@ -13,9 +13,9 @@ on:
   workflow_call:
     inputs:
       backend:
-        description: Session backend — claude, codex or hermes
+        description: Session backend — codex, claude or hermes
         type: string
-        default: claude
+        default: codex
       model:
         description: >-
           Model id for the backend (hermes+openrouter needs the provider prefix,

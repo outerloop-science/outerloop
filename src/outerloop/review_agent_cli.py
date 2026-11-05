@@ -15,6 +15,7 @@ from pathlib import Path
 from outerloop.endpoints import resolve_endpoint
 from outerloop.github import EnvTokenProvider, GitHubClient
 from outerloop.harness import ClaudeModelUnset, Harness
+from outerloop.harness_pins import pins
 from outerloop.review_agent import (
     emit_envelope,
     run_agent_review,
@@ -73,6 +74,8 @@ def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
             return harness, "", backend
     except ValueError as exc:
         return None, str(exc), backend
+    if not review_model and backend == "codex":
+        review_model = pins("codex")["model"]
     hermes_provider = os.environ.get("REVIEW_HERMES_PROVIDER", "").lower() or "openrouter"
     key_var = {
         "claude": "ANTHROPIC_REVIEWER_KEY",
@@ -108,14 +111,14 @@ def resolve_reviewer_harness(spec: RoleSpec) -> tuple[Harness | None, str, str]:
             return (
                 None,
                 "hermes+openrouter requires an OpenRouter-shaped REVIEW_MODEL "
-                "(openai/gpt-5.6-terra, with the provider prefix)",
+                "(openai/gpt-x.y, with the provider prefix)",
                 backend,
             )
         if provider == "openai" and (not review_model or "/" in review_model):
             return (
                 None,
                 "hermes+openai requires a provider-native REVIEW_MODEL "
-                "(gpt-5.6-terra, no openai/ prefix)",
+                "(gpt-x.y, no openai/ prefix)",
                 backend,
             )
     try:

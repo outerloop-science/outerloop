@@ -16,9 +16,6 @@ jobs:
   digest:
     uses: outerloop-science/outerloop/.github/workflows/maintenance-agent.yml@main
     with:
-      backend: hermes
-      hermes_provider: openai
-      model: gpt-5.6-terra
       opinion_label: terra
     secrets:
       openai_reviewer_key: ${{ secrets.OPENAI_REVIEWER_KEY }}

@@ -312,7 +312,7 @@ def author_config_error(
     if not model or model.startswith("claude"):
         return (
             "author-backend codex needs a codex/openai model in OUTERLOOP_AUTHOR_MODEL "
-            f"(e.g. gpt-5.6-terra), not a claude model or none (got {model!r})"
+            f"(e.g. gpt-x.y), not a claude model or none (got {model!r})"
         )
     return ""
 
@@ -5774,7 +5774,7 @@ def main() -> int:
         help="agent backend for the author/editor role (config-driven: default "
         "from OUTERLOOP_AUTHOR_BACKEND). codex and hermes run contained (apptainer + "
         "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
-        "--model (e.g. gpt-5.6-terra).",
+        "--model (e.g. gpt-x.y).",
     )
     parser.add_argument(
         "--codex-config",

@@ -73,6 +73,8 @@ def test_codex_backend_reads_openai_key(monkeypatch: Any) -> None:
     # the codex backend AND its openai key are forwarded to the harness builder
     assert calls["build_kwargs"]["backend"] == "codex"
     assert calls["build_key"] == "sk-openai"
+    # no REVIEW_MODEL: the kernel's pinned codex model, not codex's own default
+    assert calls["build_kwargs"]["model"] == cli.pins("codex")["model"]
 
 
 def test_hermes_backend_reads_openrouter_key(monkeypatch: Any, tmp_path: Path) -> None:
