@@ -28,10 +28,10 @@ on:
         required: false
         default: ''
       backend:
-        description: Backend for the summarizer session (claude | hermes | codex).
+        description: Backend for the summarizer session (codex | claude | hermes).
         type: string
         required: false
-        default: claude
+        default: codex
       model:
         description: Model for the summarizer session (same rules as the reviewer).
         type: string

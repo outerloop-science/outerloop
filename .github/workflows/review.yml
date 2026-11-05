@@ -31,11 +31,7 @@ jobs:
     with:
       bot_login: 'outerloop-science[bot]'
       bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
-      backend: hermes
-      # openai-direct: same token rate, no OpenRouter platform fee (the org's
-      # OpenAI account is tax-exempt); model id is provider-native
-      hermes_provider: openai
-      model: gpt-5.6-terra
+      # backend and model: the kernel's defaults (codex on its pinned model)
       # `general` is a real lens name meaning the full rubric (no empty-string
       # ternary — its GitHub Actions form silently falls through to the else)
       lens: ${{ matrix.lens }}
@@ -51,9 +47,6 @@ jobs:
     with:
       bot_login: 'outerloop-science[bot]'
       bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
-      backend: hermes
-      hermes_provider: openai
-      model: gpt-5.6-terra
       opinion_label: terra
       # keep in lockstep with the lens matrix above
       expected_lenses: general credentials deployment lifecycle coverage prose
@@ -67,9 +60,6 @@ jobs:
     with:
       bot_login: 'outerloop-science[bot]'
       bot_aliases: 'outerloop-autoresearch[bot], agentic-learning-bot'
-      backend: hermes
-      hermes_provider: openai
-      model: gpt-5.6-terra
       opinion_label: terra
       # a maintainer's review label approves a fork PR; the fork's head is
       # never checked out, but its diff reaches the model
