@@ -735,7 +735,7 @@ def test_runtime_lock_integrity_and_contained_mounts(tmp_path, monkeypatch):
             "test", "https://example.com/v1", tmp_path / "key", "model", ("chat",)
         ),
     )
-    argv = harness._apptainer_argv(["supervisor"], tmp_path / "home", tmp_path / "work")
+    argv = harness._jail_argv(["supervisor"], tmp_path / "home", tmp_path / "work")
     assert f"{runtime}:{runtime}:ro" in argv
     assert f"{bridge.__file__}:{bridge.__file__}:ro" in argv
     assert argv[-2:] == ["image.sif", "supervisor"]

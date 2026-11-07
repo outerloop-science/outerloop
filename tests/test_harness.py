@@ -13,6 +13,7 @@ import pytest
 
 from fakes import FakeHarness
 from helpers import wait_until
+from outerloop.container import ApptainerRuntime
 from outerloop.harness import (
     SESSION_ENV_ALLOWLIST,
     ClaudeCodeHarness,
@@ -560,7 +561,7 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path, monkeypatch, configu
     ws = tmp_path / "ws"
     ws.mkdir()
     monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", binary if configured else "/wrong/path")
-    options: dict[str, Any] = {} if configured else {"apptainer_binary": binary}
+    options: dict[str, Any] = {} if configured else {"container_runtime": ApptainerRuntime(binary)}
     harness = ClaudeCodeHarness(
         api_key="sk-c",
         binary="/real/claude",
@@ -610,7 +611,7 @@ def test_codex_author_runs_contained_in_apptainer(tmp_path: Path, monkeypatch, c
     ws = tmp_path / "ws"
     ws.mkdir()
     monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", binary if configured else "/wrong/path")
-    options: dict[str, Any] = {} if configured else {"apptainer_binary": binary}
+    options: dict[str, Any] = {} if configured else {"container_runtime": ApptainerRuntime(binary)}
     harness = CodexHarness(
         api_key="sk-o",
         binary="/real/codex",
@@ -687,7 +688,7 @@ def test_codex_author_resumes_contained(tmp_path: Path) -> None:
         model="gpt-5.6-terra",
         sandbox="danger-full-access",
         container_image="/img/agent.sif",
-        apptainer_binary=binary,
+        container_runtime=ApptainerRuntime(binary),
     )
     assert harness.supports_resume is True
     harness.run("revise per the finding", ws, resume_session_id="01a0-thread")
@@ -710,7 +711,7 @@ def test_codex_author_resolves_a_relative_workspace(tmp_path: Path, monkeypatch)
         binary="/real/codex",  # absolute (bind source)
         sandbox="workspace-write",
         container_image="/img/agent.sif",
-        apptainer_binary=binary,
+        container_runtime=ApptainerRuntime(binary),
     )
     harness.run("task", Path("ws"))  # relative
     argv = (tmp_path / "seen_argv").read_text()
@@ -732,7 +733,7 @@ def test_contained_harness_requires_an_absolute_binary(tmp_path: Path, backend: 
             api_key="k",
             binary=backend,
             container_image="/img/agent.sif",
-            apptainer_binary="apptainer",
+            container_runtime=ApptainerRuntime("apptainer"),
         )
     result = harness.run("task", ws)
     assert result.is_error

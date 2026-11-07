@@ -27,8 +27,8 @@ from pathlib import Path
 from secrets import randbits
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from outerloop.container import Bind, ContainerRuntime, Jail, runtime_from_env
 from outerloop.containment import executable_roots, seatbelt_available, seatbelt_wrap
-from outerloop.image import apptainer_from_env
 from outerloop.number_check import unmatched_numbers
 from outerloop.trajectory import file_refs
 from outerloop.trajectory import record as record_event
@@ -225,14 +225,14 @@ class SubprocessEvaluator:
     The command executes AGENT-WRITTEN code — it is session-grade untrusted
     execution and gets session-grade containment: with `container_image` set
     (the production configuration), the command runs under `apptainer exec
-    --containall` seeing only the workspace, a throwaway tmpfs HOME, and no
-    host environment. Uncontained mode exists for tests and non-cluster dev,
+    --containall` seeing only the workspace, a throwaway per-evaluation HOME
+    and cache, and no host environment. Uncontained mode exists for tests and non-cluster dev,
     with a scrubbed env that NEVER includes the real HOME (the orchestrator
     account holds the bot PAT under it)."""
 
     timeout_s: int = EVAL_TIMEOUT_S
     container_image: str = ""
-    apptainer_binary: str = field(default_factory=apptainer_from_env)
+    container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
 
     def evaluate(
         self, workspace: Path, command: str, metric: str, extra_env: dict[str, str] | None = None
@@ -315,30 +315,21 @@ class SubprocessEvaluator:
             # per evaluation, and gone with the cache dir the caller removes
             workdir = cache_dir / "work"
             workdir.mkdir(parents=True, exist_ok=True)
-            argv = [
-                self.apptainer_binary,
-                "exec",
-                "--containall",
-                "--cleanenv",
-                "--bind",
-                f"{workspace}:{workspace}",
-                "--home",
-                f"{eval_home}:{eval_home}",
-                # node-local scratch for uv's cache: the container's own /tmp
-                # is a size-capped tmpfs, and shared-FS caches flake (NFS)
-                "--bind",
-                f"{cache_dir}:{cache_dir}",
-                "--pwd",
-                str(workspace),
-                # /tmp inside the jail on this evaluation's own scratch, not
-                # apptainer's tmpfs (the dispatched job script does the same)
-                "--workdir",
-                str(workdir),
+            jail = Jail(
                 self.container_image,
-                "sh",
-                "-c",
-                command,
-            ]
+                home=str(eval_home),
+                binds=(
+                    Bind(str(workspace), str(workspace)),
+                    # node-local scratch for uv's cache: the container's own /tmp
+                    # is a size-capped tmpfs, and shared-FS caches flake (NFS)
+                    Bind(str(cache_dir), str(cache_dir)),
+                ),
+                pwd=str(workspace),
+                # /tmp inside the jail on this evaluation's own scratch, not a
+                # small tmpfs (the dispatched job script does the same)
+                workdir=str(workdir),
+            )
+            argv = self.container_runtime.argv(jail, ["sh", "-c", command])
         else:
             # the first word locates the tool; a plain split never raises on a
             # malformed command, which sh then reports as a failed eval
@@ -363,10 +354,9 @@ class SubprocessEvaluator:
         # executes session-authored entrypoints.
         env["UV_PROJECT_ENVIRONMENT"] = str(cache_dir / "venv")
         if self.container_image:
-            # --cleanenv drops the host env; APPTAINERENV_* survives it
-            env["APPTAINERENV_UV_CACHE_DIR"] = env["UV_CACHE_DIR"]
-            env["APPTAINERENV_UV_LINK_MODE"] = "copy"
-            env["APPTAINERENV_UV_PROJECT_ENVIRONMENT"] = env["UV_PROJECT_ENVIRONMENT"]
+            # the jail drops the host env; what the runtime forwards survives it
+            for name in ("UV_CACHE_DIR", "UV_LINK_MODE", "UV_PROJECT_ENVIRONMENT"):
+                env[self.container_runtime.forward(name)] = env[name]
         env["HOME"] = str(eval_home)
         if not self.container_image and seatbelt_available():
             env["TMPDIR"] = str(eval_home)
@@ -382,7 +372,7 @@ class SubprocessEvaluator:
                     continue
                 env[key] = value
                 if self.container_image:
-                    env[f"APPTAINERENV_{key}"] = value
+                    env[self.container_runtime.forward(key)] = value
         try:
             # process group, like the harness: a timed-out eval must not
             # leave orphans mutating a workspace that later gets committed

@@ -27,11 +27,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from outerloop.container import Bind, ContainerRuntime, Jail, runtime_from_env
 from outerloop.containment import executable_roots, session_wrap
 from outerloop.endpoint_wait import session_url as endpoint_session_url
 from outerloop.endpoints import EndpointProfile
 from outerloop.hermes_install import hermes_ready, hermes_runtime
-from outerloop.image import apptainer_from_env
 from outerloop.runstate import is_throttle
 from outerloop.session_evidence import (
     DEFAULT_CAP,
@@ -671,7 +671,7 @@ class ClaudeCodeHarness:
     # closes the threat model's shared-filesystem residual risk. Images stay
     # generic (python + uv + git); the binary is bind-mounted in.
     container_image: str = ""
-    apptainer_binary: str = field(default_factory=apptainer_from_env)
+    container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
     # Claude-on-Vertex (ADC) instead of the Anthropic API key; the api_key is
     # ignored when set. Contained sessions get the ADC file bind-mounted.
     vertex: VertexConfig | None = None
@@ -740,40 +740,31 @@ class ClaudeCodeHarness:
             if evidence_state := active.get():
                 evidence_state["native_id"] = session_id
         if self.container_image:
-            # bind sources must be absolute or apptainer fails at mount time
+            # bind sources must be absolute or the runtime fails at mount time
             workspace = workspace.resolve()
             session_home = session_home.resolve()
             if not os.path.isabs(self.binary):
-                # a relative bind source fails at mount time deep inside
-                # apptainer; catch the misconfiguration here instead
+                # a relative bind source fails at mount time deep inside the
+                # runtime; catch the misconfiguration here instead
                 log.warning("container sessions need an absolute claude path")
                 return _error_result("config-error")
-            command = [
-                self.apptainer_binary,
-                "exec",
-                "--containall",
-                "--cleanenv",
-                "--bind",
-                f"{workspace}:{workspace}",
-                # --home (NOT --env HOME=..., which apptainer silently
-                # refuses): mounts the per-run home at the same path inside
-                # and sets $HOME to it — native resume state survives
-                # contained/uncontained flips and lands on the shared FS,
-                # not a tmpfs that evaporates at session end.
-                "--home",
-                f"{session_home}:{session_home}",
-                "--bind",
-                f"{self.binary}:{self.CONTAINER_CLAUDE}:ro",
-                *(
-                    ["--bind", f"{Path(self.vertex.adc_file).resolve()}:{self.CONTAINER_ADC}:ro"]
-                    if self.vertex is not None and self.vertex.adc_file
-                    else []
-                ),
-                "--pwd",
-                str(workspace),
-                self.container_image,
-                *claude_argv,
+            binds = [
+                Bind(str(workspace), str(workspace)),
+                Bind(self.binary, self.CONTAINER_CLAUDE, read_only=True),
             ]
+            if self.vertex is not None and self.vertex.adc_file:
+                adc = str(Path(self.vertex.adc_file).resolve())
+                binds.append(Bind(adc, self.CONTAINER_ADC, read_only=True))
+            jail = Jail(
+                self.container_image,
+                # the per-run home, as $HOME at the same path inside: native
+                # resume state survives contained/uncontained flips and lands
+                # on the shared FS, not a tmpfs that evaporates at session end
+                home=str(session_home),
+                binds=tuple(binds),
+                pwd=str(workspace),
+            )
+            command = self.container_runtime.argv(jail, claude_argv)
         else:
             command = claude_argv
         try:
@@ -804,7 +795,7 @@ class ClaudeCodeHarness:
                 if self.container_image:
                     env.update(
                         {
-                            f"APPTAINERENV_{k}": v
+                            self.container_runtime.forward(k): v
                             for k, v in list(env.items())
                             if k not in SESSION_ENV_ALLOWLIST and k != "HOME"
                         }
@@ -822,7 +813,7 @@ class ClaudeCodeHarness:
                 env |= vertex_env
                 if self.container_image:
                     for k, v in vertex_env.items():
-                        env[f"APPTAINERENV_{k}"] = v
+                        env[self.container_runtime.forward(k)] = v
             else:
                 # A subscription token authenticates as CLAUDE_CODE_OAUTH_TOKEN;
                 # an API key stays ANTHROPIC_API_KEY.
@@ -833,11 +824,10 @@ class ClaudeCodeHarness:
                 )
                 env = session_env(self.api_key, key_variable, session_home)
                 if self.container_image:
-                    # --cleanenv drops the host environment inside the container
-                    # EXCEPT APPTAINERENV_* variables, which apptainer injects
-                    # with the prefix stripped — the key travels via the
+                    # the jail drops the host environment except the variables
+                    # the runtime forwards — the key travels via the
                     # environment, never argv (argv is world-readable in /proc).
-                    env[f"APPTAINERENV_{key_variable}"] = self.api_key
+                    env[self.container_runtime.forward(key_variable)] = self.api_key
             if self.vertex is not None and self.vertex.adc_file:
                 # Also mounted when an endpoint overrides Vertex authentication.
                 provision_credential_file(Path(self.vertex.adc_file))
@@ -1168,7 +1158,7 @@ class CodexHarness:
     CONTAINED mode (`container_image` set): both `codex login` and `codex exec`
     run inside `apptainer exec --containall --cleanenv`, sharing a bound
     `--home` so the login's auth.json is visible to the exec. apptainer is the
-    boundary — no host FS beyond the two binds; `--cleanenv` scrubs the env
+    boundary — no host FS beyond its binds; `--cleanenv` scrubs the env
     down to the role's own key, so the process tree carries no foreign token
     for a /proc read to lift (the boundary is the scrubbed env, not PID
     isolation) — the same posture as the Claude backend. `--sandbox
@@ -1195,7 +1185,7 @@ class CodexHarness:
     # when set, login+exec run inside this apptainer image; empty = uncontained
     # (the deployment's runner is the boundary)
     container_image: str = ""
-    apptainer_binary: str = field(default_factory=apptainer_from_env)
+    container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
     # `model_reasoning_effort`; "" keeps Codex's default. Only the author sets
     # it (OUTERLOOP_AUTHOR_EFFORT).
     effort: str = ""
@@ -1223,55 +1213,44 @@ class CodexHarness:
             launcher = False
         return None if launcher else path.with_name("codex-code-mode-host")
 
-    def _apptainer_argv(
-        self, inner: list[str], session_home: Path, workspace: Path | None
-    ) -> list[str]:
-        """Wrap a codex argv in `apptainer exec --containall --cleanenv`. The
-        run-home is bound via `--home` (auth.json survives login->exec and lands
-        on the shared FS); the host codex binary is bind-mounted read-only (like
-        the claude author); the workspace is bound and set as --pwd only for the
-        exec, never the login."""
-        argv = [
-            self.apptainer_binary,
-            "exec",
-            "--containall",
-            "--cleanenv",
-            "--home",
-            f"{session_home}:{session_home}",
-            "--bind",
-            f"{self.binary}:{self.CONTAINER_CODEX}:ro",
-        ]
+    def _jail_argv(self, inner: list[str], session_home: Path, workspace: Path | None) -> list[str]:
+        """Wrap a codex argv in the session's jail. The run-home is mounted as
+        $HOME (auth.json survives login->exec and lands on the shared FS); the
+        host codex binary is bind-mounted read-only (like the claude author); the
+        workspace is bound and set as the start directory only for the exec,
+        never the login."""
+        binds = [Bind(self.binary, self.CONTAINER_CODEX, read_only=True)]
         host = self._code_mode_host()
         if host is not None:
-            argv += ["--bind", f"{host}:{self.CONTAINER_CODE_MODE_HOST}:ro"]
-        argv += [
-            "--bind",
-            f"{Path(__file__).with_name('codex_requirements.toml').resolve()}:"
-            "/etc/codex/requirements.toml:ro",
-        ]
+            binds.append(Bind(str(host), self.CONTAINER_CODE_MODE_HOST, read_only=True))
+        requirements = str(Path(__file__).with_name("codex_requirements.toml").resolve())
+        binds.append(Bind(requirements, "/etc/codex/requirements.toml", read_only=True))
         if self.endpoint and self.endpoint.codex_bridge:
             from outerloop.bridge_install import runtime_path
 
-            runtime = runtime_path()
-            script = Path(__file__).with_name("codex_bridge.py").resolve()
-            argv += ["--bind", f"{runtime}:{runtime}:ro", "--bind", f"{script}:{script}:ro"]
+            bridge = str(runtime_path())
+            script = str(Path(__file__).with_name("codex_bridge.py").resolve())
+            binds += [Bind(bridge, bridge, read_only=True), Bind(script, script, read_only=True)]
+        pwd = ""
         if workspace is not None:
-            argv += ["--bind", f"{workspace}:{workspace}", "--pwd", str(workspace)]
-        return [*argv, self.container_image, *inner]
+            binds.append(Bind(str(workspace), str(workspace)))
+            pwd = str(workspace)
+        jail = Jail(self.container_image, home=str(session_home), binds=tuple(binds), pwd=pwd)
+        return self.container_runtime.argv(jail, inner)
 
     def _login(self, session_home: Path) -> SessionResult | None:
         """Write auth.json into the per-run HOME. None on success, an error
         SessionResult on failure. The key travels on stdin, never argv. In
-        AUTHOR mode the login runs inside apptainer with the same bound --home,
-        so auth.json lands where the contained exec will read it."""
+        AUTHOR mode the login runs inside the jail with the same home, so
+        auth.json lands where the contained exec will read it."""
         env = session_env(self.api_key, "OPENAI_API_KEY", session_home)
         env["CODEX_HOME"] = str((session_home / ".codex").absolute())
         if self.container_image:
-            # --cleanenv drops host env inside the container except APPTAINERENV_*
-            # (prefix stripped by apptainer): the key travels via env, not argv.
-            env["APPTAINERENV_OPENAI_API_KEY"] = self.api_key
-            env["APPTAINERENV_CODEX_HOME"] = env["CODEX_HOME"]
-            login_argv = self._apptainer_argv(
+            # the jail drops the host env except the variables the runtime
+            # forwards: the key travels via env, not argv.
+            env[self.container_runtime.forward("OPENAI_API_KEY")] = self.api_key
+            env[self.container_runtime.forward("CODEX_HOME")] = env["CODEX_HOME"]
+            login_argv = self._jail_argv(
                 [self.CONTAINER_CODEX, "login", "--with-api-key"], session_home, None
             )
         else:
@@ -1308,7 +1287,7 @@ class CodexHarness:
     def run(
         self, brief_text: str, workspace: Path, resume_session_id: str | None = None
     ) -> SessionResult:
-        # Contained runs bind workspace + home into apptainer, whose bind sources
+        # Contained runs bind workspace + home into the jail, whose bind sources
         # must be ABSOLUTE (a relative one fails at mount time); resolving here
         # also keeps codex's --cd / --output-last-message aligned with the mount
         # points inside the container.
@@ -1316,7 +1295,7 @@ class CodexHarness:
             workspace = workspace.resolve()
             if not os.path.isabs(self.binary):
                 # the host codex is bind-mounted; a relative bind source fails at
-                # mount time deep inside apptainer — catch it here instead
+                # mount time deep inside the runtime — catch it here instead
                 log.warning("contained codex needs an absolute binary path")
                 return _error_result("config-error")
         if any("dangerously-bypass-hook-trust" in arg for arg in self.extra_args):
@@ -1457,7 +1436,7 @@ class CodexHarness:
                 *codex_argv,
             ]
         command = (
-            self._apptainer_argv(codex_argv, session_home, workspace)
+            self._jail_argv(codex_argv, session_home, workspace)
             if self.container_image
             else codex_argv
         )
@@ -1466,8 +1445,8 @@ class CodexHarness:
             env = session_env(self.api_key, key_env, session_home)
             env["CODEX_HOME"] = str((session_home / ".codex").absolute())
             if self.container_image:
-                env[f"APPTAINERENV_{key_env}"] = self.api_key
-                env["APPTAINERENV_CODEX_HOME"] = env["CODEX_HOME"]
+                env[self.container_runtime.forward(key_env)] = self.api_key
+                env[self.container_runtime.forward("CODEX_HOME")] = env["CODEX_HOME"]
             provision_credential_file(session_home / ".codex" / "auth.json")
             if not self.container_image:
                 command = session_wrap(
@@ -1707,7 +1686,7 @@ class HermesHarness:
     # --cleanenv` seeing only the workspace, the per-run home, and read-only
     # binds of the pinned source and runtime (venv plus standalone Python).
     container_image: str = ""
-    apptainer_binary: str = field(default_factory=apptainer_from_env)
+    container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
 
     resume_max_chars: int | None = None
     # `agent.reasoning_effort`; "" keeps Hermes's default. Only the author sets
@@ -1813,33 +1792,26 @@ class HermesHarness:
             self.extra_args,
         )
         if self.container_image:
-            workspace_abs = workspace.resolve()
-            home_abs = session_home.resolve()
-            repo_abs = repo
-            runtime_abs = hermes_runtime(repo)
-            command = [
-                self.apptainer_binary,
-                "exec",
-                "--containall",
-                "--cleanenv",
-                "--bind",
-                f"{workspace_abs}:{workspace_abs}",
-                # --home mounts the per-run home at the same path inside and
-                # sets $HOME to it — hermes config, brief, samples, and the
-                # resume transcript all persist on the shared FS
-                "--home",
-                f"{home_abs}:{home_abs}",
-                "--bind",
-                f"{repo_abs}:{repo_abs}:ro",
-                "--bind",
-                f"{runtime_abs}:{runtime_abs}:ro",
-                "--pwd",
-                str(home_abs),
-                "--bind",
-                f"{Path(__file__).with_name('hermes_capture.py').resolve()}:{Path(__file__).with_name('hermes_capture.py').resolve()}:ro",
+            workspace_abs = str(workspace.resolve())
+            home_abs = str(session_home.resolve())
+            repo_abs = str(repo)
+            runtime_abs = str(hermes_runtime(repo))
+            capture = str(Path(__file__).with_name("hermes_capture.py").resolve())
+            jail = Jail(
                 self.container_image,
-                *command,
-            ]
+                # the per-run home, as $HOME at the same path inside — hermes
+                # config, brief, samples, and the resume transcript all persist
+                # on the shared FS
+                home=home_abs,
+                binds=(
+                    Bind(workspace_abs, workspace_abs),
+                    Bind(repo_abs, repo_abs, read_only=True),
+                    Bind(runtime_abs, runtime_abs, read_only=True),
+                    Bind(capture, capture, read_only=True),
+                ),
+                pwd=home_abs,
+            )
+            command = self.container_runtime.argv(jail, command)
         _collect_hermes_sample(session_home)  # discard stale legacy samples before this invocation
         try:
             env = session_env(self.api_key, self.key_env, session_home)
@@ -1850,13 +1822,13 @@ class HermesHarness:
                 # reasoning_effort; hermes_capture applies it (see there)
                 env["OUTERLOOP_HERMES_EFFORT"] = self.effort
             if self.container_image:
-                # --cleanenv drops the host env except APPTAINERENV_*: the key
-                # travels via the environment, never argv
-                env[f"APPTAINERENV_{self.key_env}"] = env[self.key_env]
-                env["APPTAINERENV_TERMINAL_CWD"] = env["TERMINAL_CWD"]
-                env["APPTAINERENV_OUTERLOOP_CAPTURE_ID"] = capture_id
+                # the jail drops the host env except the variables the runtime
+                # forwards: the key travels via the environment, never argv
+                env[self.container_runtime.forward(self.key_env)] = env[self.key_env]
+                env[self.container_runtime.forward("TERMINAL_CWD")] = env["TERMINAL_CWD"]
+                env[self.container_runtime.forward("OUTERLOOP_CAPTURE_ID")] = capture_id
                 if self.effort:
-                    env["APPTAINERENV_OUTERLOOP_HERMES_EFFORT"] = self.effort
+                    env[self.container_runtime.forward("OUTERLOOP_HERMES_EFFORT")] = self.effort
             # cwd is the per-run home, NOT the workspace: --save_sample writes
             # its trajectory JSON to cwd, and artifacts must never land in the
             # clone (they would enter the diff).

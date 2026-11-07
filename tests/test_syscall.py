@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from outerloop.compute import parse_elapsed
+from outerloop.container import ApptainerRuntime
 from outerloop.dispatch import write_eval_job
 from outerloop.syscall import (
     MAX_EVAL_MINUTES,
@@ -625,7 +626,7 @@ def test_launch_job_script_copies_declared_artifacts(tmp_path: Path) -> None:
         snapshot_sha=sha,
         command="true",
         image="img.sif",
-        apptainer_binary="apptainer",
+        container_runtime=ApptainerRuntime("apptainer"),
         artifacts=(
             "small.txt",
             "big.bin",
