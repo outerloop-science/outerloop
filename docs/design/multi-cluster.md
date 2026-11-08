@@ -33,7 +33,8 @@ in a few reads in `tick.py`. The container runtime shows in four modules, at
 several call sites each: `dispatch.py` (launched jobs), `orchestrator.py`
 (the inline evaluator measurement), `harness.py` (one builder per contained
 backend) and `image.py` (the image probe), all building `apptainer exec
---containall --cleanenv ...` by hand.
+--containall --cleanenv ...` by hand. Since #605 all four build it through
+one `ContainerRuntime` in `container.py`.
 
 ## The three tiers
 
@@ -155,7 +156,8 @@ implementation behind all four sites; the image needs an OCI publication
 next to the `.sif`); and
 a `scrontab` mode for `outerloop start`. Whether compute nodes reach GitHub
 and the model APIs directly must be confirmed; if not, the same proxy
-pass-through Polaris needs applies here.
+pass-through Polaris needs applies here. The seam itself exists since #605,
+so a Shifter or podman-hpc runtime is one more implementation behind it.
 
 **ALCF Polaris.** The largest build, and last: a `PbsCompute` behind the
 `Compute` protocol (`qsub`/`qstat`/`qdel`; `-W depend=afterany:<id>`,
