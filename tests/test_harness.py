@@ -664,12 +664,24 @@ def test_an_enroot_codex_session_jails_the_login_and_the_exec(tmp_path: Path, mo
     )
     assert harness.run("task", ws).is_error
     (login, _), (exec_, _) = calls
+
+    def binds(cmd: list[str]) -> list[tuple[str, str, str]]:
+        # the launcher takes --bind SOURCE TARGET MODE; return the triples
+        return [(cmd[i + 1], cmd[i + 2], cmd[i + 3]) for i, t in enumerate(cmd) if t == "--bind"]
+
     for cmd, env in calls:
         assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
-        assert "--bind" in cmd and "/opt/agent/codex" in cmd and "sk-o" not in " ".join(cmd)
+        assert "sk-o" not in " ".join(cmd)
         assert env["ENROOTENV_OPENAI_API_KEY"] == "sk-o" and "ENROOTENV_CODEX_HOME" in env
-    # the login sees no workspace; the exec starts in it
-    assert str(ws) not in login and exec_[exec_.index("--pwd") + 1] == str(ws)
+        # exact bind modes, not membership: the codex binary is read-only, and no
+        # bind may silently flip ro/rw or carry an unexpected mode (#605 review)
+        modes = {tgt: mode for (_, tgt, mode) in binds(cmd)}
+        assert modes["/opt/agent/codex"] == "ro"
+        assert all(mode in ("ro", "rw") for mode in modes.values())
+    # the login sees no workspace; the exec binds it rw and starts in it
+    assert all(tgt != str(ws) for (_, tgt, _) in binds(login))
+    assert (str(ws), str(ws), "rw") in binds(exec_)
+    assert exec_[exec_.index("--pwd") + 1] == str(ws)
 
 
 def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]:

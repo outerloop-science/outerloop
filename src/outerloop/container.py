@@ -92,8 +92,9 @@ def _shell_expr(path: str) -> str:
     metacharacters that would run code or break the quoting, so a literal path
     holding `$(...)`, a backtick, a double quote or a newline can never be
     injected into the job script here (such a path belongs in `argv`, which
-    never invokes a shell)."""
-    if '"' in path or "`" in path or "\n" in path or "$(" in path:
+    never invokes a shell). A backslash is refused too: a trailing one would
+    escape the closing quote this adds."""
+    if any(c in path for c in '"`\\\n') or "$(" in path:
         raise ValueError(f"not a safe job-script path expression: {path!r}")
     return f'"{path}"'
 
@@ -374,7 +375,16 @@ class EnrootRuntime:
             return "enroot is not installed (not on PATH)"
         argv = ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot", "--check", *self._policy(binary)]
         try:
-            proc = runner(argv, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S)
+            # a clean env: the probe forwards nothing, so a stray ENROOTENV_* in
+            # the operator's shell must not make the launcher's value check die
+            # and report this host uncontained
+            proc = runner(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=_PROBE_TIMEOUT_S,
+                env={"PATH": os.environ.get("PATH", "")},
+            )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return f"enroot failed to start: {exc}"
         if proc.returncode != 0:

@@ -88,7 +88,9 @@ def test_apptainer_shell_line_reads_the_scripts_variables() -> None:
 
 
 @pytest.mark.parametrize("runtime", [ApptainerRuntime("apptainer"), EnrootRuntime("enroot")])
-@pytest.mark.parametrize("evil", ["$TREE/$(touch pwned)", "$TREE/`id`", '$TREE/a"b', "$TREE/a\nb"])
+@pytest.mark.parametrize(
+    "evil", ["$TREE/$(touch pwned)", "$TREE/`id`", '$TREE/a"b', "$TREE/a\nb", "$TREE/a\\"]
+)
 def test_shell_rejects_a_path_that_would_inject_into_the_job_script(
     runtime: ContainerRuntime, evil: str
 ) -> None:
