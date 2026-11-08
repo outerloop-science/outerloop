@@ -78,6 +78,25 @@ class Jail:
     workdir: str = ""
     gpus: bool = False
 
+    def __post_init__(self) -> None:
+        # every jail runs as $HOME = the home mount; an empty one would render
+        # `--home ":"` (apptainer) or an empty mount (enroot), silently wrong
+        if not self.home:
+            raise ValueError("a jail needs a home directory")
+
+
+def _shell_expr(path: str) -> str:
+    """Render a job-script path as a double-quoted shell word, so the job shell
+    expands the variables it names (`$SCRATCH`, `$TREE`). Call sites pass shell
+    expressions over job variables, never arbitrary literal paths; reject the
+    metacharacters that would run code or break the quoting, so a literal path
+    holding `$(...)`, a backtick, a double quote or a newline can never be
+    injected into the job script here (such a path belongs in `argv`, which
+    never invokes a shell)."""
+    if '"' in path or "`" in path or "\n" in path or "$(" in path:
+        raise ValueError(f"not a safe job-script path expression: {path!r}")
+    return f'"{path}"'
+
 
 class ContainerRuntime(Protocol):
     """The verbs every container runtime implements. Variables reach the jailed
@@ -133,7 +152,7 @@ class ApptainerRuntime:
         return [self.binary, *_apptainer_options(jail, lambda path: path), jail.image, *command]
 
     def shell(self, jail: Jail, command: str) -> str:
-        options = _apptainer_options(jail, lambda path: f'"{path}"')
+        options = _apptainer_options(jail, _shell_expr)
         return " ".join([shlex.quote(self.binary), *options, shlex.quote(jail.image), command])
 
     def forward(self, name: str) -> str:
@@ -330,7 +349,7 @@ class EnrootRuntime:
         return ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot", *options, jail.image, *command]
 
     def shell(self, jail: Jail, command: str) -> str:
-        options = self._options(jail, lambda path: f'"{path}"', shlex.quote(self.binary))
+        options = self._options(jail, _shell_expr, shlex.quote(self.binary))
         launcher = shlex.quote(_ENROOT_JAIL)
         return " ".join(
             ["bash", "-c", launcher, "outerloop-enroot", *options, shlex.quote(jail.image), command]

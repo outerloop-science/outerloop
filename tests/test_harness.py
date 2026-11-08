@@ -573,12 +573,16 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path, monkeypatch, configu
     assert not result.is_error
     argv = (tmp_path / "seen_argv").read_text()
     assert argv.startswith("exec --containall --cleanenv")
-    assert f"--bind {ws}:{ws}" in argv
+    # the EXACT mount options, not substrings: a bind turning :ro, a reordering,
+    # or an added/dropped bind must fail here (#605 review)
+    tokens = argv.split()
+    homes = [tokens[i + 1] for i, t in enumerate(tokens) if t == "--home"]
+    binds = [tokens[i + 1] for i, t in enumerate(tokens) if t == "--bind"]
+    assert homes == [f"{tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"]
+    assert binds == [f"{ws}:{ws}", "/real/claude:/opt/agent/claude:ro"]
     # --home, NOT --env HOME (apptainer silently refuses HOME via --env) and
     # NOT a plain --bind (per-run state must be $HOME inside the container)
-    assert f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
     assert "--env" not in argv
-    assert "--bind /real/claude:/opt/agent/claude:ro" in argv
     assert "/img/agent.sif /opt/agent/claude -p" in argv
     assert "sk-c" not in argv  # the key travels via env, never argv
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen(tmp_path, "seen_env")

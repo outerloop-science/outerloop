@@ -87,6 +87,28 @@ def test_apptainer_shell_line_reads_the_scripts_variables() -> None:
     assert shlex.split(line)[:2] == ["/apps/container tools/apptainer", "exec"]
 
 
+@pytest.mark.parametrize("runtime", [ApptainerRuntime("apptainer"), EnrootRuntime("enroot")])
+@pytest.mark.parametrize("evil", ["$TREE/$(touch pwned)", "$TREE/`id`", '$TREE/a"b', "$TREE/a\nb"])
+def test_shell_rejects_a_path_that_would_inject_into_the_job_script(
+    runtime: ContainerRuntime, evil: str
+) -> None:
+    """shell() renders paths as shell expressions in double quotes; a literal
+    path with command substitution, a backtick, a quote or a newline would run
+    code or break the quoting in the job script, so it is refused, not rendered
+    (#605 review). argv(), which never invokes a shell, carries such a path fine."""
+    jail = Jail("/i.img", home="$H", binds=(Bind(evil, evil),), pwd="$T", workdir="$W")
+    with pytest.raises(ValueError, match="job-script path"):
+        runtime.shell(jail, "cmd")
+    runtime.argv(jail, ["true"])  # argv is safe: no shell, path is a literal argv element
+
+
+def test_a_jail_requires_a_home() -> None:
+    """Every jail runs as $HOME = the home mount; an empty home would silently
+    render `--home ":"` (#605 review)."""
+    with pytest.raises(ValueError, match="home"):
+        Jail("/i.img", home="", binds=())
+
+
 def test_apptainer_forwards_through_its_environment_prefix() -> None:
     """apptainer sets APPTAINERENV_<name> inside the jail as <name>."""
     assert ApptainerRuntime("apptainer").forward("OPENAI_API_KEY") == "APPTAINERENV_OPENAI_API_KEY"
@@ -114,7 +136,18 @@ def test_apptainer_check_runs_a_container_not_just_which(monkeypatch: pytest.Mon
         return _Proc(0)
 
     assert runtime.check(runner=working) == ""
-    assert seen and seen[0][0] == "/usr/bin/apptainer" and seen[0][1] == "exec"
+    # the EXACT probe flags, not just argv[0]/argv[1]: dropping --containall,
+    # --cleanenv or --no-home from the probe must fail here (#605 review)
+    assert seen and seen[0][:7] == [
+        "/usr/bin/apptainer",
+        "exec",
+        "--containall",
+        "--cleanenv",
+        "--no-home",
+        "--pwd",
+        "/",
+    ]
+    assert seen[0][-1] == "/bin/true"
     broken = _Proc(
         255,
         "ERROR  : Could not write info to setgroups: Permission denied\n"
