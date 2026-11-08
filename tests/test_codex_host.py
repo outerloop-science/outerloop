@@ -140,7 +140,7 @@ def test_container_host_bind_and_path_lookup(tmp_path, monkeypatch):
     harness = CodexHarness("key", binary="codex", container_image="image.sif")
     host = tmp_path / HOST
     assert harness._code_mode_host() == host
-    argv = harness._apptainer_argv(["/opt/agent/codex"], tmp_path / "home", tmp_path)
+    argv = harness._jail_argv(["/opt/agent/codex"], tmp_path / "home", tmp_path)
     index = argv.index(f"{host}:/opt/agent/{HOST}:ro")
     assert argv[index - 1] == "--bind"
 
@@ -203,7 +203,7 @@ def test_script_launcher_finds_its_own_host(tmp_path, monkeypatch, launcher):
     binary.chmod(0o755)
     harness = CodexHarness("key", binary=str(binary), container_image="image.sif")
     assert harness._code_mode_host() is None
-    argv = harness._apptainer_argv(["/opt/agent/codex"], tmp_path / "home", tmp_path)
+    argv = harness._jail_argv(["/opt/agent/codex"], tmp_path / "home", tmp_path)
     assert not any(HOST in a for a in argv)
     reached = []
 

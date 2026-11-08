@@ -38,6 +38,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from outerloop.compute import LOCAL_GPU_MASK, JobSpec
+from outerloop.container import Bind, ContainerRuntime, Jail, runtime_from_env
 from outerloop.github import (
     SAFE_GIT_FLAGS,
     GitError,
@@ -46,7 +47,6 @@ from outerloop.github import (
     forget_filter_overrides,
     git_identity,
 )
-from outerloop.image import apptainer_from_env
 from outerloop.orchestrator import EvalError, managed_eval_env, metric_from_output
 
 log = logging.getLogger(__name__)
@@ -339,7 +339,7 @@ def write_eval_job(
     snapshot_sha: str,
     command: str,
     image: str,
-    apptainer_binary: str = "",
+    container_runtime: ContainerRuntime | None = None,
     extra_env: dict[str, str] | None = None,
     artifacts: tuple[str, ...] = (),
     artifact_max_bytes: int = 0,
@@ -375,20 +375,19 @@ def write_eval_job(
     local run) and sees the index as SWEEP_INDEX; the task dirs are created
     and cleared here, the script lives under `eval-<name>/`.
 
-    `gpus` > 0 adds `--nv` to the jail so the job's allocated GPUs (the
-    JobSpec requests them) are visible inside the container; nothing else
-    about the containment changes.
+    `gpus` > 0 makes the job's allocated GPUs (the JobSpec requests them)
+    visible inside the jail; nothing else about the containment changes.
 
     Trust layout, matching the in-job evaluator exactly:
       * the contract COMMAND goes into its own file, read back with
         `sh -c "$(cat ...)"` INSIDE the jail — it never crosses sbatch or
-        shell quoting, and it executes only inside apptainer
-        --containall/--cleanenv with worktree-only binds;
+        shell quoting, and it executes only inside the jail, with
+        worktree-only binds;
       * stdout/stderr are captured OUTSIDE the containment into the run
         directory (the jailed process never sees the run dir);
       * env is the evaluator's allowlist shape: uv cache + private venv on
-        node-local scratch, plus the call site's extra_env (paired seeds)
-        exported as APPTAINERENV_*.
+        node-local scratch, plus the call site's extra_env (paired seeds),
+        each forwarded into the jail.
     Returns the script path; the caller submits it via JobSpec(script=...).
 
     With `artifacts` (author-syscall launches, research-loop-buildout.md
@@ -454,13 +453,18 @@ def write_eval_job(
     neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
     if nodes > 1 and image:
         raise ValueError("multi-node evals run uncontained: the jail has no cross-node launcher")
+    runtime = None
+    if image:
+        runtime = runtime_from_env() if container_runtime is None else container_runtime
     if array > 1:
         # the task picks its own job dir; under Slurm the index is the array
         # task id, under a local run the caller exports SWEEP_INDEX
         ev_lines = [
             'TASK="${SLURM_ARRAY_TASK_ID:-${SWEEP_INDEX:-0}}"',
             f'EV={shlex.quote(str(ev))}."$TASK"',
-            'export SWEEP_INDEX="$TASK" APPTAINERENV_SWEEP_INDEX="$TASK"',
+            " ".join(
+                ["export", 'SWEEP_INDEX="$TASK"', *_forwarded(runtime, "SWEEP_INDEX", '"$TASK"')]
+            ),
         ]
     else:
         ev_lines = [f"EV={shlex.quote(str(ev))}"]
@@ -514,35 +518,41 @@ def write_eval_job(
         'else echo 97 > "$EV/exit-code"; exit 0; fi',
         'export UV_CACHE_DIR="$SCRATCH/cache" UV_LINK_MODE=copy '
         'UV_PROJECT_ENVIRONMENT="$SCRATCH/cache/venv"',
-        'export APPTAINERENV_UV_CACHE_DIR="$UV_CACHE_DIR" '
-        "APPTAINERENV_UV_LINK_MODE=copy "
-        'APPTAINERENV_UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT"',
     ]
+    if runtime is not None:
+        lines.append(
+            f'export {runtime.forward("UV_CACHE_DIR")}="$UV_CACHE_DIR" '
+            f"{runtime.forward('UV_LINK_MODE')}=copy "
+            f'{runtime.forward("UV_PROJECT_ENVIRONMENT")}="$UV_PROJECT_ENVIRONMENT"'
+        )
     for key, value in injected.items():
-        lines.append(f"export {key}={shlex.quote(value)} APPTAINERENV_{key}={shlex.quote(value)}")
+        quoted = shlex.quote(value)
+        lines.append(" ".join(["export", f"{key}={quoted}", *_forwarded(runtime, key, quoted)]))
     mask = f'"${LOCAL_GPU_MASK}"'
     # only a local job's own mask counts: one inherited into a Slurm job is stale
     lines.append(f'if [ -n "${{SLURM_JOB_ID-}}" ]; then unset {LOCAL_GPU_MASK}; fi')
-    if image:
-        lines += [
-            # local compute's GPU mask crosses --cleanenv; set only by local jobs
-            f'if [ -n "${{{LOCAL_GPU_MASK}+x}}" ]; then '
-            f"export APPTAINERENV_CUDA_VISIBLE_DEVICES={mask}; fi",
-            # the jail: identical flags to SubprocessEvaluator._run; stdout is
-            # redirected OUTSIDE apptainer, so the result lands in the run dir
-            # without the jailed process ever seeing it
-            f"{shlex.quote(apptainer_binary or apptainer_from_env())} exec --containall --cleanenv "
-            + ("--nv " if gpus > 0 else "")
-            + '--bind "$TREE:$TREE" --home "$SCRATCH/home:$SCRATCH/home" '
-            '--bind "$SCRATCH/cache:$SCRATCH/cache" --pwd "$TREE" '
+    if runtime is not None:
+        jail = Jail(
+            image,
+            home="$SCRATCH/home",
+            binds=(Bind("$TREE", "$TREE"), Bind("$SCRATCH/cache", "$SCRATCH/cache")),
+            pwd="$TREE",
             # /tmp and /var/tmp inside the jail live on node-local scratch,
-            # not apptainer's small tmpfs: a command that writes compile caches
-            # or checkpoints to /tmp (any training script that was not told
+            # not a small tmpfs: a command that writes compile caches or
+            # checkpoints to /tmp (any training script that was not told
             # otherwise) must not die on a temp-disk limit
-            '--workdir "$SCRATCH/work" '
-            f"{shlex.quote(image)} "
-            'sh -c "$(cat "$EV/command.txt")" '
-            '> "$EV/stdout" 2> "$EV/stderr"',
+            workdir="$SCRATCH/work",
+            gpus=gpus > 0,
+        )
+        lines += [
+            # local compute's GPU mask crosses into the jail; set only by local jobs
+            f'if [ -n "${{{LOCAL_GPU_MASK}+x}}" ]; then '
+            f"export {runtime.forward('CUDA_VISIBLE_DEVICES')}={mask}; fi",
+            # the same jail as SubprocessEvaluator._run; stdout is redirected
+            # OUTSIDE it, so the result lands in the run dir without the jailed
+            # process ever seeing it
+            runtime.shell(jail, 'sh -c "$(cat "$EV/command.txt")"')
+            + ' > "$EV/stdout" 2> "$EV/stderr"',
             'echo $? > "$EV/exit-code"',
         ]
     else:
@@ -619,6 +629,13 @@ def write_eval_job(
         lines = [*header, *_coordinator_lines(node_script)]
     _write_script(script, lines)
     return script
+
+
+def _forwarded(runtime: ContainerRuntime | None, name: str, value: str) -> list[str]:
+    """The assignment that carries `name`, set to the shell text `value`, into
+    the jail a job script builds, or none when the script builds no jail (its
+    command runs under `env -i`)."""
+    return [f"{runtime.forward(name)}={value}"] if runtime is not None else []
 
 
 def _write_script(path: Path, lines: list[str]) -> None:

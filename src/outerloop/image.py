@@ -9,10 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -20,11 +17,12 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from outerloop.container import runtime_from_env
+
 IMAGE_NAME = "agent-py312.sif"
 IMAGE_URL = f"https://huggingface.co/outerloop-science/agent-image/resolve/main/{IMAGE_NAME}"
 IMAGE_DIR_NAME = "outerloop-images"
 _CHUNK = 1 << 20
-_PROBE_TIMEOUT_S = 60
 APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
 APPTAINER_VERSION = "1.5.3"
 # the GitHub release ships Debian packages for x86-64 only; the project's PPA
@@ -38,11 +36,6 @@ APPTAINER_UNPRIV_URL = (
     f"v{APPTAINER_VERSION}/tools/install-unprivileged.sh"
 )
 PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
-
-
-def apptainer_from_env() -> str:
-    """The operator's container executable, resolved without running it."""
-    return os.environ.get("OUTERLOOP_APPTAINER_BIN", "").strip() or "apptainer"
 
 
 def uncontained_opt_in(environ: Mapping[str, str] | None = None) -> bool:
@@ -147,57 +140,10 @@ def install_hint() -> str:
     )
 
 
-def containment_check(*, runner: Callable[..., Any] = subprocess.run) -> str:
-    """Why contained runs are NOT possible here, or "" when they are. Finds
-    apptainer and actually runs a container: being on PATH is not enough
-    (Ubuntu 24.04 lets any program create a user namespace but strips its
-    capabilities unless an AppArmor profile allows it, so a hand-installed
-    apptainer fails at exec time with `Could not write info to setgroups`).
-    The probe needs no network: a throwaway sandbox with the standard mount
-    points, the host's /bin, /lib and /usr bound in, running /bin/true —
-    about 0.1 s on a working install."""
-    if sys.platform == "darwin":
-        return "apptainer does not exist on macOS"
-    if not sys.platform.startswith("linux"):
-        return f"apptainer is not available on {sys.platform}"
-    binary = shutil.which(apptainer_from_env())
-    if binary is None:
-        return "apptainer is not installed (not on PATH)"
-    binds = ",".join(d for d in ("/bin", "/lib", "/lib64", "/usr") if os.path.exists(d))
-    with tempfile.TemporaryDirectory(prefix="outerloop-probe-") as sandbox:
-        for d in (
-            "dev",
-            "proc",
-            "sys",
-            "tmp",
-            "etc",
-            "bin",
-            "lib",
-            "lib64",
-            "usr",
-            "root",
-            "home",
-            "var/tmp",
-        ):
-            os.makedirs(os.path.join(sandbox, d), exist_ok=True)
-        for f in ("etc/passwd", "etc/group"):
-            open(os.path.join(sandbox, f), "a").close()
-        argv = [binary, "exec", "--containall", "--cleanenv", "--no-home", "--pwd", "/"]
-        if binds:
-            argv += ["-B", binds]
-        argv += [sandbox, "/bin/true"]
-        try:
-            proc = runner(argv, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return f"apptainer failed to start: {exc}"
-    err = (proc.stderr or "").strip()
-    if "setgroups" in err or "user namespace" in err.lower() or "unshare" in err.lower():
-        last = err.splitlines()[-1] if err else "user namespace refused"
-        return f"apptainer cannot create containers here ({last})"
-    if proc.returncode != 0:
-        last = err.splitlines()[-1] if err else f"exit {proc.returncode}"
-        return f"apptainer exec failed ({last})"
-    return ""
+def containment_check() -> str:
+    """Why contained runs are NOT possible here, or "" when they are: the
+    deployment's container runtime probes this machine."""
+    return runtime_from_env().check()
 
 
 def _fmt_mb(n: int) -> str:

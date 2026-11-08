@@ -387,7 +387,7 @@ def test_gpu_jobs_get_nv_and_gpus(tmp_path):
         gpus=1,
     ).read_text()
     assert "--nv" not in cpu
-    assert "exec --containall --cleanenv --nv --bind" in gpu
+    assert "exec --containall --cleanenv --nv --home" in gpu
     script = tmp_path / "job.sh"
     script.write_text("#!/bin/sh\n")
     spec = eval_job_spec(
@@ -582,6 +582,24 @@ def test_uncontained_sweep_tasks_see_their_index(tmp_path):
         run_dir, "launch-one", repo_root=tmp_path, snapshot_sha="a" * 40, command="true", image=""
     ).read_text()
     assert "SWEEP_INDEX" not in single
+
+
+def test_uncontained_job_forwards_nothing_into_a_jail(tmp_path):
+    """Without an image there is no jail: the command runs under `env -i` with
+    its own assignments, so the script carries no runtime's forwarding copies."""
+    text = write_eval_job(
+        tmp_path / "run",
+        "launch-sw",
+        repo_root=tmp_path,
+        snapshot_sha="a" * 40,
+        command="true",
+        image="",
+        extra_env={"PILOT_SEED": "1234"},
+        array=3,
+    ).read_text()
+    assert "APPTAINERENV_" not in text
+    bare = next(ln for ln in text.splitlines() if "env -i" in ln)
+    assert "PILOT_SEED=1234" in bare and 'SWEEP_INDEX="$SWEEP_INDEX"' in bare
 
 
 def test_local_gpu_mask_crosses_the_scrubbed_environment(tmp_path):

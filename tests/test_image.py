@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from outerloop import container
 from outerloop import image as img
 
 
@@ -176,41 +177,15 @@ def test_ensure_image_download_failure_is_a_warning(tmp_path: Path, monkeypatch:
     assert any("download failed" in line for line in lines)
 
 
-class _Proc:
-    def __init__(self, rc: int, err: str = "") -> None:
-        self.returncode = rc
-        self.stderr = err
-
-
-def test_containment_check_runs_a_container_not_just_which(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    """Being on PATH is not enough (Ubuntu 24.04 strips capabilities from a
-    hand-installed apptainer's user namespace): the probe execs a container
-    and reads the failure."""
-    monkeypatch.setattr(img.sys, "platform", "linux")
-    monkeypatch.setattr(img.shutil, "which", lambda name: None)
-    assert "not installed" in img.containment_check()
-    monkeypatch.setattr(img.shutil, "which", lambda name: "/usr/bin/apptainer")
-    seen: list[list[str]] = []
-
-    def working(argv: list[str], **kw: Any) -> _Proc:
-        seen.append(argv)
-        return _Proc(0)
-
-    assert img.containment_check(runner=working) == ""
-    assert seen and seen[0][0] == "/usr/bin/apptainer" and seen[0][1] == "exec"
-    broken = _Proc(
-        255,
-        "ERROR  : Could not write info to setgroups: Permission denied\n"
-        "ERROR  : Error while waiting event for user namespace mappings: no event received",
-    )
-    problem = img.containment_check(runner=lambda argv, **kw: broken)
-    assert "cannot create containers" in problem and "user namespace" in problem
-    other = _Proc(255, "FATAL:   container creation failed: something else")
-    assert "apptainer exec failed" in img.containment_check(runner=lambda argv, **kw: other)
-    monkeypatch.setattr(img.sys, "platform", "darwin")
-    assert "macOS" in img.containment_check()
+def test_containment_check_probes_the_deployments_runtime(monkeypatch: Any) -> None:
+    """`init` probes with the runtime the deployment jails with, run as
+    OUTERLOOP_APPTAINER_BIN."""
+    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
+    monkeypatch.setattr(container.sys, "platform", "linux")
+    looked_up: list[str] = []
+    monkeypatch.setattr(container.shutil, "which", lambda name: looked_up.append(name))
+    assert img.containment_check() == "apptainer is not installed (not on PATH)"
+    assert looked_up == ["/apps/apptainer"]
 
 
 def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
@@ -294,21 +269,3 @@ def test_progress_draws_a_bar_on_a_terminal(monkeypatch: Any, capsys: Any) -> No
     bar.finish(4 << 20)
     out = capsys.readouterr().out
     assert "[" in out and "50%" in out and "100%" in out and "ETA" in out
-
-
-def test_configured_apptainer_probe(monkeypatch):
-    monkeypatch.setattr(img.sys, "platform", "linux")
-    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
-    monkeypatch.setattr(
-        img.shutil, "which", lambda name: name if name == "/apps/apptainer" else None
-    )
-    seen = []
-
-    def runner(argv, **kw):
-        seen.append(argv)
-        return _Proc(0)
-
-    assert img.containment_check(runner=runner) == ""
-    assert seen[0][0] == "/apps/apptainer"
-    monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "")
-    assert img.apptainer_from_env() == "apptainer"

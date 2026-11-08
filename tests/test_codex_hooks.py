@@ -240,7 +240,7 @@ def test_real_project_hook_mutation_and_config_discovery(
     assert '"type":"turn.completed"' in Path(resumed.transcript_path).read_text()
     assert not marker.exists()
     if contained:
-        original_wrap = CodexHarness._apptainer_argv
+        original_wrap = CodexHarness._jail_argv
 
         def without_policy(self: CodexHarness, *args: Any) -> list[str]:
             argv = original_wrap(self, *args)
@@ -250,7 +250,7 @@ def test_real_project_hook_mutation_and_config_discovery(
             del argv[index - 1 : index + 1]
             return argv
 
-        monkeypatch.setattr(CodexHarness, "_apptainer_argv", without_policy)
+        monkeypatch.setattr(CodexHarness, "_jail_argv", without_policy)
     else:
         original_command = harness_mod._codex_command
 

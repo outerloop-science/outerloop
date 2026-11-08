@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from fakes import FakeHarness
+from outerloop.container import ApptainerRuntime
 from outerloop.harness import SessionResult
 from outerloop.orchestrator import (
     EvalError,
@@ -1040,7 +1041,7 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path, monkeypatch, co
     evaluator = SubprocessEvaluator(
         timeout_s=30,
         container_image="/img/pilot.sif",
-        **({} if configured else {"apptainer_binary": str(fake)}),
+        **({} if configured else {"container_runtime": ApptainerRuntime(str(fake))}),
     )
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -1195,7 +1196,9 @@ def test_eval_cache_is_bound_alone_and_cleaned(tmp_path: Path, monkeypatch) -> N
     ws = tmp_path / "ws"
     ws.mkdir()
     evaluator = SubprocessEvaluator(
-        timeout_s=30, container_image="/img/pilot.sif", apptainer_binary=str(fake)
+        timeout_s=30,
+        container_image="/img/pilot.sif",
+        container_runtime=ApptainerRuntime(str(fake)),
     )
     assert evaluator.evaluate(ws, "run", "m") == 3.5
     argv = (tmp_path / "eval_argv").read_text()
