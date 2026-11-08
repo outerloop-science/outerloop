@@ -89,8 +89,10 @@ jobs:
           # --shared-processes accepts any isolation level the runner can give, so
           # the check never flakes on a runner quirk (/dev/log); the launcher still
           # picks the strongest namespaces that start. Isolation itself is covered
-          # by the unit tests and the live cluster tests.
-          bash src/outerloop/enroot_jail.sh outerloop-enroot --enroot enroot \
+          # by the unit tests and the live cluster tests. The launcher is invoked
+          # exactly as the kernel does it: passed to `bash -c` as text, with
+          # "outerloop-enroot" as $0, so the options and image are $1 onward.
+          bash -c "$(cat src/outerloop/enroot_jail.sh)" outerloop-enroot --enroot enroot \
             --shared-processes --home "$PWD/smoke-home" "$SQSH" \
             sh -c 'python3 --version && uv --version && git --version'
       - name: Checksums
