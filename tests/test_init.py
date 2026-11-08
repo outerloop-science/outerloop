@@ -168,6 +168,9 @@ def _no_image_download(monkeypatch, request):
     monkeypatch.setattr(init, "install_harness", lambda backend: "")
     monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
     monkeypatch.setattr(init, "_token_login", lambda token: "")
+    # the runtime question comes only where enroot is installed and Apptainer
+    # is not, so it depends on the machine; answered here up front
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "apptainer")
     if not request.node.get_closest_marker("real_locate_harness"):
         monkeypatch.setattr(init, "locate_harness", lambda backend: "")
 
@@ -247,6 +250,106 @@ def test_main_checks_the_image_path_and_downloads_only_when_setup_proceeds(
     with pytest.raises(SystemExit):
         init.main([*base, "--target", "o/r", "--image", "/x.sif", "--no-image"])
     assert "not allowed with" in capsys.readouterr().err
+
+
+def test_render_env_names_enroot_and_leaves_apptainer_unwritten() -> None:
+    enroot = InitAnswers(compute="local", target="o/r", container_runtime="enroot")
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in render_env(enroot, "/p")
+    assert "CONTAINER_RUNTIME" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
+
+
+def test_main_records_the_runtime_and_probes_and_fetches_with_it(
+    configured: Path, monkeypatch
+) -> None:
+    from outerloop.container import ApptainerRuntime, EnrootRuntime
+
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    for key in ("OUTERLOOP_CONTAINER_RUNTIME", "OUTERLOOP_ENROOT_BIN", "OUTERLOOP_APPTAINER_BIN"):
+        monkeypatch.delenv(key, raising=False)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main([*base, "--container-runtime", "enroot"]) == 0
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == EnrootRuntime("enroot")
+    # a later run keeps the recorded choice without the flag
+    assert init.main(base) == 0
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == EnrootRuntime("enroot")
+    assert init.main([*base, "--container-runtime", "apptainer"]) == 0
+    assert "CONTAINER_RUNTIME" not in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == ApptainerRuntime("apptainer")
+
+
+def test_main_keeps_the_container_settings_it_probes_with(configured: Path, monkeypatch) -> None:
+    """A full re-run rewrites .env; the runtime's settings survive it, and the
+    probe already reads them from the file."""
+    from outerloop.container import EnrootRuntime
+
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    kept = {
+        "OUTERLOOP_CONTAINER_RUNTIME": "enroot",
+        "OUTERLOOP_ENROOT_BIN": "/apps/enroot",
+        "OUTERLOOP_ENROOT_SHARED_IPC": "1",
+        "OUTERLOOP_APPTAINER_BIN": "/apps/apptainer",
+    }
+    for key in (*kept, "OUTERLOOP_ENROOT_SHARED_PROCESSES"):
+        monkeypatch.delenv(key, raising=False)
+    (configured / ".env").write_text("".join(f"{k}={v}\n" for k, v in kept.items()))
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 0
+    env = (configured / ".env").read_text()
+    assert all(f"\n{k}={v}\n" in f"\n{env}" for k, v in kept.items())
+    assert calls[-1]["runtime"] == EnrootRuntime("/apps/enroot", shared_ipc=True)
+
+
+def test_main_refuses_an_unknown_runtime(configured: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "docker")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 2
+    assert "choose apptainer or enroot" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        init.main([*base, "--container-runtime", "podman"])
+
+
+def test_enroot_is_proposed_only_when_it_is_installed_and_apptainer_is_not(monkeypatch) -> None:
+    """init never switches runtimes on its own: it asks, and only where
+    Apptainer is missing and enroot is on PATH."""
+    from argparse import Namespace
+
+    installed: set[str] = set()
+    monkeypatch.setattr(init.shutil, "which", lambda name: name if name in installed else None)
+    asked: list[str] = []
+    answer = ["y"]
+
+    def ask(prompt: str, default: str = "", **kw: Any) -> str:
+        asked.append(prompt)
+        return answer[0]
+
+    monkeypatch.setattr(init, "_ask", ask)
+    none = Namespace(container_runtime=None)
+    assert init._container_runtime(none, {}, True) == "" and asked == []
+    installed.add("enroot")
+    assert init._container_runtime(none, {}, True) == "enroot" and len(asked) == 1
+    answer[0] = "n"
+    assert init._container_runtime(none, {}, True) == ""
+    assert init._container_runtime(none, {}, False) == "" and len(asked) == 2
+    installed.add("apptainer")
+    assert init._container_runtime(none, {}, True) == "" and len(asked) == 2
+    # a flag or a recorded choice is never second-guessed
+    assert init._container_runtime(Namespace(container_runtime="enroot"), {}, True) == "enroot"
+    assert init._container_runtime(none, {"OUTERLOOP_CONTAINER_RUNTIME": "apptainer"}, True) == ""
+    assert len(asked) == 2
 
 
 def test_main_yes_requires_target(configured: Path, capsys) -> None:

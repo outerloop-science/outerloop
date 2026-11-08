@@ -10,7 +10,7 @@ Outerloop is self-hosted. You run it, with your keys, on your compute, against y
 - `uv` on PATH, or in the directory its installer uses. Evaluations and launches run through `uv run`, and `outerloop start` stops with a message when it cannot find it.
 - A GitHub repository you administer.
 - An API key for the author's model, or for Claude a subscription token from `claude setup-token`, and separate credentials for the judges.
-- For contained runs, Linux with [Apptainer](https://apptainer.org). macOS uses Seatbelt through `/usr/bin/sandbox-exec` without a VM.
+- For contained runs, Linux with [Apptainer](https://apptainer.org) or [enroot](https://github.com/NVIDIA/enroot) (the runtime GPU-cloud Slurm clusters with pyxis already carry; see [running on enroot](#running-on-enroot)). macOS uses Seatbelt through `/usr/bin/sandbox-exec` without a VM.
 
 The orchestrator is CPU-only and makes outbound connections only. Anywhere that can reach GitHub and your model provider works.
 
@@ -208,9 +208,30 @@ GPU jobs request at least 8 cores and 64 GB of host memory per GPU. On nodes wit
 
 ## The agent image
 
-On a cluster, evals and launches run inside the Apptainer image at `OUTERLOOP_IMAGE` (default `~/outerloop-images/agent-py312.sif`), in a jail that binds only the checked-out tree. An eval that needs data must fetch it into the tree. The published image lives at [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image), built from `containers/agent-py312.def`. On Linux with Apptainer installed, `outerloop init` downloads it (about 200 MB), verifies its published checksum and records it. `--image` points at your own, and `--no-image` skips Apptainer even when an image is on disk (macOS still uses Seatbelt when available) by writing `OUTERLOOP_IMAGE=`.
+On a cluster, evals and launches run inside the agent image at `OUTERLOOP_IMAGE` (default `~/outerloop-images/agent-py312.sif`, or `.sqsh` under enroot), in a jail that binds only the checked-out tree. An eval that needs data must fetch it into the tree. The published images live at [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image), all built from the one recipe `containers/agent-py312.def`: a `.sif` for Apptainer and a `.sqsh` for enroot, each for x86-64 and ARM64. On Linux with the container runtime working, `outerloop init` downloads the one for this machine (about 200 MB), verifies its published checksum and records it. `--image` points at your own, and `--no-image` skips the container even when an image is on disk (macOS still uses Seatbelt when available) by writing `OUTERLOOP_IMAGE=`.
 
 Only the local loop falls back to running uncontained on its own. On Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. Codex and Hermes authors need the image in every mode.
+
+### Running on enroot
+
+[enroot](https://github.com/NVIDIA/enroot) is the container runtime on the GPU-cloud Slurm clusters that pair it with pyxis, where Apptainer is often absent. Set `OUTERLOOP_CONTAINER_RUNTIME=enroot` and point `OUTERLOOP_IMAGE` at the `.sqsh` image, or let `init` do both: it proposes enroot when enroot is installed and Apptainer is not, and downloads the `.sqsh` for the machine as it would the `.sif`. Everything else is the same: one recipe, the same `init` flow, the same walls around a jail. A deployment that moves from the `.sif` to the `.sqsh` keeps the same containment, with the documented exceptions at the end of this section.
+
+The kernel calls `enroot start` itself, not through pyxis. pyxis starts a container only as a Slurm job step and copies the whole job environment into it, which would undo the scrubbed environment a session and an eval depend on; sessions and the in-job evaluator already run inside a job, and local mode has no Slurm at all. Calling enroot directly keeps one code path for both compute modes and a cleared environment in each. The runtime pins every enroot setting that affects isolation as a directive in its own config, so a permissive site `/etc/enroot/enroot.conf` cannot relax them, and it does not read the operator's own `~/.config/enroot`. The site's standard enroot hooks still run, steered by those directives (no host home, a rebuilt minimal `/dev`, GPUs off unless the job asks). Each jail unpacks the image for itself onto node-local scratch (an eval's work directory, a session's `TMPDIR`), starts from it read-only, and the unpacked tree is removed on every exit, a kill included; the unpack takes a few seconds.
+
+enroot 4.2 and later give each jail its own process and IPC namespaces, the walls Apptainer's `--containall` gives. The kernel tests this on the machine, at `init` and again at each start, and never infers it from the version. Where the namespaces cannot start, a jail is refused unless the operator accepts the gap, the same shape as [running a cluster without a container](#running-a-cluster-without-a-container):
+
+- `OUTERLOOP_ENROOT_SHARED_IPC=1` accepts a jail that keeps its own process namespace but shares the node's System V IPC. This is the narrow gap: enroot 4.2 where `--ipc` cannot start (a node without `/dev/log`, for example).
+- `OUTERLOOP_ENROOT_SHARED_PROCESSES=1` accepts that and a shared process view as well, for enroot older than 4.2, which has neither namespace. A jail that shares the process view sees every process on the node with its command line and can signal this account's. Reading another process's environment, model keys included, is the worst case: a Linux user namespace denies it on most hosts, and an AppArmor policy that restricts unprivileged user namespaces denies it further, but the opt-in does not rely on either, so on a host that allows it a jail could read a sibling run's keys. Treat this as the weakest containment short of none, and use it only where that exposure is acceptable.
+
+Accepting the narrow gap never accepts the serious one: `OUTERLOOP_ENROOT_SHARED_IPC=1` on its own still refuses a jail that would share the process view. The loop names whichever gap it accepted, once, when it starts. Judges run under the same opt-in, with no separate setting.
+
+Three differences from the `.sif`, documented so a switch holds no surprises:
+
+- enroot's seccomp filter makes `chown` and `setuid` inside the jail report success without changing anything, where Apptainer's does not. A build step that chowns a file sees no error under either runtime; the owner does not change under either.
+- enroot populates the home with a skeleton (`.bashrc`, `.profile`, `.bash_logout` from the image's `/etc/skel`), where Apptainer leaves it empty. The home is the per-run or per-eval directory, so this is scratch that dies with the jail.
+- A jail path that holds whitespace (the home, a bind's source or target, or the work directory) is refused rather than mounted: enroot's mount table splits on whitespace and decodes no escapes, so it could not mount such a path faithfully.
+
+GPUs cross exactly as under Apptainer: none in a session, the job's own GPUs in a GPU eval or launch, never a GPU the job was not allocated. The network is shared, as under Apptainer. A multi-node benchmark is refused when contained, the same as Apptainer; [running a cluster without a container](#running-a-cluster-without-a-container) is the only multi-node path for now.
 
 ### Running a cluster without a container
 
@@ -234,6 +255,7 @@ When Apptainer is missing or cannot run containers, init says so, prints the ins
 - RHEL, Rocky, Alma: `sudo dnf install -y epel-release`, then `sudo dnf install -y apptainer`.
 - No root: download the project's unprivileged installer pinned to a release tag, read it, then run it.
 - Slurm clusters: ask the administrators; most already provide it. A cluster without one can run [uncontained](#running-a-cluster-without-a-container).
+- enroot instead of Apptainer: install it from [NVIDIA's release packages](https://github.com/NVIDIA/enroot/releases) (Debian and RPM, x86-64 and ARM64), set `OUTERLOOP_CONTAINER_RUNTIME=enroot`, and run `outerloop init --force`. A pyxis cluster already has it. See [running on enroot](#running-on-enroot).
 
 ## Model backends and keys
 

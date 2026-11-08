@@ -42,6 +42,7 @@ from outerloop.compute import (
     local_mode,
     quote_command,
 )
+from outerloop.container import runtime_from_env
 from outerloop.containment import seatbelt_available
 from outerloop.disk import DEFAULT_MIN_FREE_BYTES, check_disk
 from outerloop.endpoint_wait import EndpointWaitReason
@@ -56,7 +57,7 @@ from outerloop.forge import (
 from outerloop.gpu_lanes import GpuLane, gpu_lanes_from_env
 from outerloop.harness import DEFAULT_MAX_TURNS, ClaudeModelUnset, default_claude_model, redact
 from outerloop.housekeeping import shed_ended_workspaces
-from outerloop.image import uncontained_opt_in
+from outerloop.image import image_dir, image_name, uncontained_opt_in
 from outerloop.job_names import run_job_name
 from outerloop.ledger_branch import RESEARCH_LOG_BRANCH as RESEARCH_LOG_BRANCH
 from outerloop.limits import EffectiveLimits, bound_limits, capped_limits, effective_limits
@@ -347,6 +348,7 @@ def _gpu_lane_error(contract: Any, benchmark: str, spec: ServiceSpec) -> str:
 
 
 _UNCONTAINED_WARNED = False  # the local-mode warning is said once per process
+_GAP_WARNED = False  # so is a runtime's accepted gap
 
 
 def _containment(image: str) -> list[str]:
@@ -3699,9 +3701,10 @@ def _min_tick_s_from_env() -> float:
     return seconds
 
 
-def _default_image() -> str:
-    """The default agent image path."""
-    return os.path.expanduser("~/outerloop-images/agent-py312.sif")
+def _default_image(environ: Mapping[str, str] | None = None) -> str:
+    """The default agent image path, in the format of the deployment's runtime;
+    `environ` stands in for the process environment."""
+    return str(image_dir() / image_name(runtime_from_env(environ)))
 
 
 def startup_image() -> str:
@@ -3749,7 +3752,7 @@ def _service_spec_from_env(
         # cluster never silently drops containment. The panel is off unless
         # the operator opts in, because an uncontained judge holds a shell
         # next to its own key file. Said once per process. Contained runs need
-        # apptainer and the image (docs/install.md).
+        # a container runtime and the image (docs/install.md).
         global _UNCONTAINED_WARNED
         if not _UNCONTAINED_WARNED:
             _UNCONTAINED_WARNED = True
@@ -3772,6 +3775,14 @@ def _service_spec_from_env(
         # the jobs must not inherit a path to an image that is not there
         os.environ.pop("OUTERLOOP_IMAGE", None)
         image, image_ok = "", True
+    else:
+        # a runtime whose jails may run without a wall Apptainer's keep, by the
+        # operator's opt-in, says so once, as running uncontained does
+        global _GAP_WARNED
+        gap = runtime_from_env().accepted_gap()
+        if gap and not _GAP_WARNED:
+            _GAP_WARNED = True
+            log.warning("%s (docs/install.md, running on enroot)", gap)
     credential_ok = local or bool((pat_file or app_file) and bot_login)
     if credential_ok and home and target and image_ok:
         try:

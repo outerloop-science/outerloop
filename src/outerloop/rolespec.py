@@ -36,7 +36,7 @@ class RoleSpecError(ValueError):
 @dataclass(frozen=True)
 class Execution:
     # `environment` is declarative deployment metadata: it names where the
-    # role is meant to run, but binding it (the apptainer image, the runner)
+    # role is meant to run, but binding it (the container image, the runner)
     # is the harness builder's job at the deployment site. `can_execute` is
     # the enforced half — the RoleSpec invariant and the builders check it.
     environment: Environment

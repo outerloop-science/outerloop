@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -1059,6 +1060,35 @@ def test_subprocess_evaluator_container_wrapping(tmp_path: Path, monkeypatch, co
     workdir = Path(tokens[tokens.index("--workdir") + 1])
     assert workdir.name == "work" and "uv-cache-" in workdir.parent.name
     assert not workdir.exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the enroot launcher is Linux-only")
+def test_subprocess_evaluator_runs_through_the_enroot_launcher(tmp_path: Path) -> None:
+    """Under enroot the eval command goes through the launcher: uv's settings
+    and the seed cross, the eval's own home and workspace are the jail's, and
+    the unpacked image leaves with the eval's work directory."""
+    from fakes import fake_enroot
+    from outerloop.container import EnrootRuntime
+    from outerloop.orchestrator import SubprocessEvaluator
+
+    image = tmp_path / "agent.sqsh"
+    image.write_text("")
+    evaluator = SubprocessEvaluator(
+        timeout_s=60,
+        container_image=str(image),
+        container_runtime=EnrootRuntime(str(fake_enroot(tmp_path / "fake"))),
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    home, cache = tmp_path / "eval-home", tmp_path / "cache"
+    home.mkdir()
+    cache.mkdir()
+    out = evaluator._run(
+        ws, 'pwd; echo "$HOME|$PILOT_SEED|$UV_LINK_MODE"', home, cache, {"PILOT_SEED": "7"}
+    )
+    assert out.splitlines() == [str(ws), f"{home}|7|copy"]
+    assert sorted(p.name for p in (cache / "work").iterdir()) == ["tmp", "var_tmp"]
+    assert evaluator.evaluate(ws, """printf '{"m": 2.5}\n'""", "m") == 2.5
 
 
 def test_pr_body_refuses_non_improved_results(tmp_path: Path) -> None:

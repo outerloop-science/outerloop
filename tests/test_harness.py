@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -581,6 +582,90 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path, monkeypatch, configu
     assert "/img/agent.sif /opt/agent/claude -p" in argv
     assert "sk-c" not in argv  # the key travels via env, never argv
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen(tmp_path, "seen_env")
+
+
+def test_an_enroot_session_hands_its_jail_to_the_launcher(tmp_path: Path, monkeypatch) -> None:
+    """Under enroot the same jail goes to the launcher: workspace and per-run
+    home bound, the binary read-only, the start folder kept, and the key in
+    the environment under the launcher's prefix, never on argv."""
+    from outerloop import harness as harness_mod
+    from outerloop.container import _ENROOT_JAIL, EnrootRuntime
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured.update(command=command, env=env)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", fake_popen)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(
+        api_key="sk-c",
+        binary="/real/claude",
+        container_image="/img/agent.sqsh",
+        container_runtime=EnrootRuntime("/apps/enroot"),
+    )
+    assert harness.run("task", ws).is_error  # the fake Popen stopped the run
+    cmd, env = captured["command"], captured["env"]
+    assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
+    home = str(tmp_path / "ws-home")
+    image = cmd.index("/img/agent.sqsh")
+    assert cmd[4:image] == [
+        "--enroot",
+        "/apps/enroot",
+        "--home",
+        home,
+        "--bind",
+        str(ws),
+        str(ws),
+        "rw",
+        "--bind",
+        "/real/claude",
+        "/opt/agent/claude",
+        "ro",
+        "--pwd",
+        str(ws),
+    ]
+    assert cmd[image + 1 : image + 3] == ["/opt/agent/claude", "-p"]
+    assert "sk-c" not in " ".join(cmd)
+    assert env["ENROOTENV_ANTHROPIC_API_KEY"] == "sk-c"
+    assert not any(key.startswith("APPTAINER") for key in env)
+
+
+def test_an_enroot_codex_session_jails_the_login_and_the_exec(tmp_path: Path, monkeypatch) -> None:
+    from outerloop import harness as harness_mod
+    from outerloop.container import _ENROOT_JAIL, EnrootRuntime
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_run(command, env, **kw):
+        calls.append((command, env))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def fake_popen(command, cwd, env, **kw):
+        calls.append((command, env))
+        raise OSError("stop here")
+
+    monkeypatch.setattr(harness_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", fake_popen)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="sk-o",
+        binary="/real/codex",
+        model="gpt-5.6-terra",
+        container_image="/img/agent.sqsh",
+        container_runtime=EnrootRuntime("/apps/enroot"),
+    )
+    assert harness.run("task", ws).is_error
+    (login, _), (exec_, _) = calls
+    for cmd, env in calls:
+        assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
+        assert "--bind" in cmd and "/opt/agent/codex" in cmd and "sk-o" not in " ".join(cmd)
+        assert env["ENROOTENV_OPENAI_API_KEY"] == "sk-o" and "ENROOTENV_CODEX_HOME" in env
+    # the login sees no workspace; the exec starts in it
+    assert str(ws) not in login and exec_[exec_.index("--pwd") + 1] == str(ws)
 
 
 def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]:

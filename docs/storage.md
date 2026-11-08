@@ -203,7 +203,7 @@ Submitted jobs never run from the agent's live workspace. At each launch or meas
 
 ## Container images
 
-One Apptainer image, `agent-py312.sif`, serves the whole system. It is fetched once from Hugging Face to `~/outerloop-images`, or named explicitly with `OUTERLOOP_IMAGE` (see the [environment reference](reference/environment.md)). Contained sessions run inside it with the workspace, the run home and the harness's own files bound in. Compute-node jobs run inside it with a clean environment, GPUs exposed, a seeded `uv` cache and a worktree that is deleted at exit. Harness binaries are pinned by version and SHA-256. A local Claude run can also go without the image, uncontained, as [Install](install.md) describes.
+One agent image serves the whole system: `agent-py312.sif` under Apptainer, `agent-py312.sqsh` under enroot, both built from one recipe. It is fetched once from Hugging Face to `~/outerloop-images`, or named explicitly with `OUTERLOOP_IMAGE` (see the [environment reference](reference/environment.md)). Contained sessions run inside it with the workspace, the run home and the harness's own files bound in. Compute-node jobs run inside it with a clean environment, GPUs exposed, a seeded `uv` cache and a worktree that is deleted at exit. Harness binaries are pinned by version and SHA-256. A local Claude run can also go without the image, uncontained, as [Install](install.md) describes.
 
 ## No database by design
 

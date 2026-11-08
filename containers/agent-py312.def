@@ -1,12 +1,15 @@
 # The Outerloop agent image: what a contained session and a dispatched
 # evaluation see. The kernel binds the workspace, a per-run home and the
-# harness binary (claude/codex) into it; --nv adds the host's GPU driver for
+# harness binary (claude/codex) into it, and exposes the host's GPU driver for
 # GPU benchmarks. So the image only has to provide the base a target's own
 # `uv run ...` needs: Python 3.12, uv, git and a compiler.
 #
-# Built by .github/workflows/build-image.yml and published to
+# This one Apptainer recipe is the single source for every published image.
+# .github/workflows/build-image.yml builds the .sif from it and converts that
+# to a .sqsh for enroot, for x86-64 and ARM64, and publishes all four to
 # https://huggingface.co/outerloop-science/agent-image; `outerloop init` pulls
-# it on Linux. Build by hand: apptainer build agent-py312.sif containers/agent-py312.def
+# the one for the machine and runtime on Linux. Build by hand:
+#   apptainer build agent-py312.sif containers/agent-py312.def
 
 Bootstrap: docker
 From: ubuntu:24.04

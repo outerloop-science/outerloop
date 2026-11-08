@@ -98,7 +98,11 @@ TICK_ENV_KEYS = (
     "OUTERLOOP_TOKEN_PRICES",
     "OUTERLOOP_CODEX_WEB_SEARCH",
     "OUTERLOOP_QOS",
+    "OUTERLOOP_CONTAINER_RUNTIME",
     "OUTERLOOP_APPTAINER_BIN",
+    "OUTERLOOP_ENROOT_BIN",
+    "OUTERLOOP_ENROOT_SHARED_IPC",
+    "OUTERLOOP_ENROOT_SHARED_PROCESSES",
     "OUTERLOOP_IMAGE",
     "OUTERLOOP_UNCONTAINED",
     "OUTERLOOP_OPERATOR_HARNESSES",
@@ -451,7 +455,7 @@ def _tick_image(values: Mapping[str, str], environ: Mapping[str, str], mode: str
     if uncontained_opt_in(settings):
         return ""
     image = settings.get("OUTERLOOP_IMAGE")
-    return _default_image() if image is None else image.strip()
+    return _default_image(settings) if image is None else image.strip()
 
 
 def missing_harness_binary(values: Mapping[str, str], environ: Mapping[str, str]) -> str:
@@ -674,11 +678,13 @@ def start(args: argparse.Namespace) -> int:
         )
         from outerloop.attempt import author_config_error
         from outerloop.author_overrides import validate_overrides
+        from outerloop.container import runtime_from_env
 
         try:
             # validate what the tick this start launches will actually run: its settings
             # and image, every override, then the fleet default author it falls back to
             settings = _tick_settings(values, os.environ, plan.mode)
+            runtime_from_env(settings)  # a misspelled runtime stops here, not in a job
             image = _tick_image(values, os.environ, plan.mode)
             if plan.mode == "local" and image and not Path(image).is_file():
                 image = ""  # the local loop runs without an image it cannot find

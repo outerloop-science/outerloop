@@ -664,8 +664,8 @@ class ClaudeCodeHarness:
     # A judge on a subscription token runs --safe-mode instead, which disables
     # CLAUDE.md, hooks, plugins, skills and MCP servers but keeps OAuth auth.
     bare: bool = False
-    # Apptainer image for session containment. When set,
-    # the session runs under `apptainer exec --containall --cleanenv`: no host
+    # Container image for session containment. When set, the session runs in
+    # the deployment's jail (`container_runtime`): no host
     # $HOME, no host env, no same-user absolute paths — the session sees only
     # the workspace, its per-run HOME, and the read-only claude binary. This
     # closes the threat model's shared-filesystem residual risk. Images stay
@@ -1156,14 +1156,14 @@ class CodexHarness:
     invocation; operator-supplied rates provide dollars when configured.
 
     CONTAINED mode (`container_image` set): both `codex login` and `codex exec`
-    run inside `apptainer exec --containall --cleanenv`, sharing a bound
-    `--home` so the login's auth.json is visible to the exec. apptainer is the
-    boundary — no host FS beyond its binds; `--cleanenv` scrubs the env
+    run in the deployment's jail (`container_runtime`), sharing a bound
+    home so the login's auth.json is visible to the exec. The jail is the
+    boundary — no host FS beyond its binds; it scrubs the env
     down to the role's own key, so the process tree carries no foreign token
     for a /proc read to lift (the boundary is the scrubbed env, not PID
     isolation) — the same posture as the Claude backend. `--sandbox
     danger-full-access` uniformly: codex's own sandbox (`workspace-write`)
-    needs bubblewrap, absent in the image and unreliable nested in apptainer,
+    needs bubblewrap, absent in the image and unreliable nested in a container,
     and the deployment's boundary (this container, or the ephemeral runner in
     the uncontained case) already confines the session. The host codex binary
     is bind-mounted read-only into the container (like claude), so the image
@@ -1178,11 +1178,11 @@ class CodexHarness:
     # empty -> codex's configured default (a wrong id 404s); pin only a verified one
     model: str = ""
     # the deployment's container or ephemeral runner is the boundary; codex's own
-    # sandbox stays off (it needs bubblewrap — absent/unreliable in apptainer)
+    # sandbox stays off (it needs bubblewrap — absent/unreliable in a container)
     sandbox: str = "danger-full-access"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)
-    # when set, login+exec run inside this apptainer image; empty = uncontained
+    # when set, login+exec run inside this container image; empty = uncontained
     # (the deployment's runner is the boundary)
     container_image: str = ""
     container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
@@ -1681,9 +1681,9 @@ class HermesHarness:
         "memory",
     )
     extra_args: tuple[str, ...] = field(default_factory=tuple)
-    # Apptainer image for session containment, same stance as the other
-    # backends: when set, the session runs under `apptainer exec --containall
-    # --cleanenv` seeing only the workspace, the per-run home, and read-only
+    # Container image for session containment, same stance as the other
+    # backends: when set, the session runs in the deployment's jail
+    # seeing only the workspace, the per-run home, and read-only
     # binds of the pinned source and runtime (venv plus standalone Python).
     container_image: str = ""
     container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)

@@ -40,6 +40,7 @@ from outerloop.cli import (
     env_file_values,
     operator_env_file,
 )
+from outerloop.container import runtime_from_env
 from outerloop.github import IDENTITY_ENV
 from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.hermes_install import hermes_ready
@@ -68,6 +69,7 @@ class InitAnswers:
     claude_model: str = ""  # the model every Claude role runs (OUTERLOOP_CLAUDE_MODEL)
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
+    container_runtime: str = ""  # "enroot" (OUTERLOOP_CONTAINER_RUNTIME); "" keeps Apptainer
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
     author_bin: str = ""  # absolute binary or Hermes source path, when ready
     personal: bool = False  # --personal: the token is the person's (OUTERLOOP_IDENTITY)
@@ -106,6 +108,9 @@ def render_env(
         # a local forge repository lives under the state root; recording an
         # explicit one keeps `start` looking where `init` bootstrapped
         lines.append(f"OUTERLOOP_ROOT={a.root}")
+    if a.container_runtime:
+        # apptainer is the default and stays unwritten
+        lines.append(f"OUTERLOOP_CONTAINER_RUNTIME={a.container_runtime}")
     if a.image:
         lines.append(f"OUTERLOOP_IMAGE={a.image}")
     elif a.uncontained:
@@ -911,6 +916,29 @@ def _github_app_setup(
     return 0
 
 
+def _container_runtime(
+    args: argparse.Namespace, settings: dict[str, str], interactive: bool
+) -> str:
+    """The runtime that contains this deployment, "" for Apptainer (the
+    default, left unwritten): --container-runtime, else the shell's or the
+    existing settings' OUTERLOOP_CONTAINER_RUNTIME, else enroot when it is
+    installed and apptainer is not and the operator says so when asked."""
+    chosen = (
+        (args.container_runtime or settings.get("OUTERLOOP_CONTAINER_RUNTIME", "")).strip().lower()
+    )
+    if chosen not in ("", "apptainer", "enroot"):
+        raise ValueError(f"OUTERLOOP_CONTAINER_RUNTIME={chosen}: choose apptainer or enroot")
+    if not chosen and interactive:
+        apptainer = settings.get("OUTERLOOP_APPTAINER_BIN", "").strip() or "apptainer"
+        enroot = settings.get("OUTERLOOP_ENROOT_BIN", "").strip() or "enroot"
+        if shutil.which(enroot) and not shutil.which(apptainer):
+            answer = _ask(
+                "Apptainer is not installed but enroot is: contain runs with enroot? (Y/n)", "y"
+            )
+            chosen = "enroot" if answer.lower().startswith("y") else ""
+    return "" if chosen == "apptainer" else chosen
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         env_file_values(_env_path(), keys=None)
@@ -979,11 +1007,19 @@ def main(argv: list[str] | None = None) -> int:
         help="model for every Claude role (author, panel judges, steward): required, no "
         "default; OUTERLOOP_CLAUDE_MODEL in the shell also counts",
     )
+    parser.add_argument(
+        "--container-runtime",
+        dest="container_runtime",
+        choices=["apptainer", "enroot"],
+        help="what contains sessions and evals on Linux (default apptainer; asked when enroot "
+        "is installed and apptainer is not)",
+    )
     image_flags = parser.add_mutually_exclusive_group()  # one or the other, never both
     image_flags.add_argument(
         "--image",
-        help="path to an Apptainer image to run sessions and evals in (default: the "
-        "published one, downloaded on Linux when apptainer is installed)",
+        help="path to the agent image to run sessions and evals in, a .sif for Apptainer or a "
+        ".sqsh for enroot (default: the published one, downloaded on Linux when the container "
+        "runtime works)",
     )
     image_flags.add_argument(
         "--no-image",
@@ -1165,7 +1201,14 @@ def main(argv: list[str] | None = None) -> int:
         }
         if selected_authors:
             override_keys.update(key for key in deployment_env if endpoint_config_key(key))
-        for key in (*judge_keys, *sorted(override_keys)):
+        # the container runtime's own settings, which the probe below reads too
+        container_keys = (
+            "OUTERLOOP_APPTAINER_BIN",
+            "OUTERLOOP_ENROOT_BIN",
+            "OUTERLOOP_ENROOT_SHARED_IPC",
+            "OUTERLOOP_ENROOT_SHARED_PROCESSES",
+        )
+        for key in (*judge_keys, *container_keys, *sorted(override_keys)):
             if key in os.environ:
                 settings[key] = os.environ[key]
             if key in settings:
@@ -1207,10 +1250,27 @@ def main(argv: list[str] | None = None) -> int:
     # syntax and overwrite checks have already passed.
     # An existing image is used, else the published one is fetched on a machine
     # that can run it (asked first when interactive); --no-image opts out.
+    try:
+        # asked only when an image will run; a recorded choice is kept either way
+        answers.container_runtime = _container_runtime(
+            args, effective_overrides, interactive and not args.no_image
+        )
+    except ValueError as exc:
+        print(f"outerloop init: {exc}", file=sys.stderr)
+        return 2
     if not answers.image and not args.no_image:
+        runtime = runtime_from_env(
+            {
+                **effective_overrides,
+                **answers.preserved_env,
+                "OUTERLOOP_CONTAINER_RUNTIME": answers.container_runtime,
+            }
+        )
         # the container probe is for local mode: on Slurm the image runs on
         # compute nodes, which the login node cannot speak for
-        answers.image = ensure_image(interactive=interactive, probe=(answers.compute == "local"))
+        answers.image = ensure_image(
+            interactive=interactive, probe=(answers.compute == "local"), runtime=runtime
+        )
 
     try:
         validate_overrides(

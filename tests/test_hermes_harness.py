@@ -390,6 +390,44 @@ def test_container_mode_jails_the_session(tmp_path, monkeypatch) -> None:
     assert captured["command"][0] == str(runtime / "venv/bin/python")
 
 
+def test_enroot_mode_jails_the_session_through_the_launcher(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    from outerloop.container import _ENROOT_JAIL, EnrootRuntime
+    from outerloop.harness import HermesHarness
+
+    captured = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured["command"] = command
+        captured["env"] = env
+        raise OSError("stop here")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    repo = tmp_path / "hermes-agent"
+    repo.mkdir(exist_ok=True)
+    ws = tmp_path / "runs" / "r1" / "ws"
+    ws.mkdir(parents=True)
+    h = HermesHarness(
+        api_key="sk-h",
+        repo_dir=repo,
+        provider="openai-api",
+        container_image="/img.sqsh",
+        container_runtime=EnrootRuntime("enroot"),
+    )
+    assert h.run("brief", ws).is_error
+    cmd, env = captured["command"], captured["env"]
+    assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
+    home = str((ws.parent / f"{ws.name}-home").resolve())
+    assert cmd[cmd.index("--home") + 1] == home and cmd[cmd.index("--pwd") + 1] == home
+    assert [str(repo), str(repo), "ro"] == cmd[cmd.index(str(repo)) : cmd.index(str(repo)) + 3]
+    runtime = hermes_runtime(repo)
+    assert cmd[cmd.index("/img.sqsh") + 1] == str(runtime / "venv/bin/python")
+    assert "sk-h" not in " ".join(cmd)
+    assert env["ENROOTENV_OPENROUTER_API_KEY"] == "sk-h"
+    assert {"ENROOTENV_TERMINAL_CWD", "ENROOTENV_OUTERLOOP_CAPTURE_ID"} <= set(env)
+
+
 def test_author_fresh_and_resume_commands(monkeypatch, tmp_path):
     from outerloop.role_runner import build_harness, run_role
     from outerloop.roles import author_spec

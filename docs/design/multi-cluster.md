@@ -149,15 +149,15 @@ GPU jobs use `--gpus-per-node`, which is what `JobSpec` already writes.
 over, and `scrontab` is a better home for the tick than a job chain: it
 runs on the login-node pool under the `cron` QOS, recurs on a schedule, and
 NERSC itself recommends `--dependency=singleton` for it, which is exactly
-our chain's guard. Two builds: a container-runtime seam, since the kernel
-hard-codes `apptainer exec` in four places and Perlmutter offers Shifter and
-podman-hpc instead (one `ContainerRuntime` with an apptainer and a shifter
-implementation behind all four sites; the image needs an OCI publication
-next to the `.sif`); and
-a `scrontab` mode for `outerloop start`. Whether compute nodes reach GitHub
-and the model APIs directly must be confirmed; if not, the same proxy
-pass-through Polaris needs applies here. The seam itself exists since #605,
-so a Shifter or podman-hpc runtime is one more implementation behind it.
+our chain's guard. Two builds: a Shifter or podman-hpc runtime, since
+Perlmutter offers those instead of Apptainer, and a `scrontab` mode for
+`outerloop start`. Whether compute nodes reach GitHub and the model APIs
+directly must be confirmed; if not, the same proxy pass-through Polaris needs
+applies here. The seam itself exists since #605, and enroot joined it as a
+second runtime since the enroot PR, so a Shifter or podman-hpc runtime is one
+more implementation behind it. Shifter and podman-hpc read OCI images, so they
+want an OCI publication next to the `.sif` and `.sqsh` the build already
+produces.
 
 **ALCF Polaris.** The largest build, and last: a `PbsCompute` behind the
 `Compute` protocol (`qsub`/`qstat`/`qdel`; `-W depend=afterany:<id>`,
@@ -238,9 +238,11 @@ login node:
   about 30 h; 91 pending, 47 running, all with GPUs.
 - **Containers are pyxis and enroot, not Apptainer.** `srun --container-image`
   and `--container-mounts` are the interface; `/usr/bin/enroot` is present;
-  no Apptainer binary or module on the login node. Cluster C is therefore
-  the second consumer of the container seam the NERSC section asks for, and
-  it wants an OCI form of the agent image (enroot imports `docker://`).
+  no Apptainer binary or module on the login node. The enroot PR added an
+  enroot runtime behind the seam and publishes a `.sqsh` agent image next to
+  the `.sif`, so cluster C runs contained on the image `init` downloads; the
+  kernel calls `enroot start` itself rather than through pyxis, to keep the
+  scrubbed environment both compute modes rely on.
 - **The login node is shared with nobody's scheduler.** A large shared node
   with no CPU or memory quota on the user slice and user processes
   running for days: a login-host loop is within observed practice, as on

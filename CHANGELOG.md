@@ -9,6 +9,11 @@ Versions follow [SemVer](https://semver.org).
 ### Upgrading
 
 - The reusable review, summary and maintenance workflows now default to the codex backend. A caller that relied on the old `claude` default must now set `backend: claude`; otherwise its reviews post a could-not-run stub until an `openai_reviewer_key` secret is passed.
+- `OUTERLOOP_CONTAINER_RUNTIME=enroot` is understood only from this release. An older kernel ignores it and uses Apptainer, so before rolling back past it switch the setting back to Apptainer (or clear it), or the rolled-back kernel runs on a runtime that may be absent.
+
+### Added
+
+- enroot as a second container runtime behind the `ContainerRuntime` seam, for the GPU-cloud Slurm clusters (CoreWeave, AWS, Azure, DGX Cloud) that pair enroot with pyxis and often have no Apptainer. Set `OUTERLOOP_CONTAINER_RUNTIME=enroot` and point `OUTERLOOP_IMAGE` at the `.sqsh` image, or let `outerloop init` propose it when enroot is installed and Apptainer is not. A jail gets the same walls as Apptainer's `--containall --cleanenv`: a cleared environment, no host home, a read-only image, a minimal `/dev`, private `/tmp`, and its own process and IPC namespaces on enroot 4.2+. Where those namespaces cannot start, the jail is refused unless the operator opts in with `OUTERLOOP_ENROOT_SHARED_IPC=1` (a shared IPC namespace) or `OUTERLOOP_ENROOT_SHARED_PROCESSES=1` (a shared process view too); the loop names the accepted gap once at start. The build workflow now publishes `.sqsh` images for x86-64 and ARM64 next to the `.sif`, and an ARM64 `.sif`, all from the one recipe. See [running on enroot](docs/install.md#running-on-enroot).
 
 ### Changed
 

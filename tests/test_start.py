@@ -149,6 +149,8 @@ def test_default_image_path(monkeypatch: Any, tmp_path: Path) -> None:
     old.parent.mkdir()
     old.write_text("")  # an old image dir is not looked for
     assert _default_image() == str(tmp_path / "outerloop-images" / "agent-py312.sif")
+    enroot = {"OUTERLOOP_CONTAINER_RUNTIME": "enroot"}
+    assert _default_image(enroot) == str(tmp_path / "outerloop-images" / "agent-py312.sqsh")
 
 
 def test_local_without_sbatch_defaults_the_root(tmp_path: Path) -> None:
@@ -630,6 +632,16 @@ def test_start_refuses_missing_harness_before_any_execution(
         err = capsys.readouterr().err
         assert backend in err and "not an executable file" in err
         assert (str(clean_env / "gone") if recorded else "on PATH") in err
+
+
+def test_start_refuses_an_unknown_container_runtime(clean_env, monkeypatch, capsys):
+    """A misspelled runtime would fail every job; start says so before launching."""
+    monkeypatch.setattr(cli, "_exec", lambda *a: pytest.fail("must not exec"))
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "enrot")
+    assert main(["start", "--local", "--dry-run"]) == 2
+    assert "choose apptainer or enroot" in capsys.readouterr().err
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "enroot")
+    assert main(["start", "--local", "--dry-run"]) == 0
 
 
 def test_start_dry_run_allows_missing_recorded_binary(clean_env, monkeypatch, capsys):
