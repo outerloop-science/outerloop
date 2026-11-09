@@ -225,7 +225,7 @@ def test_snapshot_ignores_global_filter_config(tmp_path, monkeypatch):
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 3"
 
 
-def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
+def test_snapshot_neutralizes_filter_name_with_equals(tmp_path, monkeypatch):
     """A driver name containing '=' defeats `-c filter.<d>.clean=` (git splits
     -c at the first '='); the GIT_CONFIG_* env form must handle it. A
     non-UTF-8 driver name or value must not crash the snapshot or the job
@@ -234,6 +234,9 @@ def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
     canary = tmp_path / "eqcanary"
+    # a host GIT_CONFIG must not redirect the filter listing away from the repo
+    (tmp_path / "host.gitconfig").write_text("")
+    monkeypatch.setenv("GIT_CONFIG", str(tmp_path / "host.gitconfig"))
     (root / ".gitattributes").write_bytes(b"*.py filter=ev=il\n*.txt filter=b\xffn\n")
     ws.git("config", "filter.ev=il.clean", f"sh -c 'touch {canary}; cat'")
     with (root / ".git" / "config").open("ab") as fh:

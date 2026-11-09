@@ -1442,8 +1442,10 @@ def filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
             "-z",
             "--list",
         ],
+        # no inherited GIT_* (GIT_CONFIG, GIT_DIR, ...): list exactly the
+        # repo config at `root`, the one the guarded git calls read
         env={
-            **os.environ,
+            **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
             "GIT_CONFIG_COUNT": "0",
