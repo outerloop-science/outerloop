@@ -258,7 +258,8 @@ def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, s
         [*base_git, "config", "-z", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
         env=_git_env(env),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",  # config values need not be UTF-8
         timeout=30,
         check=False,
     )

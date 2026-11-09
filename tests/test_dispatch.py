@@ -227,13 +227,17 @@ def test_snapshot_ignores_global_filter_config(tmp_path, monkeypatch):
 
 def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
     """A driver name containing '=' defeats `-c filter.<d>.clean=` (git splits
-    -c at the first '='); the GIT_CONFIG_* env form must handle it."""
+    -c at the first '='); the GIT_CONFIG_* env form must handle it. A
+    non-UTF-8 filter value must not crash the config listing."""
     root = _repo(tmp_path)
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
     canary = tmp_path / "eqcanary"
-    (root / ".gitattributes").write_text("*.py filter=ev=il\n")
+    (root / ".gitattributes").write_text("*.py filter=ev=il\n*.txt filter=bin\n")
     ws.git("config", "filter.ev=il.clean", f"sh -c 'touch {canary}; cat'")
+    with (root / ".git" / "config").open("ab") as fh:
+        fh.write(b'[filter "bin"]\n\tclean = "sh -c \'touch %s; cat\' \xfe"\n' % bytes(canary))
+    (root / "kept.txt").write_text("t\n")
     (root / "kept.py").write_text("x = 5\n")
     snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert not canary.exists(), "= in driver name defeated neutralization"

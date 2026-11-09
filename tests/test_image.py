@@ -198,7 +198,7 @@ def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
         assert "outerloop init --force" in hint and ".deb" not in hint
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("debian", "12"))
     monkeypatch.setattr(img.platform, "machine", lambda: "x86_64")
-    assert "apptainer_1.5.3_amd64.deb" in img.install_hint()
+    assert "apptainer_1.5.5_amd64.deb" in img.install_hint()
     monkeypatch.setattr(img.platform, "machine", lambda: "aarch64")
     odd = img.install_hint()
     assert "No Apptainer Debian package" in odd and "aarch64" in odd and ".deb" not in odd
@@ -210,7 +210,7 @@ def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
     monkeypatch.setattr(img, "_linux_flavor", lambda: ("arch", ""))
     generic = img.install_hint()
     # the installer is pinned to the release tag and never piped into a shell
-    assert "/v1.5.3/tools/install-unprivileged.sh" in generic and "| bash" not in generic
+    assert "/v1.5.5/tools/install-unprivileged.sh" in generic and "| bash" not in generic
     monkeypatch.setattr(img.sys, "platform", "darwin")
     assert "macOS" in img.install_hint()
 
