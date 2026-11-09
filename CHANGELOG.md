@@ -16,6 +16,7 @@ Versions follow [SemVer](https://semver.org).
 - The reviewer, summarizer and maintenance digest default to Codex, on a model the kernel pins next to the Codex CLI version (`model` in the `[codex]` table of `harnesses.toml`). A caller that leaves `model` unset follows the pin, so moving it in a release moves every such caller. A `model` input still wins.
 - `merge: auto` merges a blessed head even while its author is still at work. Before, the merge waited until the run had no jobs in flight and no unread messages, so an author that kept revising on each panel round's advisory findings held its own cleared pull request open for days. A human's comment still holds the merge until the author has read it. Merging ends the run and cancels its jobs, as before; further work comes back as a new pull request.
 - Add an internal `ContainerRuntime` seam behind every container the kernel runs (each harness's sessions, the evaluator, dispatched jobs, and `init`'s probe); Apptainer is the only runtime for now (no behavior change). Job scripts without an image no longer export the unused `APPTAINERENV_*` copies, which their `env -i` never passed on.
+- Refresh the lock: pydantic 2.14.3, pytest 9.2.0, pytest-testmon 2.3.0, mypy 2.4.1 and Ruff 0.17.4 (pre-commit pin too).
 
 ## [0.6.0] - 2026-10-26
 
