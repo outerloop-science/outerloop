@@ -989,7 +989,8 @@ def main(argv: list[str] | None = None) -> int:
         "--no-image",
         dest="no_image",
         action="store_true",
-        help="no image at all: runs stay uncontained even if one is already on disk",
+        help="skip the image even if one is already on disk: Linux runs uncontained, "
+        "macOS uses Seatbelt when sandbox-exec is available",
     )
     parser.add_argument(
         "--author-key-file",

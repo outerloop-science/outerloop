@@ -4,8 +4,8 @@ Everything the kernel does on its code host — cloning and pushing code,
 reading refs and files, opening and merging pull requests, posting comments,
 opening and closing issues, reading checks — goes through these verbs, so a
 backend is one implementation (`docs/design/forge.md`). `GitHubClient`
-satisfies the Protocol as it stands; a planned local backend will implement the
-same verbs over a bare repository.
+satisfies the Protocol as it stands, and `LocalForge` implements the same verbs
+over a bare repository.
 
 `forge_from_env` is the one factory every entry point (the tick, the attempt
 and steward jobs, the ledger migration, the CLI) builds its forge through.
