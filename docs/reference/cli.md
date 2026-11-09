@@ -5,10 +5,11 @@ and steers runs. Run `outerloop init` once before `outerloop start`; from
 then on the commands below are the whole operator surface. Every section
 lists its command's flags with their defaults.
 
-Every command that takes an optional `--root` resolves it the same way. The
-flag wins, then `OUTERLOOP_ROOT` in the environment, then the operator
-settings file, then `~/.outerloop`. `tick` is the exception: it requires
-`--root` and does not fall back. Commands read the settings file
+Every command that takes `--root` resolves it the same way, with three
+exceptions. The flag wins, then `OUTERLOOP_ROOT` in the environment, then the
+operator settings file, then `~/.outerloop`. `tick` requires `--root`.
+`start` on Slurm has no `~/.outerloop` fallback and refuses a missing root.
+`init` sets the root rather than reading it, and on Slurm needs `--root`. Commands read the settings file
 (`~/.config/outerloop/.env`, or the file `OUTERLOOP_ENV_FILE` names) only
 once at launch. The file must be owned by you and not group- or
 world-writable, or it is refused.
@@ -97,7 +98,7 @@ outerloop init [--compute {slurm,local}] [--target TARGET] [--root ROOT]
 | `--author-model` | prompted | the climbing author's model |
 | `--claude-model` | prompted | model for every Claude role; required, no default |
 | `--image` | the published one | path to an Apptainer image for sessions and evals |
-| `--no-image` | off | skip the image even when one is on disk: Linux runs uncontained, macOS uses Seatbelt when `sandbox-exec` is available |
+| `--no-image` | off | skip the image even when one is on disk: local runs on Linux are uncontained, macOS uses Seatbelt when `sandbox-exec` is available; on Slurm the tick also needs `OUTERLOOP_UNCONTAINED=1`, and Codex and Hermes authors always need the image |
 | `--author-key-file` | prompted | path to an existing file holding the author's model key |
 | `--yes` | off | non-interactive: use flags, do not prompt |
 | `--force` | off | overwrite an existing config without asking |

@@ -189,9 +189,9 @@ the next slot.
 
 How long before the resident job's walltime the loop attempts its handover.
 At or inside this many seconds it checks for a live successor and exits
-once one is pending or running, and its sleep never runs past the margin.
-Without a verified successor it logs an error and keeps ticking until the
-walltime ends.
+once one is pending or running. Before the margin, its sleep ends by the
+margin. Without a verified successor it logs an error and keeps ticking, its
+sleep ending by the job's walltime.
 
 - Default: 1200
 - Configuration: the shell only
@@ -292,11 +292,11 @@ The GitHub App setup page `outerloop init --github-app` prints, and the
 manifest's redirect URL. It defaults to the hosted helper page; point it at a
 staging copy or your own page.
 
-The page receives the one-time App code, so only point it at a page you
-control.
+The page receives the one-time App code, so use only a page you trust.
 
 - Default: `https://setup.outerloop.science`
-- Configuration: the shell only
+- Configuration: the shell, when running `outerloop init` (it is read then,
+  not at `start`)
 
 ### `OUTERLOOP_BOT_LOGIN`
 
