@@ -20,7 +20,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A filter value in the workspace's Git config that is not valid UTF-8 no longer crashes the code snapshot.
+- A Git filter driver whose name is not valid UTF-8 was never neutralized: `git config --get-regexp` skips such keys, so a session-written filter could run on the host during the code snapshot or a hand-off checkout. Filters are now listed with `--list` and matched in one place, byte-safe, which also stops a non-UTF-8 filter value from crashing the snapshot.
 - `finding` refuses a finding that would make the verdict larger than the kernel reads (1 MB), so a judge can shorten it in the same session. Before, `conclude` wrote the verdict and the kernel rejected it.
 
 ## [0.6.0] - 2026-10-26
