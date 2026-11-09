@@ -234,15 +234,15 @@ def test_snapshot_neutralizes_filter_name_with_equals(tmp_path, monkeypatch):
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
     canary = tmp_path / "eqcanary"
-    # a host GIT_CONFIG must not redirect the filter listing away from the repo
-    (tmp_path / "host.gitconfig").write_text("")
-    monkeypatch.setenv("GIT_CONFIG", str(tmp_path / "host.gitconfig"))
     (root / ".gitattributes").write_bytes(b"*.py filter=ev=il\n*.txt filter=b\xffn\n")
     ws.git("config", "filter.ev=il.clean", f"sh -c 'touch {canary}; cat'")
     with (root / ".git" / "config").open("ab") as fh:
         fh.write(b'[filter "b\xffn"]\n\tclean = "sh -c \'touch %s; cat\' \xfe"\n' % bytes(canary))
     (root / "kept.txt").write_text("t\n")
     (root / "kept.py").write_text("x = 5\n")
+    # a host GIT_CONFIG must not redirect the filter listing away from the repo
+    (tmp_path / "host.gitconfig").write_text("")
+    monkeypatch.setenv("GIT_CONFIG", str(tmp_path / "host.gitconfig"))
     snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert not canary.exists(), "= in driver name defeated neutralization"
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 5"
