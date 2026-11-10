@@ -24,7 +24,7 @@ IMAGE_URL = f"https://huggingface.co/outerloop-science/agent-image/resolve/main/
 IMAGE_DIR_NAME = "outerloop-images"
 _CHUNK = 1 << 20
 APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
-APPTAINER_VERSION = "1.5.3"
+APPTAINER_VERSION = "1.5.5"
 # the GitHub release ships Debian packages for x86-64 only; the project's PPA
 # builds amd64 and arm64 for every current Ubuntu
 APPTAINER_DEB = f"apptainer_{APPTAINER_VERSION}_amd64.deb"
