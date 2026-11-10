@@ -8,8 +8,10 @@ lists its command's flags with their defaults.
 Every command that takes `--root` resolves it the same way, with three
 exceptions. The flag wins, then `OUTERLOOP_ROOT` in the environment, then the
 operator settings file, then `~/.outerloop`. `tick` requires `--root`.
-`start` on Slurm has no `~/.outerloop` fallback and refuses a missing root.
-`init` sets the root rather than reading it, and on Slurm needs `--root`. Commands read the settings file
+`start` with a resident Slurm tick has no `~/.outerloop` fallback and
+refuses a missing root; with `--tick-host login` it keeps the fallback. A full
+`init` sets the root rather than reading it, and on Slurm needs `--root`;
+`init --github-app` keeps the root already in the settings file. Commands read the settings file
 (`~/.config/outerloop/.env`, or the file `OUTERLOOP_ENV_FILE` names) only
 once at launch. The file must be owned by you and not group- or
 world-writable, or it is refused.
