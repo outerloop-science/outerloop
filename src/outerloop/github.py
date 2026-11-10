@@ -1147,7 +1147,7 @@ def _altered(what: str) -> GitError:
     return GitError(f"workspace .git altered by the session: {what}")
 
 
-def ensure_regular_git_dir(root: Path | None) -> None:
+def ensure_regular_git_dir(root: Path | None) -> list[str]:
     """Refuse a workspace whose .git a session reshaped. `.git` must be a
     real directory (no symlink, no gitdir file); HEAD and config must be
     regular files and the other control files regular when present (a FIFO
@@ -1155,17 +1155,27 @@ def ensure_regular_git_dir(root: Path | None) -> None:
     must objects/pack when present; object alternates are never ours. A
     root with no .git at all is left to git's own error."""
     if root is None:
-        return
+        return []
     git_dir = Path(root) / ".git"
     try:
         st = os.lstat(git_dir)
     except OSError:
-        return
+        return []
     if stat.S_ISLNK(st.st_mode):
         raise _altered(".git is a symlink")
     if not stat.S_ISDIR(st.st_mode):
         raise _altered(".git is not a directory (a gitdir file)")
     _ensure_regular_config(root)  # before any git subprocess below reads it
+    # A promisor remote makes any object read fetch through the session's
+    # config; the kernel never uses partial clones, and older git ignores
+    # GIT_NO_LAZY_FETCH, so refuse before the first git read below.
+    keys = _config_keys(Path(root))
+    if any(
+        key == "extensions.partialclone"
+        or (key.startswith("remote.") and key.endswith(".promisor"))
+        for key in keys
+    ):
+        raise _altered("a promisor remote is configured (the kernel never uses partial clones)")
     # The kernel clones with the files ref backend; a reftable repository
     # (`git init --ref-format=reftable`, or a `git refs migrate`) keeps its
     # refs in `.git/reftable/`, where none of the ref reads below would see
@@ -1270,6 +1280,7 @@ def ensure_regular_git_dir(root: Path | None) -> None:
             raise _altered(
                 "HEAD's commit is unreadable: the object store was emptied or moved"
             ) from None
+    return keys
 
 
 _SHA_RE = re.compile(r"[0-9a-f]{40,64}")
@@ -1422,38 +1433,9 @@ def _sanitize_one_config(cfg: Path) -> None:
         _write("".join(kept).encode())
 
 
-def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
-    """Override session-written commands, preserving filter and merge content.
-
-    Keys and values travel separately in the environment so driver names
-    containing '=' or non-UTF-8 bytes still match exactly. Diff commands also
-    need --no-ext-diff/--no-textconv: empty values do not disable them.
-    """
-    pairs: list[tuple[str, str]] = [
-        ("core.attributesFile", "/dev/null"),
-        ("diff.external", ""),
-        ("commit.gpgSign", "false"),
-        ("tag.gpgSign", "false"),
-        ("push.gpgSign", "false"),
-        ("merge.verifySignatures", "false"),
-        ("log.showSignature", "false"),
-        ("gpg.program", "false"),
-        ("gpg.openpgp.program", "false"),
-        ("gpg.x509.program", "false"),
-        ("gpg.ssh.program", "false"),
-        ("gpg.ssh.defaultKeyCommand", "false"),
-        ("core.editor", "true"),
-        ("core.pager", "cat"),
-        ("core.askPass", "false"),
-        ("core.alternateRefsCommand", "true"),
-        ("gc.auto", "0"),
-        ("maintenance.auto", "false"),
-        ("fetch.recurseSubmodules", "false"),
-        ("submodule.recurse", "false"),
-        ("push.recurseSubmodules", "no"),
-    ]
-    if root is None:
-        return pairs
+def _config_keys(root: Path) -> list[str]:
+    """Every key in the repo config at `root`, byte-safe (non-UTF-8 bytes
+    survive as surrogates). Reading config never fetches or runs a program."""
     listing = subprocess.run(
         [
             "git",
@@ -1485,8 +1467,45 @@ def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     # -z: NUL-separated records, each "key\nvalue" — a value containing a
     # newline can never masquerade as a second record. --list, matched here,
     # not --get-regexp: git's regex skips a key that is not valid UTF-8.
-    for record in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
-        key = record.split("\n", 1)[0]
+    records = listing.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return [record.split("\n", 1)[0] for record in records]
+
+
+def git_config_override_pairs(
+    root: Path | None, keys: list[str] | None = None
+) -> list[tuple[str, str]]:
+    """Override session-written commands, preserving filter and merge content.
+
+    Keys and values travel separately in the environment so driver names
+    containing '=' or non-UTF-8 bytes still match exactly. Diff commands also
+    need --no-ext-diff/--no-textconv: empty values do not disable them.
+    """
+    pairs: list[tuple[str, str]] = [
+        ("core.attributesFile", "/dev/null"),
+        ("diff.external", ""),
+        ("commit.gpgSign", "false"),
+        ("tag.gpgSign", "false"),
+        ("push.gpgSign", "false"),
+        ("merge.verifySignatures", "false"),
+        ("log.showSignature", "false"),
+        ("gpg.program", "false"),
+        ("gpg.openpgp.program", "false"),
+        ("gpg.x509.program", "false"),
+        ("gpg.ssh.program", "false"),
+        ("gpg.ssh.defaultKeyCommand", "false"),
+        ("core.editor", "true"),
+        ("core.pager", "cat"),
+        ("core.askPass", "false"),
+        ("core.alternateRefsCommand", "true"),
+        ("gc.auto", "0"),
+        ("maintenance.auto", "false"),
+        ("fetch.recurseSubmodules", "false"),
+        ("submodule.recurse", "false"),
+        ("push.recurseSubmodules", "no"),
+    ]
+    if root is None:
+        return pairs
+    for key in _config_keys(Path(root)) if keys is None else keys:
         section, _, rest = key.partition(".")
         driver, _, variable = rest.rpartition(".")
         if section == "pager":
@@ -1525,9 +1544,9 @@ def handoff_git_dir(root: Path | None) -> None:
     """The session-boundary check: the full guard plus the root's command
     overrides, remembered so the kernel git calls until the next untrusted
     launch neither re-run the guard nor re-list the config."""
-    ensure_regular_git_dir(root)
+    keys = ensure_regular_git_dir(root)  # the guard's config listing, reused
     if root is not None and (Path(root) / ".git").is_dir():
-        _CONFIG_OVERRIDES[Path(root).resolve()] = git_config_override_pairs(root)
+        _CONFIG_OVERRIDES[Path(root).resolve()] = git_config_override_pairs(root, keys)
 
 
 def _config_pairs_for(root: Path | None) -> list[tuple[str, str]]:

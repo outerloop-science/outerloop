@@ -530,7 +530,7 @@ def test_session_planted_git_commands_never_execute(tmp_path: Path) -> None:
     g("config", "remote.origin.uploadpack", str(root / "uploadpack.sh"))
     head = ws.git("rev-parse", "HEAD")
     (root / ".git" / "objects" / head[:2] / head[2:]).unlink()
-    with pytest.raises(GitError, match="unreadable"):
+    with pytest.raises(GitError, match="promisor"):
         handoff_git_dir(root)
     assert not any(marker.exists() for marker in markers)
 
