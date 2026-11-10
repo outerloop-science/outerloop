@@ -19,6 +19,8 @@ Versions follow [SemVer](https://semver.org).
 - Add an internal `ContainerRuntime` seam behind every container the kernel runs (each harness's sessions, the evaluator, dispatched jobs, and `init`'s probe); Apptainer is the only runtime for now (no behavior change). Job scripts without an image no longer export the unused `APPTAINERENV_*` copies, which their `env -i` never passed on.
 - Remove the unused `codex_author_config_error` alias; `author_config_error` is the validator.
 - Remove the one-time legacy inbox migration (`runstate.migrate_inbox`), its call sites, the tick's `legacy follow-up records` count, and the record save that carried the old keys forward; a record that still carries pre-0.2.0 keys loads, with those fields ignored.
+- The docs site builds on mkdocs-material 9.8.1 (was 9.6.14) and pins pymdown-extensions 13.0, which it pulled up from 10.21.3.
+- Update the locked versions to pydantic 2.14.3, pytest 9.2.0, pytest-testmon 2.3.0, mypy 2.4.1 and Ruff 0.17.4, and the Ruff pre-commit hook to match.
 - The Apptainer install hint points at 1.5.5 (was 1.5.3). Releases before 1.5.4 have a local privilege escalation in suid mode; an existing suid install needs upgrading separately.
 
 ### Fixed
