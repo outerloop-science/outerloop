@@ -302,6 +302,7 @@ def _git_env(extra: dict[str, str]) -> dict[str, str]:
     env = {k: os.environ[k] for k in ("PATH", "LANG") if k in os.environ}
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    env["GIT_NO_LAZY_FETCH"] = "1"  # a session-made promisor remote never fetches
     env.update(extra)
     return env
 
@@ -454,7 +455,7 @@ def write_eval_job(
     lines = [
         *header,
         # Set these before the cleanup trap, including its early-exit paths.
-        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null",
+        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_NO_LAZY_FETCH=1",
         *(f"export {k}={shlex.quote(v)}" for k, v in neutral.items()),
         # the extracted tree lives on NODE-LOCAL scratch, not the shared run
         # dir: it dies with the job (nothing to reap on the shared FS), and

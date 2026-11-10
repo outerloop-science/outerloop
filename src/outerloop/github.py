@@ -1471,6 +1471,7 @@ def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
             "GIT_CONFIG_SYSTEM": "/dev/null",
             "GIT_CONFIG_COUNT": "0",
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_NO_LAZY_FETCH": "1",
         },
         capture_output=True,
         timeout=30,
@@ -1597,6 +1598,9 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     # for a real one during post-session verification. The kernel never
     # uses replace refs; disable them on every invocation.
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    # a session can mark a remote as a promisor and delete objects, so any
+    # read would lazily fetch through its config: the kernel never lazy-fetches
+    env["GIT_NO_LAZY_FETCH"] = "1"
     pairs = _config_pairs_for(root)
     if token is not None:
         pairs.append(

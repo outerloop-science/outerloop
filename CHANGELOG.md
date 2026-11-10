@@ -20,7 +20,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
-- A session could use the workspace's Git config to run commands on the host. `diff.external` ran when the kernel built a pull request's diff, and diff and merge drivers, signing programs, config-defined hooks, remote transport commands and a submodule's fetch settings could also run commands. Git calls that can run them now disable them, with flags for diff and for remote transport, and fetches no longer recurse into submodules.
+- A session could use the workspace's Git config to run commands on the host. `diff.external` ran when the kernel built a pull request's diff, and diff and merge drivers, signing programs, config-defined hooks, remote transport commands and a submodule's fetch settings could also run commands. Git calls that can run them now disable them, with flags for diff and for remote transport, fetches no longer recurse into submodules, and kernel git never fetches a missing object lazily (`GIT_NO_LAZY_FETCH`, in git 2.45 and in security updates of older releases).
 - A Git filter driver whose name is not valid UTF-8 was never neutralized: `git config --get-regexp` skips such keys, so a session-written filter could run on the host during the code snapshot or a hand-off checkout. Filters are now listed with `--list` and matched in one place, byte-safe, which also stops a non-UTF-8 filter value from crashing the snapshot.
 - `finding` refuses a finding that would make the verdict larger than the kernel reads (1 MB), so a judge can shorten it in the same session. Before, `conclude` wrote the verdict and the kernel rejected it.
 

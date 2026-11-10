@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from outerloop.github import FileTokenProvider, GitHubClient, GitHubError, Workspace
+from outerloop.github import FileTokenProvider, GitError, GitHubClient, GitHubError, Workspace
 
 
 class FakeTransport:
@@ -522,6 +522,16 @@ def test_session_planted_git_commands_never_execute(tmp_path: Path) -> None:
     handoff_git_dir(root)
     ws.git_network("push", url, "--", "main:main")
     ws.git_network("fetch", url, "main")
+    assert not any(marker.exists() for marker in markers)
+    # a session-made promisor remote would lazily fetch a missing object
+    g("remote", "add", "origin", url)
+    g("config", "remote.origin.promisor", "true")
+    g("config", "extensions.partialClone", "origin")
+    g("config", "remote.origin.uploadpack", str(root / "uploadpack.sh"))
+    head = ws.git("rev-parse", "HEAD")
+    (root / ".git" / "objects" / head[:2] / head[2:]).unlink()
+    with pytest.raises(GitError, match="unreadable"):
+        handoff_git_dir(root)
     assert not any(marker.exists() for marker in markers)
 
 
