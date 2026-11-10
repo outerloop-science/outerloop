@@ -1965,12 +1965,11 @@ def _sweep_one(
                 except Exception as exc:  # scancel trouble is never fatal here
                     log.warning("cancel %s failed: %s", jid, exc)
         wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
-    elif all(is_terminal(s) or s == GONE for s in states):
+    elif past_deadline and all(is_terminal(s) or s == GONE for s in states):
         # done-or-vanished, at least one GONE (all-terminal handled above)
-        if past_deadline:
-            wake(record, "experiment vanished from Slurm", "vanished")
-        # else: sacct lag right after submission is normal; wait.
-    # something RUNNING (or recently pending): nothing to do yet.
+        wake(record, "experiment vanished from Slurm", "vanished")
+    # something RUNNING, recently pending, or GONE before the deadline (sacct
+    # lags right after submission): nothing to do yet.
 
 
 def _launches_held(root: Path) -> bool:
