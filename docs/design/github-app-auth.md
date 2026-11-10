@@ -61,6 +61,11 @@ Three values, mirroring the PAT handling:
 
 ## The crypto dependency
 
+**Current status:** `cryptography` is a base dependency, so a plain install
+signs without an extra. The `app-auth` extra remains declared but empty, so
+`pip install "outerloop-science[app-auth]"` still works. The paragraph below
+records the original plan.
+
 GitHub App JWTs require RS256, which the stdlib cannot sign. The production
 signer uses `cryptography` (well-audited, ubiquitous). It is added to a new
 `app-auth` optional extra and `uv lock`-ed **at cutover**, not now — the

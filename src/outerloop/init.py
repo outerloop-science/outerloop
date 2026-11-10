@@ -989,7 +989,9 @@ def main(argv: list[str] | None = None) -> int:
         "--no-image",
         dest="no_image",
         action="store_true",
-        help="no image at all: runs stay uncontained even if one is already on disk",
+        help="skip the image even if one is already on disk: local runs on Linux are "
+        "uncontained, macOS uses Seatbelt when sandbox-exec is available; on Slurm the "
+        "tick also needs OUTERLOOP_UNCONTAINED=1, and Codex and Hermes authors need the image",
     )
     parser.add_argument(
         "--author-key-file",

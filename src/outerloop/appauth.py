@@ -12,7 +12,7 @@ it expires.
 
 The RS256 signer and the HTTP transport are injected so the provider — and
 its tests — build and run without the `cryptography` dependency or a
-network; the production signer lives behind the `app-auth` extra.
+network; the production signer uses `cryptography`, a base dependency.
 """
 
 from __future__ import annotations
