@@ -252,7 +252,7 @@ def _filter_neutral_env(root: Path) -> dict[str, str]:
     passthrough and disables attribute files. Robust where `-c` is not:
     keys/values are separate env vars, so a driver name with '=' or dots is
     handled correctly. Used by BOTH the snapshot (index ops) and the job
-    script's archive — the repo config and .gitattributes are agent-written
+    script's checkout — the repo config and .gitattributes are agent-written
     on both paths."""
     pairs = filter_override_pairs(root)
     out = {"GIT_CONFIG_COUNT": str(len(pairs))}

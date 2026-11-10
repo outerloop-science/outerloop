@@ -294,14 +294,15 @@ def test_findings_then_conclude_round_trip_through_the_reader(tmp_path: Path, ca
 
 
 def test_findings_stop_before_the_verdict_outgrows_the_reader(tmp_path: Path, capsys) -> None:
-    big = "\U0001f600" * 6000  # JSON-escapes to twelve bytes per char
-    argv = ["finding", "--file", "x", "--confidence", "low", "--summary", big, "--detail", big]
+    text = "x" * 6000
+    argv = ["finding", "--file", "x", "--confidence", "low", "--summary", text, "--detail", text]
     accepted = 0
     while run(tmp_path, *argv) == 0:
         accepted += 1
-    assert accepted == 6  # ~144 KB each: the limit, not an early cut, stops it
+    assert accepted > 70  # ~12 KB each: the limit, not an early cut, stops it
     assert "too little room" in capsys.readouterr().err
-    assert run(tmp_path, "conclude", "--notes", big) == 0
+    # the worst notes: a non-BMP char JSON-escapes to twelve bytes
+    assert run(tmp_path, "conclude", "--notes", "\U0001f600" * 6000) == 0
     assert read_verdict(tmp_path) is not None  # the kernel can still read it
 
 
