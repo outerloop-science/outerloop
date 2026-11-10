@@ -293,6 +293,19 @@ def test_findings_then_conclude_round_trip_through_the_reader(tmp_path: Path, ca
     assert not (tmp_path / ".outerloop" / "request.json").exists()  # staging cleared
 
 
+def test_findings_stop_before_the_verdict_outgrows_the_reader(tmp_path: Path, capsys) -> None:
+    text = "x" * 6000
+    argv = ["finding", "--file", "x", "--confidence", "low", "--summary", text, "--detail", text]
+    accepted = 0
+    while run(tmp_path, *argv) == 0:
+        accepted += 1
+    assert accepted > 70  # ~12 KB each: the limit, not an early cut, stops it
+    assert "too little room" in capsys.readouterr().err
+    # the worst notes: a non-BMP char JSON-escapes to twelve bytes
+    assert run(tmp_path, "conclude", "--notes", "\U0001f600" * 6000) == 0
+    assert read_verdict(tmp_path) is not None  # the kernel can still read it
+
+
 def test_conclude_with_no_findings_is_a_clean_verdict(tmp_path: Path) -> None:
     run(tmp_path, "conclude", "--notes", "materially sound")
     assert read_verdict(tmp_path) == {"findings": [], "notes": "materially sound"}
