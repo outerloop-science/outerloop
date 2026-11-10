@@ -604,13 +604,6 @@ def _render_resume_transcript(turns: list[dict[str, str]]) -> str:
     return "\n\n".join(blocks)
 
 
-def _float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(value)

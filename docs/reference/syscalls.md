@@ -129,7 +129,9 @@ verdict.
 | `--category` | empty | at most 6000 chars; the verifier's gaming taxonomy |
 
 Refused when the confidence, kind, file, summary or detail is empty or
-invalid, or when more than 200 findings would be staged.
+invalid, when more than 200 findings would be staged, or when the finding
+would leave too little room for `conclude --notes` within the 1 MB verdict
+the kernel reads.
 
 ### conclude
 

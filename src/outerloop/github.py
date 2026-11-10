@@ -1422,7 +1422,7 @@ def _sanitize_one_config(cfg: Path) -> None:
         _write("".join(kept).encode())
 
 
-def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
+def filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     """GIT_CONFIG pairs that neutralize every filter driver the REPO config
     defines (each overridden to a passthrough) plus attribute files. The
     workspace's .git/config and .gitattributes are session-written, so a
@@ -1440,11 +1440,12 @@ def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
             str(root),
             "config",
             "-z",
-            "--get-regexp",
-            r"^filter\..*\.(clean|smudge|process)$",
+            "--list",
         ],
+        # no inherited GIT_* (GIT_CONFIG, GIT_DIR, ...): list exactly the
+        # repo config at `root`, the one the guarded git calls read
         env={
-            **os.environ,
+            **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
             "GIT_CONFIG_COUNT": "0",
@@ -1460,10 +1461,13 @@ def _filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     # still matches a weird-byte driver name EXACTLY (a lossy decode would
     # silently fail to neutralize that driver).
     # -z: NUL-separated records, each "key\nvalue" — a value containing a
-    # newline can never masquerade as a second record.
+    # newline can never masquerade as a second record. --list, matched here,
+    # not --get-regexp: git's regex skips a key that is not valid UTF-8.
     for record in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
         key = record.split("\n", 1)[0]
-        if not key.startswith("filter.") or "." not in key[len("filter.") :]:
+        if not key.startswith("filter.") or not key.endswith((".clean", ".smudge", ".process")):
+            continue
+        if "." not in key[len("filter.") :]:
             continue
         driver = key[len("filter.") : key.rindex(".")]
         pairs += [
@@ -1489,7 +1493,7 @@ def handoff_git_dir(root: Path | None) -> None:
     launch neither re-run the guard nor re-list the filters."""
     ensure_regular_git_dir(root)
     if root is not None and (Path(root) / ".git").is_dir():
-        _FILTER_OVERRIDES[Path(root).resolve()] = _filter_override_pairs(root)
+        _FILTER_OVERRIDES[Path(root).resolve()] = filter_override_pairs(root)
 
 
 def _filter_pairs_for(root: Path | None) -> list[tuple[str, str]]:
@@ -1497,10 +1501,10 @@ def _filter_pairs_for(root: Path | None) -> list[tuple[str, str]]:
     is remembered (a copy — callers append the credential header), computed
     fresh otherwise."""
     if root is None:
-        return _filter_override_pairs(None)
+        return filter_override_pairs(None)
     remembered = _FILTER_OVERRIDES.get(Path(root).resolve())
     if remembered is None:
-        return _filter_override_pairs(root)
+        return filter_override_pairs(root)
     return list(remembered)
 
 

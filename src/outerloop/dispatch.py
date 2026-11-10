@@ -44,6 +44,7 @@ from outerloop.github import (
     GitError,
     Workspace,
     ensure_regular_git_dir,
+    filter_override_pairs,
     forget_filter_overrides,
     git_identity,
 )
@@ -185,7 +186,7 @@ def snapshot_tree(
         # subsection char) defeats `-c filter.<driver>.clean=cat` because git
         # splits `-c` at the FIRST '='. The env form takes key and value as
         # SEPARATE strings, immune to that — and to dots. See _filter_neutral_env.
-        neutral = _filter_neutral_env(base_git, env)
+        neutral = _filter_neutral_env(Path(ws.root))
         run_env = {**env, **neutral}
 
         def run(args: list[str], timeout: int) -> str:
@@ -246,34 +247,14 @@ def snapshot_tree(
         index.with_name(index.name + ".lock").unlink(missing_ok=True)
 
 
-def _filter_neutral_env(base_git: list[str], env: dict[str, str]) -> dict[str, str]:
+def _filter_neutral_env(root: Path) -> dict[str, str]:
     """GIT_CONFIG_* env that overrides every configured filter driver to a
     passthrough and disables attribute files. Robust where `-c` is not:
     keys/values are separate env vars, so a driver name with '=' or dots is
     handled correctly. Used by BOTH the snapshot (index ops) and the job
-    script's archive — the repo config and .gitattributes are agent-written
+    script's checkout — the repo config and .gitattributes are agent-written
     on both paths."""
-    pairs: list[tuple[str, str]] = [("core.attributesFile", "/dev/null")]
-    listing = subprocess.run(
-        [*base_git, "config", "-z", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
-        env=_git_env(env),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    # -z: NUL-separated records, each "key\nvalue" — so a value containing a
-    # newline can never masquerade as a second record.
-    for record in listing.stdout.split("\0"):
-        key = record.split("\n", 1)[0]
-        if not key.startswith("filter.") or "." not in key[len("filter.") :]:
-            continue
-        driver = key[len("filter.") : key.rindex(".")]
-        pairs += [
-            (f"filter.{driver}.clean", "cat"),
-            (f"filter.{driver}.smudge", "cat"),
-            (f"filter.{driver}.process", ""),
-        ]
+    pairs = filter_override_pairs(root)
     out = {"GIT_CONFIG_COUNT": str(len(pairs))}
     for i, (k, v) in enumerate(pairs):
         out[f"GIT_CONFIG_KEY_{i}"] = k
@@ -450,7 +431,7 @@ def write_eval_job(
     # the checkout runs on the agent-written repo too: same filter neutralizers
     # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
     # name, unlike -c) so a smudge filter cannot execute during checkout
-    neutral = _filter_neutral_env(["git", "-C", str(repo_root), *SAFE_GIT_FLAGS], {})
+    neutral = _filter_neutral_env(repo_root)
     if nodes > 1 and image:
         raise ValueError("multi-node evals run uncontained: the jail has no cross-node launcher")
     runtime = None
@@ -639,7 +620,8 @@ def _forwarded(runtime: ContainerRuntime | None, name: str, value: str) -> list[
 
 
 def _write_script(path: Path, lines: list[str]) -> None:
-    path.write_text("\n".join(lines) + "\n")
+    # surrogateescape: a filter driver name from Git config need not be UTF-8
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", errors="surrogateescape")
     path.chmod(0o755)
 
 

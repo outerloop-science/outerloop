@@ -225,19 +225,31 @@ def test_snapshot_ignores_global_filter_config(tmp_path, monkeypatch):
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 3"
 
 
-def test_snapshot_neutralizes_filter_name_with_equals(tmp_path):
+def test_snapshot_neutralizes_filter_name_with_equals(tmp_path, monkeypatch):
     """A driver name containing '=' defeats `-c filter.<d>.clean=` (git splits
-    -c at the first '='); the GIT_CONFIG_* env form must handle it."""
+    -c at the first '='); the GIT_CONFIG_* env form must handle it. A
+    non-UTF-8 driver name or value must not crash the snapshot or the job
+    script."""
     root = _repo(tmp_path)
     ws = _WS(root)
     base = ws.git("rev-parse", "HEAD")
     canary = tmp_path / "eqcanary"
-    (root / ".gitattributes").write_text("*.py filter=ev=il\n")
+    (root / ".gitattributes").write_bytes(b"*.py filter=ev=il\n*.txt filter=b\xffn\n")
     ws.git("config", "filter.ev=il.clean", f"sh -c 'touch {canary}; cat'")
+    with (root / ".git" / "config").open("ab") as fh:
+        fh.write(b'[filter "b\xffn"]\n\tclean = "sh -c \'touch %s; cat\' \xfe"\n' % bytes(canary))
+    (root / "kept.txt").write_text("t\n")
     (root / "kept.py").write_text("x = 5\n")
+    # a host GIT_CONFIG must not redirect the filter listing away from the repo
+    (tmp_path / "host.gitconfig").write_text("")
+    monkeypatch.setenv("GIT_CONFIG", str(tmp_path / "host.gitconfig"))
     snap = snapshot_tree(ws, base)  # type: ignore[arg-type]
     assert not canary.exists(), "= in driver name defeated neutralization"
     assert ws.git("show", f"{snap.commit}:kept.py") == "x = 5"
+    script = write_eval_job(
+        tmp_path / "run", "c", repo_root=root, snapshot_sha=snap.commit, command="true", image=""
+    )
+    assert b"filter.b\xffn.smudge" in script.read_bytes()
 
 
 def test_read_result_rejects_non_finite(tmp_path):
