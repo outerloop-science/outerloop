@@ -508,6 +508,20 @@ def test_session_planted_git_commands_never_execute(tmp_path: Path) -> None:
     assert ws.git("show", "HEAD:plain.txt") == "committed unsigned"
     assert "gpgsig" not in ws.git("cat-file", "-p", "HEAD")
     assert not ws.git("status", "--porcelain", "--untracked-files=no")
+    # remote programs keyed by an explicit URL take the first config value
+    bare = tmp_path / "bare.git"
+    sp.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    url = f"file://{bare}"
+    for variable in ("uploadpack", "receivepack"):
+        marker = tmp_path / variable
+        markers.append(marker)
+        script = root / f"{variable}.sh"
+        script.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+        script.chmod(0o755)
+        g("config", f"remote.{url}.{variable}", str(script))
+    handoff_git_dir(root)
+    ws.git_network("push", url, "--", "main:main")
+    ws.git_network("fetch", url, "main")
     assert not any(marker.exists() for marker in markers)
 
 

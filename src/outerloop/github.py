@@ -1658,8 +1658,11 @@ class Workspace:
         hand-off remembered for the root the guard runs per call instead
         (_guard_git_dir), so an unchecked path is covered either way."""
         _guard_git_dir(self.root)
-        if args and args[0] in {"diff", "show", "log"}:
-            args = (args[0], "--no-ext-diff", "--no-textconv", *args[1:])
+        sub = 0  # the subcommand follows any `-c key=value` pairs
+        while sub + 1 < len(args) and args[sub] == "-c":
+            sub += 2
+        if sub < len(args) and args[sub] in {"diff", "show", "log"}:
+            args = (*args[: sub + 1], "--no-ext-diff", "--no-textconv", *args[sub + 1 :])
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
