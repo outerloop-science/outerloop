@@ -51,7 +51,8 @@ dev = [
 # never moves with a transitive Material update.
 docs = [
     "mkdocs==1.6.1",
-    "mkdocs-material==9.6.14",
+    "mkdocs-material==9.8.1",
+    "pymdown-extensions==13.0",
 ]
 
 [project.urls]
