@@ -44,8 +44,8 @@ from outerloop.github import (
     GitError,
     Workspace,
     ensure_regular_git_dir,
-    filter_override_pairs,
     forget_filter_overrides,
+    git_config_override_pairs,
     git_identity,
 )
 from outerloop.orchestrator import EvalError, managed_eval_env, metric_from_output
@@ -175,8 +175,8 @@ def snapshot_tree(
     env = {"GIT_INDEX_FILE": str(index)}
     # The workspace is AGENT-WRITTEN: every git call carries SAFE_GIT_FLAGS
     # (hooks/fsmonitor/ssh/credential neutralizers), drops HOME (no
-    # ~/.gitconfig read), and disables agent-defined filters via
-    # _filter_neutral_env (GIT_CONFIG_* env, which handles driver names with
+    # ~/.gitconfig read), and neutralizes session-written commands via
+    # _git_config_neutral_env (GIT_CONFIG_* env, which handles driver names with
     # '=' or dots that `-c` cannot). The neutralizers ride EVERY index op
     # because the clean filter runs lazily at write-tree, not add.
     base_git = ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS]
@@ -185,8 +185,8 @@ def snapshot_tree(
         # injection, NOT `-c`: a driver name containing '=' (a legal git
         # subsection char) defeats `-c filter.<driver>.clean=cat` because git
         # splits `-c` at the FIRST '='. The env form takes key and value as
-        # SEPARATE strings, immune to that — and to dots. See _filter_neutral_env.
-        neutral = _filter_neutral_env(Path(ws.root))
+        # SEPARATE strings, immune to that — and to dots. See _git_config_neutral_env.
+        neutral = _git_config_neutral_env(Path(ws.root))
         run_env = {**env, **neutral}
 
         def run(args: list[str], timeout: int) -> str:
@@ -247,14 +247,15 @@ def snapshot_tree(
         index.with_name(index.name + ".lock").unlink(missing_ok=True)
 
 
-def _filter_neutral_env(root: Path) -> dict[str, str]:
-    """GIT_CONFIG_* env that overrides every configured filter driver to a
-    passthrough and disables attribute files. Robust where `-c` is not:
+def _git_config_neutral_env(root: Path) -> dict[str, str]:
+    """Neutralize session-written command settings through GIT_CONFIG_* env.
+
+    Robust where `-c` is not:
     keys/values are separate env vars, so a driver name with '=' or dots is
     handled correctly. Used by BOTH the snapshot (index ops) and the job
     script's checkout — the repo config and .gitattributes are agent-written
     on both paths."""
-    pairs = filter_override_pairs(root)
+    pairs = git_config_override_pairs(root)
     out = {"GIT_CONFIG_COUNT": str(len(pairs))}
     for i, (k, v) in enumerate(pairs):
         out[f"GIT_CONFIG_KEY_{i}"] = k
@@ -277,7 +278,7 @@ def drop_snapshot(ws: Workspace, snapshot: Snapshot) -> None:
     try:
         result = subprocess.run(
             ["git", "-C", str(ws.root), *SAFE_GIT_FLAGS, "update-ref", "-d", snapshot.ref],
-            env=_git_env({}),
+            env=_git_env(_git_config_neutral_env(Path(ws.root))),
             capture_output=True,
             text=True,
             timeout=30,
@@ -301,6 +302,7 @@ def _git_env(extra: dict[str, str]) -> dict[str, str]:
     env = {k: os.environ[k] for k in ("PATH", "LANG") if k in os.environ}
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    env["GIT_NO_LAZY_FETCH"] = "1"  # a session-made promisor remote never fetches
     env.update(extra)
     return env
 
@@ -428,10 +430,10 @@ def write_eval_job(
         if _SHELL_IDENT.match(k) and not managed_eval_env(k)
     }
     safe_git = " ".join(shlex.quote(f) for f in SAFE_GIT_FLAGS)
-    # the checkout runs on the agent-written repo too: same filter neutralizers
+    # the checkout runs on the agent-written repo too: same config neutralizers
     # as the snapshot, injected as GIT_CONFIG_* env (robust to '=' in a driver
     # name, unlike -c) so a smudge filter cannot execute during checkout
-    neutral = _filter_neutral_env(repo_root)
+    neutral = _git_config_neutral_env(repo_root)
     if nodes > 1 and image:
         raise ValueError("multi-node evals run uncontained: the jail has no cross-node launcher")
     runtime = None
@@ -452,6 +454,9 @@ def write_eval_job(
     header = ["#!/bin/sh", "set -u", *ev_lines, f"REPO={shlex.quote(str(repo_root))}"]
     lines = [
         *header,
+        # Set these before the cleanup trap, including its early-exit paths.
+        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_NO_LAZY_FETCH=1",
+        *(f"export {k}={shlex.quote(v)}" for k, v in neutral.items()),
         # the extracted tree lives on NODE-LOCAL scratch, not the shared run
         # dir: it dies with the job (nothing to reap on the shared FS), and
         # the wake needs only stdout/exit-code, which stay in $EV
@@ -469,15 +474,7 @@ def write_eval_job(
         # exit 0 with empty output and read as a clean eval that measured
         # nothing
         '[ -s "$EV/command.txt" ] || { echo 96 > "$EV/exit-code"; exit 0; }',
-        # git on the node runs with the job user's HOME present, so pin global
-        # AND system config to /dev/null: a globally-configured filter driver
-        # could otherwise be selected by the agent-authored .gitattributes and
-        # execute here, outside the jail. Local repo config still applies and
-        # is neutralized by the GIT_CONFIG_KEY_* overrides below.
-        "export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null",
     ]
-    for k, v in neutral.items():
-        lines.append(f"export {k}={shlex.quote(v)}")
     if seed_cache is not None:
         q = shlex.quote(str(seed_cache))
         lines.append(
