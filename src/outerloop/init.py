@@ -606,6 +606,7 @@ def _collect(args: argparse.Namespace, interactive: bool) -> tuple[InitAnswers, 
             "author_model",
             "claude_model",
             "image",
+            "container_runtime",
         ):
             key = f"OUTERLOOP_{attr.upper()}"
             flag = getattr(args, attr)

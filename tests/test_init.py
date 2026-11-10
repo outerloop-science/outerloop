@@ -1305,6 +1305,44 @@ def test_focused_github_app_drops_a_preserved_local_forge(configured: Path, monk
     assert result["OUTERLOOP_GITHUB_APP_FILE"] == str(app_json)
 
 
+@pytest.mark.parametrize(
+    ("recorded", "flags", "written"),
+    [
+        ("enroot", ["--container-runtime", "apptainer", "--image", "agent.sif"], None),
+        ("apptainer", ["--container-runtime", "enroot", "--image", "agent.sqsh"], "enroot"),
+        ("enroot", [], "enroot"),
+    ],
+)
+def test_focused_github_app_writes_the_runtime_its_flag_names(
+    configured: Path, monkeypatch, recorded, flags, written
+) -> None:
+    """--container-runtime wins over the deployment's recorded runtime in a
+    focused --github-app run, so an image is never paired with the other
+    runtime; without the flag the recorded one is kept."""
+    monkeypatch.delenv("OUTERLOOP_CONTAINER_RUNTIME", raising=False)
+    if flags:
+        image = configured / flags[-1]
+        image.write_text("")
+        flags = [*flags[:-1], str(image)]
+    old = configured / "agent.old"
+    old.write_text("")
+    path = configured / ".env"
+    path.write_text(
+        "OUTERLOOP_COMPUTE=local\nOUTERLOOP_TARGET=o/r\nOUTERLOOP_CLAUDE_MODEL=claude-x\n"
+        f"OUTERLOOP_CONTAINER_RUNTIME={recorded}\nOUTERLOOP_IMAGE={old}\n"
+    )
+    app_json = configured / "github_app.myapp.json"
+    app_json.write_text(json.dumps({"app_id": 1, "installation_id": 7, "private_key": "/k.pem"}))
+    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
+    monkeypatch.setattr(
+        init, "app_permission_gaps", lambda *a: init.AppPermissionGaps((), "", "", "", known=True)
+    )
+    assert init.main(["--yes", "--force", "--github-app", *flags]) == 0
+    result = dict(line.split("=", 1) for line in path.read_text().splitlines())
+    assert result.get("OUTERLOOP_CONTAINER_RUNTIME") == written
+    assert result["OUTERLOOP_IMAGE"] == (flags[-1] if flags else str(old))
+
+
 def test_init_local_forge_records_the_configured_kernel_login(tmp_path, monkeypatch):
     """The bootstrap reads OUTERLOOP_BOT_LOGIN; the .env must carry it too, or
     once the shell variable is gone the tick posts as the default `outerloop`."""

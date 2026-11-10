@@ -96,6 +96,74 @@ def test_the_jail_sees_only_forwarded_variables_and_its_home(jail) -> None:
     assert not any(k.startswith(("SLURM_", "SECRET_", "ENROOTENV_")) for k in env)
 
 
+@pytest.mark.parametrize("gpus", [False, True])
+def test_a_sites_own_enroot_additions_never_reach_the_jail(jail, tmp_path: Path, gpus) -> None:
+    """enroot runs every mount, hook and variable file in its site directory; a
+    site that adds a shared /home there would expose the operator's keys. The
+    launcher hands enroot a private copy instead: the standard mounts, and of the
+    site's hooks only the standard user, timezone and cgroup ones (plus the GPU
+    hook for a jail with GPUs), never the site's own additions."""
+    site = tmp_path / "site"
+    for sub, files in {
+        "hooks.d": (
+            "10-shadow.sh",
+            "10-localtime.sh",
+            "10-cgroups.sh",
+            "10-devices.sh",
+            "98-nvidia.sh",
+            "50-site-home.sh",
+        ),
+        "mounts.d": ("10-system.fstab", "90-site-home.fstab"),
+        "environ.d": ("10-terminal.env", "50-site.env"),
+    }.items():
+        (site / sub).mkdir(parents=True)
+        for name in files:
+            (site / sub / name).write_text("/home /home none x-create=dir,rbind,rw 0 -1\n")
+    proc = (
+        jail("--gpus", env={"ENROOT_SYSCONF_PATH": str(site)})
+        if gpus
+        else jail(env={"ENROOT_SYSCONF_PATH": str(site)})
+    )
+    assert proc.returncode == 0, proc.stderr
+    hooks = (
+        "10-cgroups.sh",
+        "10-localtime.sh",
+        "10-shadow.sh",
+        *(("98-nvidia.sh",) if gpus else ()),
+    )
+    assert (jail.fake_dir / "sysconf.start").read_text().splitlines() == [
+        *(f"hooks.d/{hook} -> {site}/hooks.d/{hook}" for hook in hooks),
+        "mounts.d/10-system.fstab -> ",
+    ]
+    fstab = (jail.fake_dir / "fstab.start").read_text()
+    assert "/etc/resolv.conf /etc/resolv.conf" in fstab and "/home" not in fstab
+
+
+def test_a_wrapper_that_forces_the_site_configuration_back_is_refused(jail) -> None:
+    """If the enroot program is a wrapper that sets its own ENROOT_SYSCONF_PATH,
+    the site's mounts and hooks would run again; the jail's hook refuses to go on."""
+    assert jail().returncode == 0
+    conf = jail.fake_dir / "jail.conf"
+    proc = subprocess.run(
+        ["bash", "-c", f'source "{conf}"; hooks'],
+        env={"PATH": os.environ["PATH"], "ENROOT_SYSCONF_PATH": "/etc/enroot"},
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 1
+    assert "not using the jail's own site configuration" in proc.stderr
+
+
+def test_a_forced_site_configuration_is_refused_without_offering_an_opt_in(jail) -> None:
+    """When the probe fails because enroot is not using the jail's own site
+    configuration, the refusal says so and does not suggest weakening isolation."""
+    reason = "enroot is not using the jail's own site configuration (a wrapper may set it)"
+    proc = jail(fake={"FAKE_PROBE_ERROR": f"outerloop: {reason}"})
+    assert proc.returncode == 255
+    assert proc.stderr.strip() == f"outerloop: {reason}"
+    assert not _left(jail)
+
+
 def test_enroot_starts_from_an_environment_the_launcher_sets(jail) -> None:
     """Hooks read SLURM_*, NVIDIA_* and the like from enroot's own environment,
     and ENROOT_* would reconfigure enroot: none of the caller's reaches it."""
@@ -124,6 +192,7 @@ def test_enroot_starts_from_an_environment_the_launcher_sets(jail) -> None:
         "ENROOT_CACHE_PATH",
         "ENROOT_CONFIG_PATH",
         "ENROOT_TEMP_PATH",
+        "ENROOT_SYSCONF_PATH",
     }
     assert all(v.startswith(str(jail.scratch / "outerloop-enroot.")) for v in paths.values())
     assert env["TMPDIR"] == paths["ENROOT_TEMP_PATH"]

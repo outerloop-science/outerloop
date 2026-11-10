@@ -74,6 +74,7 @@ start)
     case $conf in
     */probe.conf)
         echo "probe ${flags[*]}" >> "$log"
+        [ -z "${FAKE_PROBE_ERROR-}" ] || { echo "$FAKE_PROBE_ERROR" >&2; exit 1; }
         case ${FAKE_LEVEL:-full}:${flags[*]} in
         full:* | pid:--pid | *:) exit 0 ;;
         *) echo "[ERROR] namespaces refused" >&2; exit 1 ;;
@@ -86,6 +87,10 @@ start)
     for fd in /proc/self/fd/*; do
         printf '%s %s\n' "$(basename "$fd")" "$(readlink "$fd" 2>/dev/null)"
     done > "$here/fds.start" 2>/dev/null
+    # and the site configuration it was handed: "<path> -> <link target>" per file
+    (cd "$ENROOT_SYSCONF_PATH" && find . -mindepth 2 -printf '%P -> %l\n' | sort) \
+        > "$here/sysconf.start"
+    cp "$ENROOT_SYSCONF_PATH/mounts.d/10-system.fstab" "$here/fstab.start" 2>/dev/null
     echo "start ${flags[*]}" >> "$log"
     cp "$conf" "$here/jail.conf"
     [ -d "$ENROOT_DATA_PATH/$name" ] || { echo "no container $name" >&2; exit 1; }

@@ -17,8 +17,9 @@
 # /var/tmp (WORKDIR's tmp and var_tmp when given), HOME bound at its own path,
 # then the binds in order. enroot 4.2 and later give it its own process and IPC
 # namespaces (--pid, --ipc); where they cannot start, the jail runs only under
-# the opt-in that accepts the gap. --check reports which jail this machine
-# builds, with the host's own programs standing in for an image.
+# the opt-in that accepts the gap. A mount, hook or variable the site adds to
+# its enroot configuration never reaches the jail. --check reports which jail
+# this machine builds, with the host's own programs standing in for an image.
 
 set -u
 umask 077
@@ -30,6 +31,8 @@ die() {
 
 enroot=enroot check='' gpus='' home='' pwd='' workdir='' shared_ipc='' shared_processes=''
 binds=()
+# the site's enroot configuration, read before this script clears its environment
+site=${ENROOT_SYSCONF_PATH:-/etc/enroot}
 while [ $# -gt 0 ]; do
     case $1 in
     --check) check=y; shift ;;
@@ -131,8 +134,8 @@ exec {holder}> >(exec env -i PATH="$PATH" setsid sh -c \
 # enroot reads ENROOT_* settings and its hooks read NVIDIA_*, MELLANOX_*, SLURM_*
 # and PMIX_* from its own environment, so it starts from one this script sets:
 # only PATH, the forwarded variables and enroot's directories, which all lie in
-# this run's scratch directory. The site's configuration (/etc/enroot) applies;
-# the caller's own (~/.config/enroot) does not.
+# this run's scratch directory. The caller's own configuration (~/.config/enroot)
+# is not read, and the site's is replaced by a private one (below).
 for name in $(compgen -e); do
     case $name in
     PATH | ENROOTENV_*) ;;
@@ -143,10 +146,33 @@ for name in $(compgen -e); do
     *) unset -v "$name" 2>/dev/null || export -n "$name" || die "cannot clear $name" ;;
     esac
 done
-mkdir -p "$dir/run" "$dir/data" "$dir/cache" "$dir/config" "$dir/tmp"
+mkdir -p "$dir/run" "$dir/data" "$dir/cache" "$dir/config" "$dir/tmp" \
+    "$dir/sysconf/hooks.d" "$dir/sysconf/mounts.d" "$dir/sysconf/environ.d"
 export ENROOT_RUNTIME_PATH="$dir/run" ENROOT_DATA_PATH="$dir/data" ENROOT_CACHE_PATH="$dir/cache" \
     ENROOT_CONFIG_PATH="$dir/config" ENROOT_TEMP_PATH="$dir/tmp" TMPDIR="$dir/tmp" \
-    NVIDIA_VISIBLE_DEVICES=void MELLANOX_VISIBLE_DEVICES=void
+    ENROOT_SYSCONF_PATH="$dir/sysconf" NVIDIA_VISIBLE_DEVICES=void MELLANOX_VISIBLE_DEVICES=void
+
+# The site configuration enroot reads (ENROOT_SYSCONF_PATH) is this private copy:
+# enroot's standard mounts, written out here, and of the site's hooks only the
+# standard ones that set up the user, timezone and cgroups, plus its GPU hook for a
+# jail with GPUs. A mount, hook or variable a site adds (a shared /home, say) never
+# reaches the jail; its enroot.conf settings are overridden by the directives below.
+cat >"$dir/sysconf/mounts.d/10-system.fstab" <<'FSTAB'
+/proc /proc none x-create=dir,rbind,rw,nosuid,nodev,noexec,rslave 0 -1
+/sys /sys none x-create=dir,rbind,ro,nosuid,nodev,noexec,rslave 0 -1
+/dev /dev none x-create=dir,rbind,rw,nosuid,noexec,rslave 0 -1
+tmpfs /tmp tmpfs x-create=dir,rw,nosuid,nodev,mode=755,slave 0 -1
+tmpfs /var/run tmpfs x-create=dir,rw,nosuid,nodev,mode=755,slave 0 -1
+tmpfs /var/lock tmpfs x-create=dir,rw,nosuid,nodev,mode=755,slave 0 -1
+/dev/shm /dev/shm none x-create=dir,bind,rw,nosuid,nodev,noexec,rslave 0 -1
+/etc/hosts /etc/hosts none x-create=file,bind,ro,nosuid,nodev,noexec,private 0 -1
+/etc/hostname /etc/hostname none x-create=file,bind,ro,nosuid,nodev,noexec,private 0 -1
+/etc/resolv.conf /etc/resolv.conf none x-create=file,bind,ro,nosuid,nodev,noexec,private 0 -1
+/etc/machine-id /etc/machine-id none x-create=file,bind,ro,nosuid,nodev,noexec,private,nofail,silent 0 -1
+FSTAB
+for hook in 10-shadow.sh 10-localtime.sh 10-cgroups.sh ${gpus:+98-nvidia.sh}; do
+    [ ! -f "$site/hooks.d/$hook" ] || ln -s "$site/hooks.d/$hook" "$dir/sysconf/hooks.d/$hook"
+done
 
 version=$("$enroot" version </dev/null 2>/dev/null) || die "cannot run $enroot"
 case $version in
@@ -172,6 +198,11 @@ environ() {
 }
 
 hooks() {
+EOF
+        # an enroot wrapper that forces its own ENROOT_SYSCONF_PATH would bring the
+        # site's configuration back, so the jail refuses to start then
+        printf '    [ "${ENROOT_SYSCONF_PATH-}" = %q ] || { echo "outerloop: enroot is not using the jail'\''s own site configuration (a wrapper may set ENROOT_SYSCONF_PATH)" >&2; return 1; }\n' "$dir/sysconf"
+        cat <<'EOF'
     enroot-mount --root "${ENROOT_ROOTFS}" - <<'DEV'
 none /dev none x-detach,nofail,silent
 tmpfs /dev tmpfs x-create=dir,rw,nosuid,noexec,mode=755,slave
@@ -276,6 +307,8 @@ elif [ -n "$shared_ipc$shared_processes" ] && probe pid --pid; then
 elif [ -n "$shared_processes" ]; then
     level=shared-processes flags=()
 else
+    # a forced site configuration is no namespace problem an opt-in could accept
+    why=$(grep -m 1 "own site configuration" "$dir/probe.log") && die "${why#outerloop: }"
     case $version in
     4.[01].*) why="enroot $version predates --pid and --ipc, which arrived in 4.2" ;;
     *) why=$(tail -n 1 "$dir/probe.log") ;;
