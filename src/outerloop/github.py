@@ -1448,6 +1448,9 @@ def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
         ("core.alternateRefsCommand", "true"),
         ("gc.auto", "0"),
         ("maintenance.auto", "false"),
+        ("fetch.recurseSubmodules", "false"),
+        ("submodule.recurse", "false"),
+        ("push.recurseSubmodules", "no"),
     ]
     if root is None:
         return pairs
@@ -1505,7 +1508,7 @@ def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
             pairs.append((f"hook.{driver}.enabled", "false"))
         elif section == "branch" and variable == "mergeoptions":
             pairs.append((key, ""))
-    return pairs
+    return list(dict.fromkeys(pairs))  # a key repeated in the config is one override
 
 
 # Config overrides a hand-off check remembered, keyed by resolved workspace
@@ -1678,9 +1681,12 @@ class Workspace:
         ensure_regular_git_dir(self.root)  # sanitizes the config first, too
         # Remote upload/receive commands use the FIRST config value, so env
         # overrides cannot replace them. Explicit URLs can name config remotes.
+        # A submodule's fetch reads the submodule's own config, so never recurse.
         if args and args[0] == "push":
-            args = (args[0], "--receive-pack=git-receive-pack", *args[1:])
-        elif args and args[0] in {"fetch", "pull", "clone", "ls-remote"}:
+            args = ("push", "--receive-pack=git-receive-pack", "--recurse-submodules=no", *args[1:])
+        elif args and args[0] in {"fetch", "pull"}:
+            args = (args[0], "--upload-pack=git-upload-pack", "--no-recurse-submodules", *args[1:])
+        elif args and args[0] in {"clone", "ls-remote"}:
             args = (args[0], "--upload-pack=git-upload-pack", *args[1:])
         token = self.auth.token() if self.auth is not None else None
         return _run_git_with_credential(
