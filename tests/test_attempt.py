@@ -5870,7 +5870,7 @@ def test_one_handoff_check_covers_a_leg_of_kernel_git_calls(tmp_path, monkeypatc
     real_run = subprocess.run
 
     def counting_run(argv, *args, **kwargs):
-        if "--get-regexp" in argv:
+        if "config" in argv and "--list" in argv:
             listings.append(list(argv))
         return real_run(argv, *args, **kwargs)
 

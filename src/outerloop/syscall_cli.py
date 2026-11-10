@@ -68,6 +68,8 @@ CONFIDENCES = ("low", "medium", "high")
 KINDS = ("change", "suggestion", "question", "note")
 MAX_TEXT = 6_000  # per summary/detail/notes/category
 MAX_FINDINGS = 200
+MAX_VERDICT_BYTES = 1_000_000  # syscall.MAX_VERDICT_BYTES: the kernel refuses a larger verdict
+_NOTES_RESERVE = 12 * MAX_TEXT + 64  # room for --notes: a non-BMP char escapes to 12 bytes
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
@@ -504,6 +506,13 @@ def cmd_finding(root: Path, args: argparse.Namespace) -> str:
     }
     if args.category:
         finding["category"] = args.category  # verifier gaming-taxonomy; omitted otherwise
+    verdict = {"type": "verdict", "findings": [*staged["findings"], finding], "notes": ""}
+    if len(json.dumps(verdict)) + _NOTES_RESERVE > MAX_VERDICT_BYTES:
+        raise ToolError(
+            f"adding this finding leaves too little room for --notes within the "
+            f"{MAX_VERDICT_BYTES}-byte verdict; shorten it or conclude with the "
+            "findings already recorded"
+        )
     staged["findings"].append(finding)
     _save_staged(root, staged)
     tag = "BLOCKING" if args.blocking else args.kind

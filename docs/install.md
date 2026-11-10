@@ -210,7 +210,7 @@ GPU jobs request at least 8 cores and 64 GB of host memory per GPU. On nodes wit
 
 On a cluster, evals and launches run inside the Apptainer image at `OUTERLOOP_IMAGE` (default `~/outerloop-images/agent-py312.sif`), in a jail that binds only the checked-out tree. An eval that needs data must fetch it into the tree. The published image lives at [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image), built from `containers/agent-py312.def`. On Linux with Apptainer installed, `outerloop init` downloads it (about 200 MB), verifies its published checksum and records it. `--image` points at your own, and `--no-image` skips Apptainer even when an image is on disk (macOS still uses Seatbelt when available) by writing `OUTERLOOP_IMAGE=`.
 
-Only the local loop falls back to running uncontained on its own. On Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. Codex and Hermes authors need the image in every mode.
+Only the local loop falls back to running uncontained on its own. By default, on Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. `OUTERLOOP_UNCONTAINED=1` is the documented exception. Codex and Hermes authors need the image in every mode.
 
 ### Running a cluster without a container
 
