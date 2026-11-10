@@ -9,6 +9,7 @@ Versions follow [SemVer](https://semver.org).
 ### Upgrading
 
 - The reusable review, summary and maintenance workflows now default to the codex backend. A caller that relied on the old `claude` default must now set `backend: claude`; otherwise its reviews post a could-not-run stub until an `openai_reviewer_key` secret is passed.
+- The sweep no longer moves pre-0.2.0 record fields into the inbox. Before upgrading, check that no active (not ended) run record carries `last_comment_id`, `last_review_id`, `last_review_comment_id` or `panel_wake_text`; if one does, run non-dry sweeps on 0.6.0 until those keys are gone, or its pending panel text and GitHub comment positions are lost. Ended records need nothing. Records keep these keys no longer: the next save drops them.
 
 ### Changed
 
@@ -16,6 +17,8 @@ Versions follow [SemVer](https://semver.org).
 - The reviewer, summarizer and maintenance digest default to Codex, on a model the kernel pins next to the Codex CLI version (`model` in the `[codex]` table of `harnesses.toml`). A caller that leaves `model` unset follows the pin, so moving it in a release moves every such caller. A `model` input still wins.
 - `merge: auto` merges a blessed head even while its author is still at work. Before, the merge waited until the run had no jobs in flight and no unread messages, so an author that kept revising on each panel round's advisory findings held its own cleared pull request open for days. A human's comment still holds the merge until the author has read it. Merging ends the run and cancels its jobs, as before; further work comes back as a new pull request.
 - Add an internal `ContainerRuntime` seam behind every container the kernel runs (each harness's sessions, the evaluator, dispatched jobs, and `init`'s probe); Apptainer is the only runtime for now (no behavior change). Job scripts without an image no longer export the unused `APPTAINERENV_*` copies, which their `env -i` never passed on.
+- Remove the unused `codex_author_config_error` alias; `author_config_error` is the validator.
+- Remove the one-time legacy inbox migration (`runstate.migrate_inbox`), its call sites, the tick's `legacy follow-up records` count, and the record save that carried the old keys forward; a record that still carries pre-0.2.0 keys loads, with those fields ignored.
 - The docs site builds on mkdocs-material 9.8.1 (was 9.6.14) and pins pymdown-extensions 13.0, which it pulled up from 10.21.3.
 - Update the locked versions to pydantic 2.14.3, pytest 9.2.0, pytest-testmon 2.3.0, mypy 2.4.1 and Ruff 0.17.4, and the Ruff pre-commit hook to match.
 - The Apptainer install hint points at 1.5.5 (was 1.5.3). Releases before 1.5.4 have a local privilege escalation in suid mode; an existing suid install needs upgrading separately.
