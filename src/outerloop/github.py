@@ -1166,16 +1166,6 @@ def ensure_regular_git_dir(root: Path | None) -> list[str]:
     if not stat.S_ISDIR(st.st_mode):
         raise _altered(".git is not a directory (a gitdir file)")
     _ensure_regular_config(root)  # before any git subprocess below reads it
-    # A promisor remote makes any object read fetch through the session's
-    # config; the kernel never uses partial clones, and older git ignores
-    # GIT_NO_LAZY_FETCH, so refuse before the first git read below.
-    keys = _config_keys(Path(root))
-    if any(
-        key == "extensions.partialclone"
-        or (key.startswith("remote.") and key.endswith(".promisor"))
-        for key in keys
-    ):
-        raise _altered("a promisor remote is configured (the kernel never uses partial clones)")
     # The kernel clones with the files ref backend; a reftable repository
     # (`git init --ref-format=reftable`, or a `git refs migrate`) keeps its
     # refs in `.git/reftable/`, where none of the ref reads below would see
@@ -1258,6 +1248,17 @@ def ensure_regular_git_dir(root: Path | None) -> list[str]:
         ):
             raise _altered(f".git/objects/{fan.name} is not a git object directory")
         _regular_files_only(git_dir, f"objects/{fan.name}", allow_dirs=("commit-graphs",))
+    # A promisor remote makes any object read fetch through the session's
+    # config; the kernel never uses partial clones, and older git ignores
+    # GIT_NO_LAZY_FETCH, so refuse before the object read below. The control files are regular by
+    # now, so the listing cannot block on a FIFO.
+    keys = _config_keys(Path(root))
+    if any(
+        key == "extensions.partialclone"
+        or (key.startswith("remote.") and key.endswith(".promisor"))
+        for key in keys
+    ):
+        raise _altered("a promisor remote is configured (the kernel never uses partial clones)")
     # The structure can be intact with the objects gone (pack files deleted,
     # or moved and the link removed): a commit the refs name must still be
     # readable. HEAD's commit when HEAD is born; otherwise any other ref (a
