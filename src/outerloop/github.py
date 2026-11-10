@@ -1422,15 +1422,33 @@ def _sanitize_one_config(cfg: Path) -> None:
         _write("".join(kept).encode())
 
 
-def filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
-    """GIT_CONFIG pairs that neutralize every filter driver the REPO config
-    defines (each overridden to a passthrough) plus attribute files. The
-    workspace's .git/config and .gitattributes are session-written, so a
-    checkout there must never execute a configured smudge/clean/process
-    command with the orchestrator's permissions — the same neutralization the
-    dispatched job script applies. Env-var pairs, not `-c`: a driver name
-    containing '=' or dots survives correctly."""
-    pairs: list[tuple[str, str]] = [("core.attributesFile", "/dev/null")]
+def git_config_override_pairs(root: Path | None) -> list[tuple[str, str]]:
+    """Override session-written commands, preserving filter and merge content.
+
+    Keys and values travel separately in the environment so driver names
+    containing '=' or non-UTF-8 bytes still match exactly. Diff commands also
+    need --no-ext-diff/--no-textconv: empty values do not disable them.
+    """
+    pairs: list[tuple[str, str]] = [
+        ("core.attributesFile", "/dev/null"),
+        ("diff.external", ""),
+        ("commit.gpgSign", "false"),
+        ("tag.gpgSign", "false"),
+        ("push.gpgSign", "false"),
+        ("merge.verifySignatures", "false"),
+        ("log.showSignature", "false"),
+        ("gpg.program", "false"),
+        ("gpg.openpgp.program", "false"),
+        ("gpg.x509.program", "false"),
+        ("gpg.ssh.program", "false"),
+        ("gpg.ssh.defaultKeyCommand", "false"),
+        ("core.editor", "true"),
+        ("core.pager", "cat"),
+        ("core.askPass", "false"),
+        ("core.alternateRefsCommand", "true"),
+        ("gc.auto", "0"),
+        ("maintenance.auto", "false"),
+    ]
     if root is None:
         return pairs
     listing = subprocess.run(
@@ -1465,46 +1483,58 @@ def filter_override_pairs(root: Path | None) -> list[tuple[str, str]]:
     # not --get-regexp: git's regex skips a key that is not valid UTF-8.
     for record in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
         key = record.split("\n", 1)[0]
-        if not key.startswith("filter.") or not key.endswith((".clean", ".smudge", ".process")):
+        section, _, rest = key.partition(".")
+        driver, _, variable = rest.rpartition(".")
+        if section == "pager":
+            pairs.append((key, "false"))
+        if "." not in rest:
             continue
-        if "." not in key[len("filter.") :]:
-            continue
-        driver = key[len("filter.") : key.rindex(".")]
-        pairs += [
-            (f"filter.{driver}.clean", "cat"),
-            (f"filter.{driver}.smudge", "cat"),
-            (f"filter.{driver}.process", ""),
-        ]
+        if section == "filter" and variable in {"clean", "smudge", "process"}:
+            pairs += [
+                (f"filter.{driver}.clean", "cat"),
+                (f"filter.{driver}.smudge", "cat"),
+                (f"filter.{driver}.process", ""),
+            ]
+        elif section == "diff" and variable in {"command", "textconv"}:
+            pairs.append((key, ""))
+        elif section == "merge" and variable == "driver":
+            pairs.append((key, "git merge-file --marker-size=%L %A %O %B"))
+        elif section == "protocol" and variable == "allow" and driver not in {"https", "file"}:
+            pairs.append((key, "never"))
+        elif section == "hook":
+            pairs.append((f"hook.{driver}.enabled", "false"))
+        elif section == "branch" and variable == "mergeoptions":
+            pairs.append((key, ""))
     return pairs
 
 
-# Filter listings a hand-off check remembered, keyed by resolved workspace
+# Config overrides a hand-off check remembered, keyed by resolved workspace
 # root: between hand-offs only kernel code runs, so a listing cannot go
 # stale. The entry is also the root's hand-off MARK: its presence is what
 # lets Workspace.git skip the per-call guard. A lookup MISS never populates
 # the cache, so a caller that skipped its hand-off check recomputes per call
 # and re-runs the guard — slow, never unsafe.
-_FILTER_OVERRIDES: dict[Path, list[tuple[str, str]]] = {}
+_CONFIG_OVERRIDES: dict[Path, list[tuple[str, str]]] = {}
 
 
 def handoff_git_dir(root: Path | None) -> None:
-    """The session-boundary check: the full guard plus the root's filter
-    listing, remembered so the kernel git calls until the next untrusted
-    launch neither re-run the guard nor re-list the filters."""
+    """The session-boundary check: the full guard plus the root's command
+    overrides, remembered so the kernel git calls until the next untrusted
+    launch neither re-run the guard nor re-list the config."""
     ensure_regular_git_dir(root)
     if root is not None and (Path(root) / ".git").is_dir():
-        _FILTER_OVERRIDES[Path(root).resolve()] = filter_override_pairs(root)
+        _CONFIG_OVERRIDES[Path(root).resolve()] = git_config_override_pairs(root)
 
 
-def _filter_pairs_for(root: Path | None) -> list[tuple[str, str]]:
-    """The filter overrides for a root: the hand-off check's listing when one
+def _config_pairs_for(root: Path | None) -> list[tuple[str, str]]:
+    """The command overrides for a root: the hand-off check's listing when one
     is remembered (a copy — callers append the credential header), computed
     fresh otherwise."""
     if root is None:
-        return filter_override_pairs(None)
-    remembered = _FILTER_OVERRIDES.get(Path(root).resolve())
+        return git_config_override_pairs(None)
+    remembered = _CONFIG_OVERRIDES.get(Path(root).resolve())
     if remembered is None:
-        return filter_override_pairs(root)
+        return git_config_override_pairs(root)
     return list(remembered)
 
 
@@ -1513,14 +1543,14 @@ def forget_filter_overrides(root: Path | None) -> None:
     about to run on it, so the next git call re-runs the guard and
     recomputes, never reuses."""
     if root is not None:
-        _FILTER_OVERRIDES.pop(Path(root).resolve(), None)
+        _CONFIG_OVERRIDES.pop(Path(root).resolve(), None)
 
 
 def _guard_git_dir(root: Path) -> None:
     """The per-call guard behind Workspace.git: skipped on a root a hand-off
     checked (only kernel code has run on it since), the full check otherwise,
     so a path no hand-off covers keeps today's per-call protection."""
-    if Path(root).resolve() not in _FILTER_OVERRIDES:
+    if Path(root).resolve() not in _CONFIG_OVERRIDES:
         ensure_regular_git_dir(root)
 
 
@@ -1551,8 +1581,8 @@ def _run_git_with_credential(
 def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     """Environment for a git invocation: host global/system config never
     loads (a host-configured filter driver must not be selectable by a
-    session-written .gitattributes), repo-defined filter drivers are
-    overridden to passthrough, and the token — present only for network
+    session-written .gitattributes), repo-defined commands are
+    neutralized, and the token — present only for network
     subcommands — rides an env-injected header."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -1564,7 +1594,7 @@ def _git_env(token: str | None, root: Path | None = None) -> dict[str, str]:
     # for a real one during post-session verification. The kernel never
     # uses replace refs; disable them on every invocation.
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    pairs = _filter_pairs_for(root)
+    pairs = _config_pairs_for(root)
     if token is not None:
         pairs.append(
             ("http.https://github.com/.extraheader", f"Authorization: Basic {_basic(token)}")
@@ -1628,6 +1658,8 @@ class Workspace:
         hand-off remembered for the root the guard runs per call instead
         (_guard_git_dir), so an unchecked path is covered either way."""
         _guard_git_dir(self.root)
+        if args and args[0] in {"diff", "show", "log"}:
+            args = (args[0], "--no-ext-diff", "--no-textconv", *args[1:])
         return _run_git(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args], _git_env(None, self.root)
         )
@@ -1641,6 +1673,12 @@ class Workspace:
         if args and args[0] not in NETWORK_GIT_COMMANDS:
             raise ValueError(f"{args[0]!r} is not a network git command")
         ensure_regular_git_dir(self.root)  # sanitizes the config first, too
+        # Remote upload/receive commands use the FIRST config value, so env
+        # overrides cannot replace them. Explicit URLs can name config remotes.
+        if args and args[0] == "push":
+            args = (args[0], "--receive-pack=git-receive-pack", *args[1:])
+        elif args and args[0] in {"fetch", "pull", "clone", "ls-remote"}:
+            args = (args[0], "--upload-pack=git-upload-pack", *args[1:])
         token = self.auth.token() if self.auth is not None else None
         return _run_git_with_credential(
             ["git", "-C", str(self.root), *SAFE_GIT_FLAGS, *args],

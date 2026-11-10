@@ -444,12 +444,10 @@ def test_candidate_row_rewrite_fails_closed(provider: FileTokenProvider) -> None
     assert len(no_row.requests) == 1  # GET only, no PATCH
 
 
-def test_session_planted_smudge_filter_never_executes(tmp_path: Path) -> None:
-    # A session can write .git/config and .gitattributes in its workspace: a
-    # filter driver planted there must not run with the orchestrator's
-    # permissions when Workspace.git checks files out (the same neutralization
-    # the dispatched job script applies).
+def test_session_planted_git_commands_never_execute(tmp_path: Path) -> None:
     import subprocess as sp
+
+    from outerloop.github import handoff_git_dir
 
     root = tmp_path / "ws"
     root.mkdir()
@@ -458,21 +456,59 @@ def test_session_planted_smudge_filter_never_executes(tmp_path: Path) -> None:
         sp.run(["git", "-C", str(root), *args], check=True, capture_output=True)
 
     g("init", "-q", "-b", "main")
-    (root / "data.txt").write_text("payload\n")
-    (root / ".gitattributes").write_text("*.txt filter=evil\n")
+    g("config", "user.name", "t")
+    g("config", "user.email", "t@t")
+    original = "".join(f"line {i}\n" for i in range(20))
+    (root / "data.txt").write_text(original)
+    (root / "plain.txt").write_text("before\n")
+    (root / ".gitattributes").write_text("data.txt filter=evil diff=x merge=x\n")
     g("add", "-A")
-    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
-    marker = tmp_path / "PWNED"
-    # the "session" plants the driver in repo-local config
-    g("config", "filter.evil.smudge", f"touch {marker} && cat")
-    g("config", "filter.evil.clean", f"touch {marker} && cat")
+    g("commit", "-qm", "base")
+    g("checkout", "-qb", "other")
+    (root / "data.txt").write_text(original.replace("line 19\n", "theirs\n"))
+    g("commit", "-qam", "theirs")
+    g("checkout", "-q", "main")
+    (root / "data.txt").write_text(original.replace("line 0\n", "ours\n"))
+    (root / "plain.txt").write_text("after\n")
+    g("commit", "-qam", "ours")
 
+    markers = []
+    for key in (
+        "filter.evil.clean",
+        "filter.evil.smudge",
+        "diff.external",
+        "diff.x.command",
+        "diff.x.textconv",
+        "merge.x.driver",
+        "gpg.program",
+    ):
+        marker = tmp_path / key
+        markers.append(marker)
+        script = root / f"{key}.sh"
+        script.write_text(f'#!/bin/sh\ntouch "{marker}"\ncat\n')
+        script.chmod(0o755)
+        g("config", key, str(script))
+    g("config", "commit.gpgSign", "true")
     ws = Workspace(root=root)
-    # force a fresh checkout of every file — with the driver live this would
-    # run the smudge command
-    ws.git("checkout", "-f", "HEAD", "--", ".")
-    ws.git("status", "--porcelain")
-    assert not marker.exists()
+    ws.git("checkout", "-f", "HEAD", "--", "data.txt")
+    handoff_git_dir(root)
+    diff = ws.git("diff", "HEAD~1..HEAD", "--", "plain.txt")
+    assert not any(marker.exists() for marker in markers)
+    assert "-before" in diff and "+after" in diff
+    diff = ws.git("diff", "HEAD~1..HEAD", "--", "data.txt")
+    assert "-line 0" in diff and "+ours" in diff
+    # Without the external driver, Git would select textconv instead.
+    g("config", "--unset", "diff.x.command")
+    assert "+ours" in ws.git("diff", "HEAD~1..HEAD", "--", "data.txt")
+    ws.git("merge", "--no-edit", "other")
+    merged = original.replace("line 0\n", "ours\n").replace("line 19\n", "theirs\n")
+    assert (root / "data.txt").read_text() == merged
+    (root / "plain.txt").write_text("committed unsigned\n")
+    ws.commit_all("unsigned", author="t")
+    assert ws.git("show", "HEAD:plain.txt") == "committed unsigned"
+    assert "gpgsig" not in ws.git("cat-file", "-p", "HEAD")
+    assert not ws.git("status", "--porcelain", "--untracked-files=no")
+    assert not any(marker.exists() for marker in markers)
 
 
 def test_non_utf8_filter_config_neither_crashes_nor_executes(tmp_path: Path) -> None:

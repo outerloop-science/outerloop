@@ -20,6 +20,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A session could make the kernel run a command on the host through the workspace's Git config: `diff.external` ran when the kernel built a pull request's diff, and diff and merge drivers, signing programs, the editor, pagers, config-defined hooks and remote transport commands could do the same. Every kernel git call on a workspace now overrides those settings, and `diff`, `show` and `log` pass `--no-ext-diff --no-textconv`.
 - A Git filter driver whose name is not valid UTF-8 was never neutralized: `git config --get-regexp` skips such keys, so a session-written filter could run on the host during the code snapshot or a hand-off checkout. Filters are now listed with `--list` and matched in one place, byte-safe, which also stops a non-UTF-8 filter value from crashing the snapshot.
 - `finding` refuses a finding that would make the verdict larger than the kernel reads (1 MB), so a judge can shorten it in the same session. Before, `conclude` wrote the verdict and the kernel rejected it.
 
