@@ -9,6 +9,7 @@ Versions follow [SemVer](https://semver.org).
 ### Upgrading
 
 - The reusable review, summary and maintenance workflows now default to the codex backend. A caller that relied on the old `claude` default must now set `backend: claude`; otherwise its reviews post a could-not-run stub until an `openai_reviewer_key` secret is passed.
+- A state root last run by a kernel older than 0.2.0 must run one sweep on 0.6.x before upgrading, otherwise its pending panel text and GitHub comment positions are not carried into the inbox.
 
 ### Changed
 
@@ -16,6 +17,8 @@ Versions follow [SemVer](https://semver.org).
 - The reviewer, summarizer and maintenance digest default to Codex, on a model the kernel pins next to the Codex CLI version (`model` in the `[codex]` table of `harnesses.toml`). A caller that leaves `model` unset follows the pin, so moving it in a release moves every such caller. A `model` input still wins.
 - `merge: auto` merges a blessed head even while its author is still at work. Before, the merge waited until the run had no jobs in flight and no unread messages, so an author that kept revising on each panel round's advisory findings held its own cleared pull request open for days. A human's comment still holds the merge until the author has read it. Merging ends the run and cancels its jobs, as before; further work comes back as a new pull request.
 - Add an internal `ContainerRuntime` seam behind every container the kernel runs (each harness's sessions, the evaluator, dispatched jobs, and `init`'s probe); Apptainer is the only runtime for now (no behavior change). Job scripts without an image no longer export the unused `APPTAINERENV_*` copies, which their `env -i` never passed on.
+- Remove the unused `codex_author_config_error` alias; `author_config_error` is the validator.
+- Remove the one-time legacy inbox migration (`runstate.migrate_inbox`) and its call sites; a record that still carries pre-0.2.0 keys loads, with those fields ignored.
 
 ## [0.6.0] - 2026-10-26
 

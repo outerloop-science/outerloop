@@ -962,10 +962,7 @@ def _wake(
     """
     if not acquire_lease(root, record.run_id, holder, holder_job_id="", now=now):
         return False
-    from outerloop.runstate import migrate_inbox
-
-    try:
-        migrate_inbox(root, record.run_id, now)
+    try:  # re-read under the lease: the run may have ended since the listing
         record = load_record(root, record.run_id)
     except Exception:
         release_lease(root, record.run_id)
@@ -1218,13 +1215,6 @@ def sweep(
 
     for record in records:
         try:
-            if not dry_run and acquire_lease(root, record.run_id, holder, "", now):
-                try:
-                    from outerloop.runstate import migrate_inbox
-
-                    migrate_inbox(root, record.run_id, now)
-                finally:
-                    release_lease(root, record.run_id)
             from outerloop.attempt import end_on_request, end_requested
 
             # An operator ending waits for the lease: a live session finishes its

@@ -375,69 +375,6 @@ def load_record(root: Path, run_id: str) -> RunRecord:
     return record
 
 
-def migrate_inbox(root: Path, run_id: str, now: float) -> None:
-    """Move legacy inbox data once, while the caller holds the wake lease."""
-    from outerloop.inbox import Message, advance_github_positions, append, thread_for
-
-    if read_lease(root, run_id) is None:
-        raise RuntimeError("inbox migration requires the run lease")
-    directory = run_dir(root, run_id)
-    with (directory / ".record-lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        path = directory / RECORD_NAME
-        raw = json.loads(path.read_text())
-        if raw.get("state") == ENDED:
-            return
-        keys = ("last_comment_id", "last_review_id", "last_review_comment_id")
-        # the follow-up job and its dispatched re-measure no longer exist:
-        # an old record still naming them would count as legacy forever
-        jobs = ("followup_job_id", "followup_stage")
-        if not any(key in raw for key in (*keys, "panel_wake_text", *jobs)):
-            return
-        if (
-            any(key in raw for key in keys)
-            and not (directory / "inbox" / "positions.json").exists()
-        ):
-            advance_github_positions(
-                directory,
-                dict(
-                    zip(
-                        ("comment", "review", "review_comment"),
-                        (int(raw.get(key, 0)) for key in keys),
-                        strict=True,
-                    )
-                ),
-            )
-        record = load_record(root, run_id)
-        if raw.get("panel_wake_text"):
-            append(
-                run_dir(root, run_id),
-                Message(
-                    0,
-                    "panel-verdict",
-                    "panel",
-                    thread_for(record),
-                    float(raw.get("updated", 0)),
-                    "panel:legacy",
-                    {
-                        "findings": [
-                            {
-                                "blocking": True,
-                                "summary": "Pending panel findings",
-                                "detail": raw["panel_wake_text"],
-                            }
-                        ]
-                    },
-                ),
-            )
-        for key in (*keys, "panel_wake_text", *jobs):
-            if raw.pop(key, None):
-                log.info("run %s: legacy %s dropped by the migration", run_id, key)
-        tmp = directory / f".migration.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(raw, indent=2, sort_keys=True))
-        os.replace(tmp, path)
-
-
 def list_runs(root: Path) -> list[RunRecord]:
     """Every readable run record; unreadable ones are logged, not fatal —
     one corrupt file must not stop the sweep."""

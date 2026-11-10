@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from outerloop import harness as harness_mod
-from outerloop.attempt import codex_author_config_error, fleet_author_model, resume_author
+from outerloop.attempt import author_config_error, fleet_author_model, resume_author
 from outerloop.cli import TICK_ENV_KEYS, env_file_values, missing_claude_model, missing_panel_model
 from outerloop.endpoints import endpoint_profile, model_key, resolve_endpoint, split_endpoint
 from outerloop.harness import CodexHarness, _parse_hermes_result
@@ -120,11 +120,9 @@ def test_author_and_start_preflight(
     monkeypatch.setenv("OUTERLOOP_AUTHOR_ENDPOINT", "local")
     monkeypatch.delenv("OUTERLOOP_AUTHOR_MODEL", raising=False)
     assert fleet_author_model("claude") == "open-model[endpoint=local]"
-    assert codex_author_config_error("claude", "open-model[endpoint=local]", "") == ""
-    assert "requires --image" in codex_author_config_error(
-        "codex", "open-model[endpoint=local]", ""
-    )
-    assert "unknown endpoint" in codex_author_config_error("codex", "[endpoint=missing]", "image")
+    assert author_config_error("claude", "open-model[endpoint=local]", "") == ""
+    assert "requires --image" in author_config_error("codex", "open-model[endpoint=local]", "")
+    assert "unknown endpoint" in author_config_error("codex", "[endpoint=missing]", "image")
     env = {
         **profile,
         "OUTERLOOP_AUTHOR_ENDPOINT": "local",

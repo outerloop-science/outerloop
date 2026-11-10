@@ -64,7 +64,7 @@ def test_default_claude_model_reads_the_setting_stripped(monkeypatch):
         ("claude", "", "claude-test-model"),
         ("claude", "claude-author-override", "claude-author-override"),
         ("codex", "gpt-5.6-terra", "gpt-5.6-terra"),
-        ("codex", "", ""),  # codex_author_config_error names the fix, not ClaudeModelUnset
+        ("codex", "", ""),  # author_config_error names the fix, not ClaudeModelUnset
     ],
 )
 def test_fleet_author_model(monkeypatch, backend, author_model, expected):
