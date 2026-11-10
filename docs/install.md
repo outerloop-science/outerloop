@@ -261,7 +261,7 @@ Enable the Claude models in the project's Model Garden, mint ADC with `gcloud au
 
 A local install upgrades with `outerloop upgrade`, which is `pip install --upgrade outerloop-science` under one verb (`--pre` tracks pre-releases). Then run `outerloop permissions --open` and follow the page it opens, and stop and restart the loop to pick up the new code.
 
-New formats for run records are migrated as the kernel reads them, so an upgrade needs no migration step. An older kernel cannot read the new ones: drain or end active runs before rolling back past a format change, since a rollback needs the records translated by hand.
+New formats for run records are migrated as the kernel reads them, so an upgrade needs no migration step unless the changelog's Upgrading notes for that release name one. An older kernel cannot read the new ones: drain or end active runs before rolling back past a format change, since a rollback needs the records translated by hand.
 
 A resident Slurm deployment runs from a checkout, and `OUTERLOOP_AUTO_UPDATE` in `.env` says whether the deploy step moves it. `off`, the default, leaves the checkout alone: you upgrade when you choose, and the loop keeps running the code you validated. `release` moves it to the newest release tag at the next cadence, pre-releases included, and the repo is public so no credential is needed. `main` follows every merge and is meant for the kernel's own developers. Whatever moves the checkout, you or the policy, the environment is synced to the commit that is checked out, or the deploy rolls back to the last commit whose environment was installed.
 

@@ -44,9 +44,9 @@ through `attempt.run_author_leg`, including the steward's review work.
 `followup.py` and its job are gone. GitHub collection positions live beside
 the inbox, while the run record carries the delivered sequence. Replies are
 posted by the author leg; only a submit invokes the gate and one publish.
-The endings and reports remain. Old state names and collection positions
-migrate on read. Each tick logs `legacy follow-up records: N` from raw live
-records; operators must confirm zero across every fleet before deployment.
+The endings and reports remain. Old state names migrate on read. The sweep
+that moved older records' collection positions and pending panel text into
+the inbox was retired in 0.7.0.
 
 ## The lifecycle
 
@@ -363,8 +363,8 @@ between stages.
    top-up exists; the submit policies [7, 49, 50] go; the follow-up
    re-measure path no longer runs.
 4. **Three states.** Status: landed. `running`, `parked`, `ended`; the record migrates on
-   read. This stage lands only when no live record on any fleet carries
-   `followup_stage` or a follow-up job; the tick reports the count until it is zero.
+   read. This stage landed once no live record on any fleet carried
+   `followup_stage` or a follow-up job.
    `followup.py`, the steward's pipeline copy, and the counters are deleted
    with their tests.
 

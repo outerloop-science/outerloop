@@ -341,17 +341,6 @@ def _save_record(root: Path, record: RunRecord, now: float) -> None:
         payload.pop("author_limits")
     if not stamped.author_overridden:
         payload.pop("author_overridden")  # No-setting records retain their exact wire shape.
-    path = directory / RECORD_NAME
-    if path.exists():
-        old = json.loads(path.read_text())
-        for key in (
-            "last_comment_id",
-            "last_review_id",
-            "last_review_comment_id",
-            "panel_wake_text",
-        ):
-            if key in old:
-                payload[key] = old[key]
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
     os.replace(tmp, directory / RECORD_NAME)
 

@@ -2002,17 +2002,6 @@ def tick(
     prior_worked = _last_worked_ts(root)
     write_heartbeat(root, now)
     read_limits(root)
-    legacy = 0
-    for path in (root / "runs").glob("*/state.json"):
-        try:
-            raw = json.loads(path.read_text())
-            legacy += bool(
-                raw.get("state") != ENDED
-                and (raw.get("followup_stage") or raw.get("followup_job_id"))
-            )
-        except (OSError, ValueError, AttributeError):
-            pass
-    log.info("legacy follow-up records: %d", legacy)
     disk_health = check_disk(root, min_free_bytes=min_free_bytes)
     write_heartbeat(root, now, disk=disk_health.as_dict())
     for warning in disk_health.warnings():
