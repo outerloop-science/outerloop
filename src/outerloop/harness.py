@@ -612,11 +612,12 @@ def _int(value: Any, default: int = 0) -> int:
 
 
 def _kill_and_drain(process: subprocess.Popen[str]) -> str:
-    """Kill a timed-out session's whole process group, then drain its pipe within
-    a bound so `run()` always returns — a descendant that left the group (setsid)
-    can hold the pipe open past the kill. Returns whatever stdout drained (may be
-    empty). Shared by every backend's timeout path; keep the sequence in one place
-    so the safety-sensitive termination cannot drift between them."""
+    """Kill a timed-out session's (or a stopped codex login's) whole process
+    group, then drain its pipe within a bound so the caller always returns — a
+    descendant that left the group (setsid) can hold the pipe open past the kill.
+    Returns whatever stdout drained (may be empty). Shared by every backend's
+    timeout path and the login; keep the sequence in one place so the
+    safety-sensitive termination cannot drift between them."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     try:
@@ -1188,6 +1189,7 @@ class CodexHarness:
     # (no annotation) so the dataclass does not treat it as a field.
     CONTAINER_CODEX = "/opt/agent/codex"
     CONTAINER_CODE_MODE_HOST = "/opt/agent/codex-code-mode-host"
+    LOGIN_TIMEOUT_S = 60  # then `codex login` and everything it started are killed
 
     # Headless resume is validated on codex-cli 0.130.0: a contained
     # `codex exec resume <thread_id>` recalls prior-turn context (the session id
@@ -1249,23 +1251,32 @@ class CodexHarness:
         else:
             login_argv = [self.binary, "login", "--with-api-key"]
         try:
-            proc = subprocess.run(
+            # its own process group, as sessions have, so a timeout or an interruption
+            # kills every descendant (a container's processes too), not only the first
+            proc = subprocess.Popen(
                 login_argv,
-                input=self.api_key,
                 cwd=session_home,
                 env=env,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
-                check=False,
+                start_new_session=True,
             )
         except OSError as exc:
             log.warning("could not spawn codex login: %s", exc)
             return _error_result("codex-login-error", detail=str(exc)[:200])
+        try:
+            stdout, stderr = proc.communicate(input=self.api_key, timeout=self.LOGIN_TIMEOUT_S)
         except subprocess.TimeoutExpired:
+            _kill_and_drain(proc)
+            self._purge_auth(session_home)  # it may have written the key before stalling
             return _error_result("codex-login-error", detail="codex login timed out")
+        except BaseException:
+            _kill_and_drain(proc)
+            raise
         if proc.returncode != 0:
-            detail = redact((proc.stderr or proc.stdout or "").strip(), (self.api_key,))[-300:]
+            detail = redact((stderr or stdout or "").strip(), (self.api_key,))[-300:]
             log.warning("codex login failed: %s", detail)
             return _error_result("codex-login-error", detail=detail or "codex login failed")
         return None

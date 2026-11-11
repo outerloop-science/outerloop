@@ -446,11 +446,21 @@ def test_redact_handles_empty_secrets() -> None:
     assert redact("key sk-key end", ("sk-key",)) == "key [redacted] end"
 
 
+def _reaped(pid: int) -> bool:
+    """Whether `pid` is gone; a killed grandchild lingers as a zombie until init
+    reaps it, so callers poll."""
+    import os as _os
+
+    try:
+        _os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     """Bash-tool descendants of a timed-out session must not survive holding
     the API key and writing into the clone."""
-    import os as _os
-
     script = tmp_path / "claude"
     script.write_text(
         f"#!/bin/sh\ncat > /dev/null\nsleep 300 &\necho $! > {tmp_path}/child_pid\nsleep 300\n"
@@ -461,16 +471,52 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(script), timeout_s=1).run("task", ws)
     assert result.stop_reason == "timeout"
     child = int((tmp_path / "child_pid").read_text().strip())
+    assert wait_until(lambda: _reaped(child), interval=0.05), f"child {child} survived"
 
-    # the grandchild lingers as a zombie until init reaps it — poll briefly
-    def gone() -> bool:
-        try:
-            _os.kill(child, 0)
-        except ProcessLookupError:
-            return True
-        return False
 
-    assert wait_until(gone, interval=0.05), f"child {child} survived the group kill"
+@pytest.mark.parametrize("stop", ["timeout", "interrupt"])
+def test_a_stopped_codex_login_kills_its_group(tmp_path: Path, monkeypatch, stop) -> None:
+    """A timeout or an interruption kills the login's whole group, as a timeout
+    does a session's (a container launcher's children otherwise outlive it), and
+    the timeout deletes an auth.json the stalled login already wrote."""
+    from outerloop import harness as harness_mod
+
+    pid_file = tmp_path / "child_pid"
+    script = tmp_path / "codex"
+    script.write_text(
+        f'#!/bin/sh\nsleep 300 &\necho $! > {pid_file}\ncat > "$CODEX_HOME/auth.json"\nsleep 300\n'
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(CodexHarness, "LOGIN_TIMEOUT_S", 1)
+
+    class Interrupted(subprocess.Popen):
+        """Ctrl-C during the login's first wait, once its child is running."""
+
+        interrupted = False
+
+        def communicate(self, *args: Any, **kwargs: Any) -> Any:
+            if not Interrupted.interrupted:
+                Interrupted.interrupted = True
+                wait_until(
+                    lambda: pid_file.is_file() and pid_file.read_text().strip(), interval=0.05
+                )
+                raise KeyboardInterrupt
+            return super().communicate(*args, **kwargs)
+
+    if stop == "interrupt":
+        monkeypatch.setattr(harness_mod.subprocess, "Popen", Interrupted)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(api_key="sk-o", binary=str(script), model="gpt-5.6-terra")
+    if stop == "timeout":
+        result = harness.run("t", ws)
+        assert result.is_error and result.error_detail == "codex login timed out"
+        assert not (tmp_path / "ws-home" / ".codex" / "auth.json").exists()
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            harness.run("t", ws)
+    child = int(pid_file.read_text().strip())
+    assert wait_until(lambda: _reaped(child), interval=0.05), f"child {child} survived"
 
 
 @pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root ignores mode bits")
@@ -642,16 +688,14 @@ def test_an_enroot_codex_session_jails_the_login_and_the_exec(tmp_path: Path, mo
     from outerloop.container import _ENROOT_JAIL, EnrootRuntime
 
     calls: list[tuple[list[str], dict[str, str]]] = []
-
-    def fake_run(command, env, **kw):
-        calls.append((command, env))
-        return subprocess.CompletedProcess(command, 0, "", "")
+    popen = subprocess.Popen
 
     def fake_popen(command, cwd, env, **kw):
         calls.append((command, env))
+        if len(calls) == 1:  # the login succeeds; the exec stops the run
+            return popen(["true"], **kw)
         raise OSError("stop here")
 
-    monkeypatch.setattr(harness_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(harness_mod.subprocess, "Popen", fake_popen)
     ws = tmp_path / "ws"
     ws.mkdir()

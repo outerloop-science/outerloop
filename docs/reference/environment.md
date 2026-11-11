@@ -256,8 +256,9 @@ included. See [running a cluster without a container](../install.md#running-a-cl
 ### `OUTERLOOP_CONTAINER_RUNTIME`
 
 What contains sessions and evals on Linux: `apptainer` (the default) or
-`enroot`. `init` proposes `enroot` when it is installed and Apptainer is not,
-and writes this line only then. See [running on enroot](../install.md#running-on-enroot).
+`enroot`. `init` writes the runtime it is given (`--container-runtime`, or the
+shell's or the existing settings' value), `apptainer` included, and proposes
+`enroot` when it is installed and Apptainer is not. See [running on enroot](../install.md#running-on-enroot).
 
 - Values: `apptainer`, `enroot`
 - Default: `apptainer`

@@ -472,6 +472,10 @@ RESERVED_ENV_PREFIXES = (
 )
 
 
+# the runtime each image format is for
+IMAGE_RUNTIMES = {ApptainerRuntime.image_suffix: "apptainer", EnrootRuntime.image_suffix: "enroot"}
+
+
 def runtime_from_env(environ: Mapping[str, str] | None = None) -> ContainerRuntime:
     """The deployment's container runtime, resolved without running it:
     `OUTERLOOP_CONTAINER_RUNTIME` names it (`apptainer` by default), run as

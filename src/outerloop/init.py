@@ -40,7 +40,7 @@ from outerloop.cli import (
     env_file_values,
     operator_env_file,
 )
-from outerloop.container import runtime_from_env
+from outerloop.container import IMAGE_RUNTIMES, runtime_from_env
 from outerloop.github import IDENTITY_ENV
 from outerloop.harness import HARNESS_INSTALL, default_binary
 from outerloop.hermes_install import hermes_ready
@@ -69,7 +69,7 @@ class InitAnswers:
     claude_model: str = ""  # the model every Claude role runs (OUTERLOOP_CLAUDE_MODEL)
     author_key_file: str = ""  # the author's model key file, when known
     image: str = ""  # the agent image (OUTERLOOP_IMAGE)
-    container_runtime: str = ""  # "enroot" (OUTERLOOP_CONTAINER_RUNTIME); "" keeps Apptainer
+    container_runtime: str = ""  # OUTERLOOP_CONTAINER_RUNTIME; "" when none was named (Apptainer)
     uncontained: bool = False  # --no-image: write OUTERLOOP_IMAGE= so no image is picked up
     author_bin: str = ""  # absolute binary or Hermes source path, when ready
     personal: bool = False  # --personal: the token is the person's (OUTERLOOP_IDENTITY)
@@ -109,7 +109,8 @@ def render_env(
         # explicit one keeps `start` looking where `init` bootstrapped
         lines.append(f"OUTERLOOP_ROOT={a.root}")
     if a.container_runtime:
-        # apptainer is the default and stays unwritten
+        # a named runtime is written, apptainer too, so an exported value cannot
+        # override it on Slurm, where the settings file wins; unnamed is apptainer
         lines.append(f"OUTERLOOP_CONTAINER_RUNTIME={a.container_runtime}")
     if a.image:
         lines.append(f"OUTERLOOP_IMAGE={a.image}")
@@ -920,10 +921,10 @@ def _github_app_setup(
 def _container_runtime(
     args: argparse.Namespace, settings: dict[str, str], interactive: bool
 ) -> str:
-    """The runtime that contains this deployment, "" for Apptainer (the
-    default, left unwritten): --container-runtime, else the shell's or the
-    existing settings' OUTERLOOP_CONTAINER_RUNTIME, else enroot when it is
-    installed and apptainer is not and the operator says so when asked."""
+    """The runtime that contains this deployment: --container-runtime, else
+    the shell's or the existing settings' OUTERLOOP_CONTAINER_RUNTIME, else
+    enroot when it is installed and apptainer is not and the operator says so
+    when asked; "" when none is named (Apptainer, the default, left unwritten)."""
     chosen = (
         (args.container_runtime or settings.get("OUTERLOOP_CONTAINER_RUNTIME", "")).strip().lower()
     )
@@ -937,7 +938,7 @@ def _container_runtime(
                 "Apptainer is not installed but enroot is: contain runs with enroot? (Y/n)", "y"
             )
             chosen = "enroot" if answer.lower().startswith("y") else ""
-    return "" if chosen == "apptainer" else chosen
+    return chosen
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1261,19 +1262,30 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"outerloop init: {exc}", file=sys.stderr)
         return 2
+    runtime = runtime_from_env(
+        {
+            **effective_overrides,
+            **answers.preserved_env,
+            "OUTERLOOP_CONTAINER_RUNTIME": answers.container_runtime,
+        }
+    )
+    name = answers.container_runtime or "apptainer"
+    owner = IMAGE_RUNTIMES.get(Path(answers.image).suffix, name)
     if not answers.image and not args.no_image:
-        runtime = runtime_from_env(
-            {
-                **effective_overrides,
-                **answers.preserved_env,
-                "OUTERLOOP_CONTAINER_RUNTIME": answers.container_runtime,
-            }
-        )
         # the container probe is for local mode: on Slurm the image runs on
         # compute nodes, which the login node cannot speak for
         answers.image = ensure_image(
             interactive=interactive, probe=(answers.compute == "local"), runtime=runtime
         )
+    elif owner != name:
+        # e.g. a focused run that switches runtimes keeps the recorded image
+        print(
+            f"outerloop init: {answers.image} is an {owner} image and the runtime is {name}: "
+            f"pass --container-runtime {owner}, --image with a {runtime.image_suffix} image, "
+            "or --no-image",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         validate_overrides(

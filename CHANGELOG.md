@@ -30,6 +30,7 @@ Versions follow [SemVer](https://semver.org).
 
 ### Fixed
 
+- A Codex login that timed out was killed without the processes it started, so they could keep running (inside its container, too). The login now runs in its own process group, as sessions do. A timeout or an interruption kills the whole group, and a timeout also deletes an `auth.json` the stalled login wrote.
 - A session could use the workspace's Git config to run commands on the host. `diff.external` ran when the kernel built a pull request's diff, and diff and merge drivers, signing programs, config-defined hooks, remote transport commands and a submodule's fetch settings could also run commands. Git calls that can run them now disable them, with flags for diff and for remote transport, fetches no longer recurse into submodules, and kernel git never fetches a missing object lazily: a workspace whose config names a promisor remote is refused, and `GIT_NO_LAZY_FETCH` is set where git supports it.
 - A Git filter driver whose name is not valid UTF-8 was never neutralized: `git config --get-regexp` skips such keys, so a session-written filter could run on the host during the code snapshot or a hand-off checkout. Filters are now listed with `--list` and matched in one place, byte-safe, which also stops a non-UTF-8 filter value from crashing the snapshot.
 - `finding` refuses a finding that would make the verdict larger than the kernel reads (1 MB), so a judge can shorten it in the same session. Before, `conclude` wrote the verdict and the kernel rejected it.

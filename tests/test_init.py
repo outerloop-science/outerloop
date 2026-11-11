@@ -252,9 +252,10 @@ def test_main_checks_the_image_path_and_downloads_only_when_setup_proceeds(
     assert "not allowed with" in capsys.readouterr().err
 
 
-def test_render_env_names_enroot_and_leaves_apptainer_unwritten() -> None:
-    enroot = InitAnswers(compute="local", target="o/r", container_runtime="enroot")
-    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in render_env(enroot, "/p")
+def test_render_env_writes_a_named_runtime_and_leaves_an_unnamed_one_out() -> None:
+    for name in ("enroot", "apptainer"):
+        named = InitAnswers(compute="local", target="o/r", container_runtime=name)
+        assert f"\nOUTERLOOP_CONTAINER_RUNTIME={name}\n" in render_env(named, "/p")
     assert "CONTAINER_RUNTIME" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
 
 
@@ -280,8 +281,10 @@ def test_main_records_the_runtime_and_probes_and_fetches_with_it(
     assert init.main(base) == 0
     assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in (configured / ".env").read_text()
     assert calls[-1]["runtime"] == EnrootRuntime("enroot")
+    # the flag is written even for the default, so an exported value cannot win
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "enroot")
     assert init.main([*base, "--container-runtime", "apptainer"]) == 0
-    assert "CONTAINER_RUNTIME" not in (configured / ".env").read_text()
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=apptainer\n" in (configured / ".env").read_text()
     assert calls[-1]["runtime"] == ApptainerRuntime("apptainer")
 
 
@@ -348,7 +351,8 @@ def test_enroot_is_proposed_only_when_it_is_installed_and_apptainer_is_not(monke
     assert init._container_runtime(none, {}, True) == "" and len(asked) == 2
     # a flag or a recorded choice is never second-guessed
     assert init._container_runtime(Namespace(container_runtime="enroot"), {}, True) == "enroot"
-    assert init._container_runtime(none, {"OUTERLOOP_CONTAINER_RUNTIME": "apptainer"}, True) == ""
+    recorded = {"OUTERLOOP_CONTAINER_RUNTIME": "apptainer"}
+    assert init._container_runtime(none, recorded, True) == "apptainer"
     assert len(asked) == 2
 
 
@@ -1308,7 +1312,7 @@ def test_focused_github_app_drops_a_preserved_local_forge(configured: Path, monk
 @pytest.mark.parametrize(
     ("recorded", "flags", "written"),
     [
-        ("enroot", ["--container-runtime", "apptainer", "--image", "agent.sif"], None),
+        ("enroot", ["--container-runtime", "apptainer", "--image", "agent.sif"], "apptainer"),
         ("apptainer", ["--container-runtime", "enroot", "--image", "agent.sqsh"], "enroot"),
         ("enroot", [], "enroot"),
     ],
@@ -1339,8 +1343,33 @@ def test_focused_github_app_writes_the_runtime_its_flag_names(
     )
     assert init.main(["--yes", "--force", "--github-app", *flags]) == 0
     result = dict(line.split("=", 1) for line in path.read_text().splitlines())
-    assert result.get("OUTERLOOP_CONTAINER_RUNTIME") == written
+    assert result["OUTERLOOP_CONTAINER_RUNTIME"] == written
     assert result["OUTERLOOP_IMAGE"] == (flags[-1] if flags else str(old))
+
+
+@pytest.mark.parametrize("focused", [True, False])
+def test_init_refuses_an_image_in_the_other_runtimes_format(
+    configured: Path, monkeypatch, capsys, focused
+) -> None:
+    """A focused run that switches runtimes keeps the recorded image, and an
+    explicit --image can name the wrong format: enroot cannot unpack a .sif
+    (nor Apptainer run a .sqsh), so init refuses and leaves .env as it was."""
+    monkeypatch.delenv("OUTERLOOP_CONTAINER_RUNTIME", raising=False)
+    sif = configured / "agent.sif"
+    sif.write_text("")
+    path = configured / ".env"
+    before = (
+        "OUTERLOOP_COMPUTE=local\nOUTERLOOP_TARGET=o/r\nOUTERLOOP_CLAUDE_MODEL=claude-x\n"
+        f"OUTERLOOP_IMAGE={sif}\n"
+    )
+    path.write_text(before)
+    full = ["--compute", "local", "--target", "o/r", "--pat-file", "/p", "--image", str(sif)]
+    flags = ["--github-app"] if focused else full
+    assert init.main(["--yes", "--force", "--container-runtime", "enroot", *flags]) == 2
+    err = capsys.readouterr().err
+    assert f"{sif} is an apptainer image and the runtime is enroot" in err
+    assert "pass --container-runtime apptainer, --image with a .sqsh image" in err
+    assert path.read_text() == before
 
 
 def test_init_local_forge_records_the_configured_kernel_login(tmp_path, monkeypatch):
