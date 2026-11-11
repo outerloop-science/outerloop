@@ -237,9 +237,9 @@ def test_gate_and_base_facts():
     assert "Merge it" not in text
 
 
-def test_a_legacy_record_migrates_findings_to_inbox(tmp_path):
-    """An older kernel's pending findings ride the record until a wake
-    converts them; a load never writes anything, inbox included."""
+def test_a_legacy_record_loads_without_writing_inbox(tmp_path):
+    """A record carrying a legacy pending-findings key still loads, and a
+    load never writes anything, inbox included."""
     import json
 
     record = pr_record()
@@ -252,15 +252,6 @@ def test_a_legacy_record_migrates_findings_to_inbox(tmp_path):
     loaded = load_record(tmp_path, "run")
     assert delivered_seq(loaded) == 0
     assert not (path.parent / "inbox").exists()
-    from outerloop.runstate import acquire_lease, migrate_inbox
-
-    assert acquire_lease(tmp_path, "run", "test", "", 11)
-    migrate_inbox(tmp_path, "run", 11)
-    messages = pending(path.parent, 0)
-    assert len(messages) == 1
-    assert messages[0].payload["findings"][0]["detail"] == "unjustified constant"
-    load_record(tmp_path, "run")
-    assert len(pending(path.parent, 0)) == 1
 
 
 def test_delivered_files_are_never_read_again_and_dedupe_sees_past_damage(tmp_path):

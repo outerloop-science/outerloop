@@ -80,12 +80,16 @@ the lint rule.
 | --- | --- | --- |
 | unit | *(none)* | CI, every PR, on all cores |
 | serial | `serial` | CI, second step: `pytest -m serial` (inspects the process table) |
-| slow | `slow` | nightly or manual |
-| llm | `llm` | manual only, paid APIs |
-| slurm | `slurm` | manual only, needs a cluster |
+| slow | `slow` | not scheduled; run with `pytest -m slow` |
+| llm | `llm` | manual only, paid APIs: `pytest -m llm` |
+| slurm | `slurm` | manual only, needs a cluster: `pytest -m slurm` |
 
-While editing, `uv run pytest --testmon` runs only the tests affected by your
-change; `uv run pytest -n0` runs everything serially.
+The collection hook in `tests/conftest.py` deselects the slow, llm and slurm
+tiers unless the `-m` expression names one of them, and no workflow schedules
+them. A plain `pytest` is the unit tier. While editing,
+`uv run pytest --testmon` runs only the tests affected by your change;
+`uv run pytest -n0` runs the unit and serial tiers serially, not the other
+tiers. Name a tier explicitly to run it.
 
 ## Pull requests from the agents
 

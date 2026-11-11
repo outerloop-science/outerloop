@@ -29,6 +29,8 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_QOS`](#outerloop_qos) | Slurm QOS for submitted jobs | unset |
 | [`OUTERLOOP_TICK_HOST`](#outerloop_tick_host) | resident job or login host for the Slurm tick | `resident` |
 | [`OUTERLOOP_RESIDENT_MINUTES`](#outerloop_resident_minutes) | walltime of the resident tick job | 360 |
+| [`OUTERLOOP_TICK_TIMEOUT`](#outerloop_tick_timeout) | how long one resident tick may run | `15m` |
+| [`OUTERLOOP_RESIDENT_MARGIN_S`](#outerloop_resident_margin_s) | seconds before walltime the resident hands over | 1200 |
 | [`OUTERLOOP_CADENCE_MIN`](#outerloop_cadence_min) | minutes between ticks | 30 |
 | [`OUTERLOOP_AUTO_UPDATE`](#outerloop_auto_update) | how the deploy step moves the checkout | `off` |
 | [`OUTERLOOP_ENV_FILE`](#outerloop_env_file) | path to the operator settings file | `~/.config/outerloop/.env` |
@@ -44,6 +46,7 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_BRIDGE_RUNTIME`](#outerloop_bridge_runtime) | where the bridge runtime is installed | `<cache>/bridge` |
 | [`OUTERLOOP_TARGET`](#outerloop_target) | the repo being climbed | unset |
 | [`OUTERLOOP_GITHUB_APP_FILE`](#outerloop_github_app_file) | the GitHub App config file init writes | unset |
+| [`OUTERLOOP_SETUP_URL`](#outerloop_setup_url) | the GitHub App setup page and manifest redirect | `https://setup.outerloop.science` |
 | [`OUTERLOOP_BOT_LOGIN`](#outerloop_bot_login) | the login the kernel acts as | unset |
 | [`OUTERLOOP_BOT_ALIASES`](#outerloop_bot_aliases) | former logins of the same bot | unset |
 | [`OUTERLOOP_IDENTITY`](#outerloop_identity) | `personal` when the kernel posts as you | unset |
@@ -176,6 +179,27 @@ lifetime.
 - Default: 360
 - Constraint: a positive whole number of minutes
 
+### `OUTERLOOP_TICK_TIMEOUT`
+
+How long one tick may run in the resident loop before it is killed. The tick
+runs as a child of `timeout`, which sends SIGTERM at the limit and SIGKILL 60
+seconds later if it has not stopped. The loop logs the exit and continues to
+the next slot.
+
+- Default: `15m`
+- Configuration: the shell only
+
+### `OUTERLOOP_RESIDENT_MARGIN_S`
+
+How long before the resident job's walltime the loop attempts its handover.
+At or inside this many seconds it checks for a live successor and exits
+once one is pending or running. Before the margin, its sleep ends by the
+margin. Without a verified successor it logs an error and keeps ticking, its
+sleep ending by the job's walltime.
+
+- Default: 1200
+- Configuration: the shell only
+
 ### `OUTERLOOP_CADENCE_MIN`
 
 How often the chain schedules a tick, in minutes. The chain divides by it
@@ -307,6 +331,18 @@ It is Outerloop's own JSON, holding `app_id`, `installation_id` and
 `OUTERLOOP_PAT_FILE` unset, this is the identity the kernel posts as.
 
 - Default: unset
+
+### `OUTERLOOP_SETUP_URL`
+
+The GitHub App setup page `outerloop init --github-app` prints, and the
+manifest's redirect URL. It defaults to the hosted helper page; point it at a
+staging copy or your own page.
+
+The page receives the one-time App code, so use only a page you trust.
+
+- Default: `https://setup.outerloop.science`
+- Configuration: the shell, when running `outerloop init` (it is read then,
+  not at `start`)
 
 ### `OUTERLOOP_BOT_LOGIN`
 

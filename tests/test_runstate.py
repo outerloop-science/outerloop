@@ -285,60 +285,6 @@ def test_old_states_migrate(tmp_path, caplog, old, new):
     record = load_record(tmp_path, "legacy")
     assert record.state == new
     assert ("migrating concluding to parked" in caplog.text) == (old == "concluding")
-    from outerloop.inbox import github_positions
-
-    assert github_positions(directory) == {}
-    from outerloop.runstate import acquire_lease, migrate_inbox
-
-    assert acquire_lease(tmp_path, "legacy", "test", "", 1)
-    migrate_inbox(tmp_path, "legacy", 1)
-    assert github_positions(directory)["comment"] == 900
-    save_record(tmp_path, record, 1)
-    raw = json.loads((directory / "state.json").read_text())
-    assert not {"followup_stage", "followup_job_id", "last_comment_id"} & raw.keys()
-
-
-@pytest.mark.parametrize("existing", [False, True])
-def test_legacy_positions_migrate_once_in_leased_sweep(tmp_path, monkeypatch, existing):
-    import outerloop.inbox as inbox
-    from fakes import RecordingDispatcher
-    from outerloop.compute import LocalCompute
-    from outerloop.runstate import migrate_inbox, read_lease
-    from outerloop.tick import sweep
-
-    record = RunRecord("legacy", "org/repo", "task", PARKED)
-    save_record(tmp_path, record, 1)
-    directory = tmp_path / "runs" / record.run_id
-    path = directory / "state.json"
-    raw = json.loads(path.read_text())
-    raw.update(last_comment_id=900, last_review_id=20, last_review_comment_id=3)
-    path.write_text(json.dumps(raw))
-    if existing:
-        inbox.advance_github_positions(directory, {"comment": 5})
-    before = {p: p.read_bytes() for p in directory.rglob("*") if p.is_file()}
-    load_record(tmp_path, record.run_id)
-    assert {p: p.read_bytes() for p in directory.rglob("*") if p.is_file()} == before
-    with pytest.raises(RuntimeError, match="requires the run lease"):
-        migrate_inbox(tmp_path, record.run_id, 2)
-    writes = []
-    original = inbox.advance_github_positions
-
-    def advance(folder, positions):
-        assert read_lease(tmp_path, record.run_id) is not None
-        writes.append(positions)
-        original(folder, positions)
-
-    monkeypatch.setattr(inbox, "advance_github_positions", advance)
-    sweep(tmp_path, LocalCompute(), RecordingDispatcher(), 2)
-    assert len(writes) == (0 if existing else 1)
-    assert inbox.github_positions(directory) == (
-        {"comment": 5} if existing else {"comment": 900, "review": 20, "review_comment": 3}
-    )
-    assert "last_comment_id" not in json.loads(path.read_text())
-    stamp = (directory / "inbox/positions.json").stat().st_mtime_ns
-    sweep(tmp_path, LocalCompute(), RecordingDispatcher(), 3)
-    assert len(writes) == (0 if existing else 1)
-    assert (directory / "inbox/positions.json").stat().st_mtime_ns == stamp
 
 
 @pytest.mark.parametrize("writer_state", [PARKED, ENDED])
@@ -353,28 +299,6 @@ def test_wake_writers_leave_ended_record_byte_identical(tmp_path, writer_state):
         tmp_path, replace(record, state=writer_state, inbox_seq=5, stage={"sleeps_used": 9}), 2
     )
     assert path.read_bytes() == before
-
-
-def test_migration_drops_the_follow_up_job_fields(tmp_path):
-    """An idle old record that names a follow-up job or a dispatched
-    re-measure is migrated once under the lease and stops counting as legacy."""
-    import json
-
-    from outerloop.runstate import acquire_lease, migrate_inbox
-
-    record = RunRecord("legacy2", "org/repo", "t", "parked", pr_url="https://x/pull/3")
-    save_record(tmp_path, record, 1)
-    path = run_dir(tmp_path, "legacy2") / "state.json"
-    raw = json.loads(path.read_text())
-    raw["followup_job_id"] = "12345"
-    raw["followup_stage"] = {"candidate_sha": "abc"}
-    raw["state"] = "in-review"
-    path.write_text(json.dumps(raw))
-    assert acquire_lease(tmp_path, "legacy2", holder="t", holder_job_id="", now=1)
-    migrate_inbox(tmp_path, "legacy2", 2)
-    after = json.loads(path.read_text())
-    assert "followup_job_id" not in after and "followup_stage" not in after
-    assert load_record(tmp_path, "legacy2").state == "parked"
 
 
 def test_tick_lease_fences_live_holder_and_recovers_crash(tmp_path, caplog):

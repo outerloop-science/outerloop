@@ -33,7 +33,7 @@ from typing import Any, ClassVar, Protocol
 
 _PROBE_TIMEOUT_S = 60
 APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
-APPTAINER_VERSION = "1.5.3"
+APPTAINER_VERSION = "1.5.5"
 # the GitHub release ships Debian packages for x86-64 only; the project's PPA
 # builds amd64 and arm64 for every current Ubuntu
 APPTAINER_DEB = f"apptainer_{APPTAINER_VERSION}_amd64.deb"

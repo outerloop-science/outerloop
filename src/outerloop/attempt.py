@@ -317,10 +317,6 @@ def author_config_error(
     return ""
 
 
-# Compatibility for callers of the former backend-specific validator.
-codex_author_config_error = author_config_error
-
-
 def fleet_author_model(backend: str) -> str:
     """The fleet author's model from the environment: OUTERLOOP_AUTHOR_MODEL, else
     the deployment's Claude model for a claude author (ClaudeModelUnset when that
@@ -3083,15 +3079,6 @@ def _resume_run(
     """
     run_dir = run_root / "runs" / run_id
     workspace = run_dir / "ws"
-    from outerloop.runstate import acquire_lease, migrate_inbox, read_lease, release_lease
-
-    migration_lease = acquire_lease(run_root, run_id, "wake-migration", "", now)
-    try:
-        if migration_lease or read_lease(run_root, run_id) is not None:
-            migrate_inbox(run_root, run_id, now)
-    finally:
-        if migration_lease:
-            release_lease(run_root, run_id)
     record = load_record(run_root, run_id)
     if record.state == ENDED:
         return AttemptOutcome(run_id=run_id, outcome=record.ending, pr_url=record.pr_url)

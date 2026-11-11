@@ -5,6 +5,10 @@ tool can become an external artifact, and the order to pull them.
 
 ## Identity: machine user → GitHub App
 
+**Current status:** shipped, and the default identity: `outerloop init` offers
+the App first and writes its config, with the PAT as the fallback. The
+paragraph below records the original plan.
+
 Right for one org today: bot account + fine-grained PAT. External consumers
 install a **GitHub App**: per-installation tokens, permissions declared once,
 no seat, revocable per org. Seam kept clean now: all auth in the `github`
@@ -48,6 +52,7 @@ Slurm is backend #1 behind the `compute` interface. The external shape:
 
 ## Sequencing
 
-Post-1.0, after the pilot proves the loop: App identity → storage interface
-extraction → experiment-backend interface extraction. Each is an interface
-swap, not a redesign, provided the seams above stay clean.
+Post-1.0, after the pilot proves the loop: storage interface extraction →
+experiment-backend interface extraction. The App identity listed first in the
+original order already shipped (see above). Each is an interface swap, not a
+redesign, provided the seams above stay clean.

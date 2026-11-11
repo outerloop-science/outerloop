@@ -964,10 +964,7 @@ def _wake(
     """
     if not acquire_lease(root, record.run_id, holder, holder_job_id="", now=now):
         return False
-    from outerloop.runstate import migrate_inbox
-
-    try:
-        migrate_inbox(root, record.run_id, now)
+    try:  # re-read under the lease: the run may have ended since the listing
         record = load_record(root, record.run_id)
     except Exception:
         release_lease(root, record.run_id)
@@ -1220,13 +1217,6 @@ def sweep(
 
     for record in records:
         try:
-            if not dry_run and acquire_lease(root, record.run_id, holder, "", now):
-                try:
-                    from outerloop.runstate import migrate_inbox
-
-                    migrate_inbox(root, record.run_id, now)
-                finally:
-                    release_lease(root, record.run_id)
             from outerloop.attempt import end_on_request, end_requested
 
             # An operator ending waits for the lease: a live session finishes its
@@ -1967,12 +1957,11 @@ def _sweep_one(
                 except Exception as exc:  # scancel trouble is never fatal here
                     log.warning("cancel %s failed: %s", jid, exc)
         wake(record, "experiment unschedulable (pending past deadline)", "unschedulable")
-    elif all(is_terminal(s) or s == GONE for s in states):
+    elif past_deadline and all(is_terminal(s) or s == GONE for s in states):
         # done-or-vanished, at least one GONE (all-terminal handled above)
-        if past_deadline:
-            wake(record, "experiment vanished from Slurm", "vanished")
-        # else: sacct lag right after submission is normal; wait.
-    # something RUNNING (or recently pending): nothing to do yet.
+        wake(record, "experiment vanished from Slurm", "vanished")
+    # something RUNNING, recently pending, or GONE before the deadline (sacct
+    # lags right after submission): nothing to do yet.
 
 
 def _launches_held(root: Path) -> bool:
@@ -2014,17 +2003,6 @@ def tick(
     prior_worked = _last_worked_ts(root)
     write_heartbeat(root, now)
     read_limits(root)
-    legacy = 0
-    for path in (root / "runs").glob("*/state.json"):
-        try:
-            raw = json.loads(path.read_text())
-            legacy += bool(
-                raw.get("state") != ENDED
-                and (raw.get("followup_stage") or raw.get("followup_job_id"))
-            )
-        except (OSError, ValueError, AttributeError):
-            pass
-    log.info("legacy follow-up records: %d", legacy)
     disk_health = check_disk(root, min_free_bytes=min_free_bytes)
     write_heartbeat(root, now, disk=disk_health.as_dict())
     for warning in disk_health.warnings():

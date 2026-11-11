@@ -1101,17 +1101,17 @@ def test_resume_author_reproduces_the_run_not_the_fleet(monkeypatch) -> None:
     assert resume_author(None, fleet_model="x") == ("claude", "claude-test-model", "/h")
 
 
-def test_codex_author_config_error() -> None:
+def test_author_config_error_backend_rules() -> None:
     """codex needs --image and a non-claude model; claude is always fine."""
-    from outerloop.attempt import codex_author_config_error
+    from outerloop.attempt import author_config_error
 
-    assert codex_author_config_error("claude", "claude-opus-5", "") == ""
-    assert codex_author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
-    assert "requires --image" in codex_author_config_error("codex", "gpt-5.6-terra", "")
-    assert "codex/openai model" in codex_author_config_error("codex", "claude-opus-5", "img.sif")
-    assert "codex/openai model" in codex_author_config_error("codex", "", "img.sif")
+    assert author_config_error("claude", "claude-opus-5", "") == ""
+    assert author_config_error("codex", "gpt-5.6-terra", "img.sif") == ""
+    assert "requires --image" in author_config_error("codex", "gpt-5.6-terra", "")
+    assert "codex/openai model" in author_config_error("codex", "claude-opus-5", "img.sif")
+    assert "codex/openai model" in author_config_error("codex", "", "img.sif")
     # an unknown backend (typo'd env default) is rejected, not silently accepted
-    assert "unknown author backend" in codex_author_config_error("typo", "m", "img.sif")
+    assert "unknown author backend" in author_config_error("typo", "m", "img.sif")
 
 
 @pytest.mark.parametrize(
@@ -5870,7 +5870,7 @@ def test_one_handoff_check_covers_a_leg_of_kernel_git_calls(tmp_path, monkeypatc
     real_run = subprocess.run
 
     def counting_run(argv, *args, **kwargs):
-        if "--get-regexp" in argv:
+        if "config" in argv and "--list" in argv:
             listings.append(list(argv))
         return real_run(argv, *args, **kwargs)
 

@@ -3976,22 +3976,6 @@ def test_sweep_pr_events_use_one_wake(tmp_path, event):
         assert len(pending(run_dir(tmp_path, record.run_id), 0)) == 1
 
 
-def test_legacy_followup_count_logs_even_when_paused(tmp_path, caplog):
-    record = waiting_run(tmp_path)
-    path = tmp_path / "runs" / record.run_id / "state.json"
-    raw = json.loads(path.read_text())
-    raw["followup_stage"] = {"candidate_sha": "old"}
-    raw["followup_job_id"] = "123"
-    path.write_text(json.dumps(raw))
-    (tmp_path / PAUSE_SENTINEL).touch()
-    caplog.set_level("INFO")
-    run_tick(tmp_path, FakeSlurm())
-    assert "legacy follow-up records: 1" in caplog.text
-    save_record(tmp_path, load_record(tmp_path, record.run_id), NOW)
-    run_tick(tmp_path, FakeSlurm())
-    assert "legacy follow-up records: 0" in caplog.text
-
-
 @pytest.mark.parametrize(
     "blocked",
     [

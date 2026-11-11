@@ -210,7 +210,7 @@ GPU jobs request at least 8 cores and 64 GB of host memory per GPU. On nodes wit
 
 On a cluster, evals and launches run inside the agent image at `OUTERLOOP_IMAGE` (default `~/outerloop-images/agent-py312.sif`, or `.sqsh` under enroot), in a jail that binds only the checked-out tree. An eval that needs data must fetch it into the tree. The published images live at [huggingface.co/outerloop-science/agent-image](https://huggingface.co/outerloop-science/agent-image), all built from the one recipe `containers/agent-py312.def`: a `.sif` for Apptainer and a `.sqsh` for enroot, each for x86-64 and ARM64. On Linux with the container runtime working, `outerloop init` downloads the one for this machine (about 200 MB), verifies its published checksum and records it. `--image` points at your own, and `--no-image` skips the container even when an image is on disk (macOS still uses Seatbelt when available) by writing `OUTERLOOP_IMAGE=`.
 
-Only the local loop falls back to running uncontained on its own. On Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. Codex and Hermes authors need the image in every mode.
+Only the local loop falls back to running uncontained on its own. By default, on Slurm the tick does not service a target without an image, and its log names the setting below, so a lost image never silently drops containment. `OUTERLOOP_UNCONTAINED=1` is the documented exception. Codex and Hermes authors need the image in every mode.
 
 ### Running on enroot
 
@@ -283,7 +283,7 @@ Enable the Claude models in the project's Model Garden, mint ADC with `gcloud au
 
 A local install upgrades with `outerloop upgrade`, which is `pip install --upgrade outerloop-science` under one verb (`--pre` tracks pre-releases). Then run `outerloop permissions --open` and follow the page it opens, and stop and restart the loop to pick up the new code.
 
-New formats for run records are migrated as the kernel reads them, so an upgrade needs no migration step. An older kernel cannot read the new ones: drain or end active runs before rolling back past a format change, since a rollback needs the records translated by hand.
+New formats for run records are migrated as the kernel reads them, so an upgrade needs no migration step unless the changelog's Upgrading notes for that release name one. An older kernel cannot read the new ones: drain or end active runs before rolling back past a format change, since a rollback needs the records translated by hand.
 
 A resident Slurm deployment runs from a checkout, and `OUTERLOOP_AUTO_UPDATE` in `.env` says whether the deploy step moves it. `off`, the default, leaves the checkout alone: you upgrade when you choose, and the loop keeps running the code you validated. `release` moves it to the newest release tag at the next cadence, pre-releases included, and the repo is public so no credential is needed. `main` follows every merge and is meant for the kernel's own developers. Whatever moves the checkout, you or the policy, the environment is synced to the commit that is checked out, or the deploy rolls back to the last commit whose environment was installed.
 
