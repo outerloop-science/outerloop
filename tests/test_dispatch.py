@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -612,6 +613,53 @@ def test_uncontained_job_forwards_nothing_into_a_jail(tmp_path):
     assert "APPTAINERENV_" not in text
     bare = next(ln for ln in text.splitlines() if "env -i" in ln)
     assert "PILOT_SEED=1234" in bare and 'SWEEP_INDEX="$SWEEP_INDEX"' in bare
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the enroot launcher is Linux-only")
+def test_an_enroot_job_runs_its_command_in_the_jail_it_describes(tmp_path):
+    """The job script embeds the enroot launcher: the command runs in the
+    checked-out tree with the scratch home, the seed and uv's settings cross
+    through the environment, local compute's GPU mask follows, and nothing
+    unpacked outlives the job."""
+    from fakes import fake_enroot
+    from outerloop.container import EnrootRuntime
+
+    repo = _repo(tmp_path)
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    image = tmp_path / "agent.sqsh"
+    image.write_text("")
+    script = write_eval_job(
+        tmp_path / "run",
+        "candidate",
+        repo_root=repo,
+        snapshot_sha=sha,
+        command='ls; echo "$HOME|$PILOT_SEED|$UV_LINK_MODE|$CUDA_VISIBLE_DEVICES|${SLURM_JOB_ID-}"',
+        image=str(image),
+        container_runtime=EnrootRuntime(str(fake_enroot(tmp_path / "fake"))),
+        extra_env={"PILOT_SEED": "1234"},
+    )
+    text = script.read_text()
+    assert "APPTAINERENV_" not in text and "ENROOTENV_PILOT_SEED=1234" in text
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "TMPDIR": str(scratch),
+        "SLURM_JOB_ID": "",  # a local job: the mask below is its own
+        "OUTERLOOP_CUDA_VISIBLE_DEVICES": "1",
+    }
+    subprocess.run(["sh", str(script)], env=env, check=True)
+    ev = tmp_path / "run" / "eval-candidate"
+    assert (ev / "exit-code").read_text().strip() == "0", (ev / "stderr").read_text()
+    lines = (ev / "stdout").read_text().splitlines()
+    assert "kept.py" in lines
+    home, seed, link, mask, slurm = lines[-1].split("|")
+    assert home.endswith("/home") and home.startswith(str(scratch))
+    assert (seed, link, mask, slurm) == ("1234", "copy", "1", "")
+    assert list(scratch.iterdir()) == []  # the scratch dir and the unpacked image are gone
 
 
 def test_local_gpu_mask_crosses_the_scrubbed_environment(tmp_path):

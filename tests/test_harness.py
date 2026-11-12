@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -445,11 +446,21 @@ def test_redact_handles_empty_secrets() -> None:
     assert redact("key sk-key end", ("sk-key",)) == "key [redacted] end"
 
 
+def _reaped(pid: int) -> bool:
+    """Whether `pid` is gone; a killed grandchild lingers as a zombie until init
+    reaps it, so callers poll."""
+    import os as _os
+
+    try:
+        _os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     """Bash-tool descendants of a timed-out session must not survive holding
     the API key and writing into the clone."""
-    import os as _os
-
     script = tmp_path / "claude"
     script.write_text(
         f"#!/bin/sh\ncat > /dev/null\nsleep 300 &\necho $! > {tmp_path}/child_pid\nsleep 300\n"
@@ -460,16 +471,52 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     result = ClaudeCodeHarness(api_key="k", binary=str(script), timeout_s=1).run("task", ws)
     assert result.stop_reason == "timeout"
     child = int((tmp_path / "child_pid").read_text().strip())
+    assert wait_until(lambda: _reaped(child), interval=0.05), f"child {child} survived"
 
-    # the grandchild lingers as a zombie until init reaps it — poll briefly
-    def gone() -> bool:
-        try:
-            _os.kill(child, 0)
-        except ProcessLookupError:
-            return True
-        return False
 
-    assert wait_until(gone, interval=0.05), f"child {child} survived the group kill"
+@pytest.mark.parametrize("stop", ["timeout", "interrupt"])
+def test_a_stopped_codex_login_kills_its_group(tmp_path: Path, monkeypatch, stop) -> None:
+    """A timeout or an interruption kills the login's whole group, as a timeout
+    does a session's (a container launcher's children otherwise outlive it), and
+    the timeout deletes an auth.json the stalled login already wrote."""
+    from outerloop import harness as harness_mod
+
+    pid_file = tmp_path / "child_pid"
+    script = tmp_path / "codex"
+    script.write_text(
+        f'#!/bin/sh\nsleep 300 &\necho $! > {pid_file}\ncat > "$CODEX_HOME/auth.json"\nsleep 300\n'
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(CodexHarness, "LOGIN_TIMEOUT_S", 1)
+
+    class Interrupted(subprocess.Popen):
+        """Ctrl-C during the login's first wait, once its child is running."""
+
+        interrupted = False
+
+        def communicate(self, *args: Any, **kwargs: Any) -> Any:
+            if not Interrupted.interrupted:
+                Interrupted.interrupted = True
+                wait_until(
+                    lambda: pid_file.is_file() and pid_file.read_text().strip(), interval=0.05
+                )
+                raise KeyboardInterrupt
+            return super().communicate(*args, **kwargs)
+
+    if stop == "interrupt":
+        monkeypatch.setattr(harness_mod.subprocess, "Popen", Interrupted)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(api_key="sk-o", binary=str(script), model="gpt-5.6-terra")
+    if stop == "timeout":
+        result = harness.run("t", ws)
+        assert result.is_error and result.error_detail == "codex login timed out"
+        assert not (tmp_path / "ws-home" / ".codex" / "auth.json").exists()
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            harness.run("t", ws)
+    child = int(pid_file.read_text().strip())
+    assert wait_until(lambda: _reaped(child), interval=0.05), f"child {child} survived"
 
 
 @pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root ignores mode bits")
@@ -572,15 +619,113 @@ def test_container_image_wraps_in_apptainer(tmp_path: Path, monkeypatch, configu
     assert not result.is_error
     argv = (tmp_path / "seen_argv").read_text()
     assert argv.startswith("exec --containall --cleanenv")
-    assert f"--bind {ws}:{ws}" in argv
+    # the EXACT mount options, not substrings: a bind turning :ro, a reordering,
+    # or an added/dropped bind must fail here (#605 review)
+    tokens = argv.split()
+    homes = [tokens[i + 1] for i, t in enumerate(tokens) if t == "--home"]
+    binds = [tokens[i + 1] for i, t in enumerate(tokens) if t == "--bind"]
+    assert homes == [f"{tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}"]
+    assert binds == [f"{ws}:{ws}", "/real/claude:/opt/agent/claude:ro"]
     # --home, NOT --env HOME (apptainer silently refuses HOME via --env) and
     # NOT a plain --bind (per-run state must be $HOME inside the container)
-    assert f"--home {tmp_path / 'ws-home'}:{tmp_path / 'ws-home'}" in argv
     assert "--env" not in argv
-    assert "--bind /real/claude:/opt/agent/claude:ro" in argv
     assert "/img/agent.sif /opt/agent/claude -p" in argv
     assert "sk-c" not in argv  # the key travels via env, never argv
     assert "APPTAINERENV_ANTHROPIC_API_KEY=sk-c" in seen(tmp_path, "seen_env")
+
+
+def test_an_enroot_session_hands_its_jail_to_the_launcher(tmp_path: Path, monkeypatch) -> None:
+    """Under enroot the same jail goes to the launcher: workspace and per-run
+    home bound, the binary read-only, the start folder kept, and the key in
+    the environment under the launcher's prefix, never on argv."""
+    from outerloop import harness as harness_mod
+    from outerloop.container import _ENROOT_JAIL, EnrootRuntime
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command, cwd, env, **kw):
+        captured.update(command=command, env=env)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", fake_popen)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = ClaudeCodeHarness(
+        api_key="sk-c",
+        binary="/real/claude",
+        container_image="/img/agent.sqsh",
+        container_runtime=EnrootRuntime("/apps/enroot"),
+    )
+    assert harness.run("task", ws).is_error  # the fake Popen stopped the run
+    cmd, env = captured["command"], captured["env"]
+    assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
+    home = str(tmp_path / "ws-home")
+    image = cmd.index("/img/agent.sqsh")
+    assert cmd[4:image] == [
+        "--enroot",
+        "/apps/enroot",
+        "--home",
+        home,
+        "--bind",
+        str(ws),
+        str(ws),
+        "rw",
+        "--bind",
+        "/real/claude",
+        "/opt/agent/claude",
+        "ro",
+        "--pwd",
+        str(ws),
+    ]
+    assert cmd[image + 1 : image + 3] == ["/opt/agent/claude", "-p"]
+    assert "sk-c" not in " ".join(cmd)
+    assert env["ENROOTENV_ANTHROPIC_API_KEY"] == "sk-c"
+    assert not any(key.startswith("APPTAINER") for key in env)
+
+
+def test_an_enroot_codex_session_jails_the_login_and_the_exec(tmp_path: Path, monkeypatch) -> None:
+    from outerloop import harness as harness_mod
+    from outerloop.container import _ENROOT_JAIL, EnrootRuntime
+
+    calls: list[tuple[list[str], dict[str, str]]] = []
+    popen = subprocess.Popen
+
+    def fake_popen(command, cwd, env, **kw):
+        calls.append((command, env))
+        if len(calls) == 1:  # the login succeeds; the exec stops the run
+            return popen(["true"], **kw)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(harness_mod.subprocess, "Popen", fake_popen)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    harness = CodexHarness(
+        api_key="sk-o",
+        binary="/real/codex",
+        model="gpt-5.6-terra",
+        container_image="/img/agent.sqsh",
+        container_runtime=EnrootRuntime("/apps/enroot"),
+    )
+    assert harness.run("task", ws).is_error
+    (login, _), (exec_, _) = calls
+
+    def binds(cmd: list[str]) -> list[tuple[str, str, str]]:
+        # the launcher takes --bind SOURCE TARGET MODE; return the triples
+        return [(cmd[i + 1], cmd[i + 2], cmd[i + 3]) for i, t in enumerate(cmd) if t == "--bind"]
+
+    for cmd, env in calls:
+        assert cmd[:4] == ["bash", "-c", _ENROOT_JAIL, "outerloop-enroot"]
+        assert "sk-o" not in " ".join(cmd)
+        assert env["ENROOTENV_OPENAI_API_KEY"] == "sk-o" and "ENROOTENV_CODEX_HOME" in env
+        # exact bind modes, not membership: the codex binary is read-only, and no
+        # bind may silently flip ro/rw or carry an unexpected mode (#605 review)
+        modes = {tgt: mode for (_, tgt, mode) in binds(cmd)}
+        assert modes["/opt/agent/codex"] == "ro"
+        assert all(mode in ("ro", "rw") for mode in modes.values())
+    # the login sees no workspace; the exec binds it rw and starts in it
+    assert all(tgt != str(ws) for (_, tgt, _) in binds(login))
+    assert (str(ws), str(ws), "rw") in binds(exec_)
+    assert exec_[exec_.index("--pwd") + 1] == str(ws)
 
 
 def _recording_apptainer(tmp_path: Path, payload: str) -> tuple[str, Path, Path]:

@@ -27,7 +27,13 @@ from pathlib import Path
 from secrets import randbits
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from outerloop.container import Bind, ContainerRuntime, Jail, runtime_from_env
+from outerloop.container import (
+    RESERVED_ENV_PREFIXES,
+    Bind,
+    ContainerRuntime,
+    Jail,
+    runtime_from_env,
+)
 from outerloop.containment import executable_roots, seatbelt_available, seatbelt_wrap
 from outerloop.number_check import unmatched_numbers
 from outerloop.trajectory import file_refs
@@ -100,6 +106,8 @@ PROTECTED_EVAL_ENV = frozenset(
         "PYTHONPATH",
         "PYTHONHOME",
         "PYTHONSTARTUP",
+        # bash sources the file it names, and the enroot runtime's launcher is bash
+        "BASH_ENV",
         # a multi-node eval's place in its rendezvous (dispatch sets these)
         "NNODES",
         "NODE_RANK",
@@ -110,23 +118,20 @@ PROTECTED_EVAL_ENV = frozenset(
         "OUTERLOOP_CUDA_VISIBLE_DEVICES",
     }
 )
-# ...and whole families: any UV_* steers uv's env/cache resolution, and any
-# APPTAINERENV_* is translated into the CONTAINER's environment by apptainer
-# (APPTAINERENV_HOME becomes HOME inside), so exact-name checks cannot
-# enumerate them.
-# APPTAINER_* configures the HOST-side apptainer CLI (bind paths, home,
-# containment) — same family logic, different side of the boundary.
-# LD_/DYLD_ steer the dynamic loader; GIT_ redirects repo resolution; PET_*
-# are torchrun's defaults, which a multi-node eval sets for its rendezvous.
+# ...and whole families: any UV_* steers uv's env/cache resolution, so
+# exact-name checks cannot enumerate them. LD_/DYLD_ steer the dynamic loader;
+# GIT_ redirects repo resolution; PET_* are torchrun's defaults, which a
+# multi-node eval sets for its rendezvous. Each container runtime adds the
+# families that cross into its jail or configure it (RESERVED_ENV_PREFIXES in
+# container.py), so a variable could never steer the jail it runs in.
 # (PYTHONHASHSEED stays allowed — it IS a seed, and a legitimate seed_env.)
 PROTECTED_ENV_PREFIXES = (
     "UV_",
-    "APPTAINERENV_",
-    "APPTAINER_",
     "LD_",
     "DYLD_",
     "GIT_",
     "PET_",
+    *RESERVED_ENV_PREFIXES,
 )
 
 
@@ -224,8 +229,8 @@ class SubprocessEvaluator:
 
     The command executes AGENT-WRITTEN code — it is session-grade untrusted
     execution and gets session-grade containment: with `container_image` set
-    (the production configuration), the command runs under `apptainer exec
-    --containall` seeing only the workspace, a throwaway per-evaluation HOME
+    (the production configuration), the command runs in the deployment's jail
+    (`container_runtime`) seeing only the workspace, a throwaway per-evaluation HOME
     and cache, and no host environment. Uncontained mode exists for tests and non-cluster dev,
     with a scrubbed env that NEVER includes the real HOME (the orchestrator
     account holds the bot PAT under it)."""
@@ -241,7 +246,7 @@ class SubprocessEvaluator:
         # Throwaway HOME OUTSIDE the clone: never the orchestrator's real home
         # (it shelters the PAT), and never the workspace — eval cache/state
         # artifacts must not masquerade as agent edits in the diff. The
-        # CONTAINED eval needs it too (--home): apptainer's tmpfs home is
+        # CONTAINED eval needs it too (the jail's home): a runtime's tmpfs home is
         # size-capped and uv blows it extracting wheels.
         # Fresh per-EVAL home (never reused): baseline and candidate cannot
         # see each other's writes, and nothing survives to any later run.
@@ -311,8 +316,15 @@ class SubprocessEvaluator:
         # agent-written code runs with this workspace as its cwd: any filter
         # listing the last hand-off remembered for it must not be reused
         forget_filter_overrides(workspace)
+        # uv's cache and the eval's venv go in a `cache` subdir that IS bound into
+        # the jail; the runtime's own scratch (its /tmp, and the image a runtime
+        # like enroot unpacks under `workdir`) is a SIBLING that is NOT bound, so
+        # the jailed process cannot reach the unpacked rootfs backing. The
+        # dispatched job script splits cache and work the same way. Both die with
+        # the cache dir the caller removes.
+        uv_cache = cache_dir / "cache"
+        uv_cache.mkdir(parents=True, exist_ok=True)
         if self.container_image:
-            # per evaluation, and gone with the cache dir the caller removes
             workdir = cache_dir / "work"
             workdir.mkdir(parents=True, exist_ok=True)
             jail = Jail(
@@ -322,7 +334,7 @@ class SubprocessEvaluator:
                     Bind(str(workspace), str(workspace)),
                     # node-local scratch for uv's cache: the container's own /tmp
                     # is a size-capped tmpfs, and shared-FS caches flake (NFS)
-                    Bind(str(cache_dir), str(cache_dir)),
+                    Bind(str(uv_cache), str(uv_cache)),
                 ),
                 pwd=str(workspace),
                 # /tmp inside the jail on this evaluation's own scratch, not a
@@ -343,7 +355,7 @@ class SubprocessEvaluator:
         # uv's cache does heavy small-file IO; on shared filesystems (NFS)
         # that flakes with stale-handle/copy errors. Keep the cache on
         # node-local scratch and copy across filesystems.
-        env["UV_CACHE_DIR"] = str(cache_dir)
+        env["UV_CACHE_DIR"] = str(uv_cache)
         env["UV_LINK_MODE"] = "copy"
         # PRIVATE project env per eval: the session builds ws/.venv for its
         # own use, and a second process consuming a venv another process
@@ -352,7 +364,7 @@ class SubprocessEvaluator:
         # uv cache: fast IO, zero NFS in the venv path, dies with the
         # eval) — no shared mutable state, and the orchestrator never
         # executes session-authored entrypoints.
-        env["UV_PROJECT_ENVIRONMENT"] = str(cache_dir / "venv")
+        env["UV_PROJECT_ENVIRONMENT"] = str(uv_cache / "venv")
         if self.container_image:
             # the jail drops the host env; what the runtime forwards survives it
             for name in ("UV_CACHE_DIR", "UV_LINK_MODE", "UV_PROJECT_ENVIRONMENT"):

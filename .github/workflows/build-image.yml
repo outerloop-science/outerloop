@@ -2,8 +2,14 @@ name: build-image
 
 # Builds the agent image from containers/agent-py312.def and publishes it to the
 # Hugging Face repo outerloop-science/agent-image. Runs on every change to the
-# recipe on main, and by hand; a pull request that touches the recipe builds
-# without publishing. Needs the HF_TOKEN secret (write access to the org).
+# recipe on main, and by hand from main; a pull request that touches the recipe
+# or the enroot launcher builds and tests without publishing. Needs the HF_TOKEN
+# secret (write access to the org).
+#
+# One recipe, four images: a .sif for Apptainer and a .sqsh for enroot, each for
+# x86-64 and ARM64. The .sqsh is the .sif's root filesystem squashed, with
+# /etc/environment written from the recipe's %environment, since enroot reads
+# /etc/environment where Apptainer reads the SIF's own metadata.
 on:
   workflow_dispatch:
   push:
@@ -15,33 +21,105 @@ on:
     paths:
       - "containers/**"
       - ".github/workflows/build-image.yml"
+      - "src/outerloop/enroot_jail.sh"
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            suffix: ""
+            enroot_arch: amd64
+          - runner: ubuntu-24.04-arm
+            suffix: "-arm64"
+            enroot_arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      SIF: agent-py312${{ matrix.suffix }}.sif
+      SQSH: agent-py312${{ matrix.suffix }}.sqsh
+      ENROOT_VERSION: "4.2.1"
     steps:
       - uses: actions/checkout@v7
-      - uses: eWaterCycle/setup-apptainer@v2
-      - name: Build
-        run: sudo -E apptainer build --force agent-py312.sif containers/agent-py312.def
-      - name: Describe
+      # Apptainer from the project's PPA: it builds amd64 and arm64 and carries
+      # the AppArmor profile Ubuntu 23.10+ needs for unprivileged user namespaces
+      # (the GitHub release ships x86-64 only). squashfs-tools has mksquashfs.
+      - name: Install Apptainer and squashfs-tools
         run: |
-          apptainer inspect --labels agent-py312.sif
-          apptainer exec agent-py312.sif sh -c 'python3 --version; uv --version; git --version'
-          ls -l agent-py312.sif
-          sha256sum agent-py312.sif | tee agent-py312.sif.sha256
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:apptainer/ppa
+          sudo apt-get update
+          sudo apt-get install -y apptainer squashfs-tools
+      - name: Build the .sif
+        run: sudo -E apptainer build --force "$SIF" containers/agent-py312.def
+      - name: Describe the .sif
+        run: |
+          apptainer inspect --labels "$SIF"
+          apptainer exec "$SIF" sh -c 'python3 --version; uv --version; git --version'
+          ls -l "$SIF"
+      # The .sqsh: the .sif's root filesystem squashed as enroot's `import` does
+      # (-all-root; enroot maps the user itself), with /etc/environment written
+      # from the recipe's %environment so an enroot jail gets the same PATH,
+      # LANG and LC_ALL the Apptainer jail gets from the SIF metadata.
+      - name: Build the .sqsh
+        run: |
+          sudo apptainer build --sandbox rootfs "$SIF"
+          sudo tee rootfs/etc/environment >/dev/null <<'ENV'
+          PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+          LANG=C.UTF-8
+          LC_ALL=C.UTF-8
+          ENV
+          sudo mksquashfs rootfs "$SQSH" -all-root -no-progress -comp gzip
+          sudo rm -rf rootfs
+          sudo chown "$(id -u):$(id -g)" "$SQSH"
+          ls -l "$SQSH"
+      # Start the .sqsh in a real enroot jail through the kernel's own launcher,
+      # invoked exactly as the kernel does (passed to `bash -c` as text, with
+      # "outerloop-enroot" as $0). No opt-in, so a jail without its own process
+      # and IPC namespaces fails the step. The site configuration gains a mount
+      # of the host home, a hook and a variable, as a site might add; none may
+      # reach the jail. From inside, the jail checks what it must not see.
+      - name: Test the .sqsh in a real enroot jail
+        run: |
+          deb="enroot_${ENROOT_VERSION}-1_${{ matrix.enroot_arch }}.deb"
+          curl -fsSLO "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/${deb}"
+          sudo apt-get install -y "./${deb}"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "$HOME $HOME none x-create=dir,rbind,rw 0 -1" | sudo tee /etc/enroot/mounts.d/90-site.fstab
+          printf '#!/bin/sh\ntouch "$ENROOT_ROOTFS/site-hook-ran"\n' | sudo tee /etc/enroot/hooks.d/90-site.sh
+          sudo chmod +x /etc/enroot/hooks.d/90-site.sh
+          echo "SITE_VAR=crossed" | sudo tee /etc/enroot/environ.d/90-site.env
+          echo secret > "$HOME/outerloop-sentinel"
+          mkdir -p "$RUNNER_TEMP/jail-home"
+          bash -c "$(cat src/outerloop/enroot_jail.sh)" outerloop-enroot --enroot enroot \
+            --home "$RUNNER_TEMP/jail-home" "$SQSH" sh -c '
+              fail() { echo "jail check failed: $*" >&2; exit 1; }
+              python3 --version && uv --version && git --version || fail "the image tools do not run"
+              grep -q " $1 " /proc/self/mountinfo && fail "the host home is mounted"
+              cat "$1/outerloop-sentinel" 2>/dev/null && fail "a host file outside the binds is readable"
+              touch /.w 2>/dev/null && fail "the image is writable"
+              [ -e "/proc/$2" ] && fail "a host process is visible"
+              [ -e /site-hook-ran ] && fail "a site hook ran"
+              [ -n "${SITE_VAR-}" ] && fail "a site variable crossed"
+              echo "jail checks passed"' outerloop-test "$HOME" "$$"
+      - name: Checksums
+        run: |
+          sha256sum "$SIF" | tee "$SIF.sha256"
+          sha256sum "$SQSH" | tee "$SQSH.sha256"
       - name: Publish
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -z "$HF_TOKEN" ]; then echo "HF_TOKEN secret not set; built but not published"; exit 0; fi
           python3 -m pip install -q "huggingface_hub[cli]"
-          hf upload outerloop-science/agent-image agent-py312.sif agent-py312.sif \
-            --commit-message "agent-py312.sif built from ${{ github.sha }}"
-          hf upload outerloop-science/agent-image agent-py312.sif.sha256 agent-py312.sif.sha256 \
-            --commit-message "checksum for ${{ github.sha }}"
+          for f in "$SIF" "$SIF.sha256" "$SQSH" "$SQSH.sha256"; do
+            hf upload outerloop-science/agent-image "$f" "$f" \
+              --commit-message "$f built from ${{ github.sha }}"
+          done

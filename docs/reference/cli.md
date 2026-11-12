@@ -75,6 +75,7 @@ outerloop init [--compute {slurm,local}] [--target TARGET] [--root ROOT]
               [--github-app] [--personal] [--app-name APP_NAME] [--org ORG]
               [--author-backend AUTHOR_BACKEND] [--no-install-harness]
               [--author-model AUTHOR_MODEL] [--claude-model CLAUDE_MODEL]
+              [--container-runtime {apptainer,enroot}]
               [--image IMAGE | --no-image] [--author-key-file AUTHOR_KEY_FILE]
               [--yes] [--force]
 ```
@@ -97,7 +98,8 @@ outerloop init [--compute {slurm,local}] [--target TARGET] [--root ROOT]
 | `--no-install-harness` | off | skip installing a missing author CLI or Hermes runtime |
 | `--author-model` | prompted | the climbing author's model |
 | `--claude-model` | prompted | model for every Claude role; required, no default |
-| `--image` | the published one | path to an Apptainer image for sessions and evals |
+| `--container-runtime` | `apptainer` | what contains sessions and evals on Linux: `apptainer` or `enroot` (asked when enroot is installed and apptainer is not) |
+| `--image` | the published one | path to the agent image for sessions and evals, a `.sif` for Apptainer or a `.sqsh` for enroot; init refuses the other runtime's format |
 | `--no-image` | off | skip the image even when one is on disk: local runs on Linux are uncontained, macOS uses Seatbelt when `sandbox-exec` is available; on Slurm the tick also needs `OUTERLOOP_UNCONTAINED=1`, and Codex and Hermes authors always need the image |
 | `--author-key-file` | prompted | path to an existing file holding the author's model key |
 | `--yes` | off | non-interactive: use flags, do not prompt |

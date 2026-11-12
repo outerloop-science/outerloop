@@ -110,7 +110,7 @@ def build_harness(
       — never loading the tree's CLAUDE.md / hooks as instructions. Editors keep
       instruction discovery (the target repo's guidance is legitimate for them).
     - codex: `danger-full-access` uniformly — codex's own sandbox needs
-      bubblewrap (absent in the image, unreliable nested in apptainer), so the
+      bubblewrap (absent in the image, unreliable nested in a container), so the
       boundary is the deployment's container or ephemeral runner, exactly as it
       is for every other backend.
     - hermes: toolsets from the spec's execution (`terminal` for a role that

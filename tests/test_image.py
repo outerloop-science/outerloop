@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,21 @@ import pytest
 
 from outerloop import container
 from outerloop import image as img
+from outerloop.container import ApptainerRuntime, EnrootRuntime
+
+
+@dataclass(frozen=True)
+class _Runtime(ApptainerRuntime):
+    """Apptainer whose probe answers `problem`."""
+
+    binary: str = "apptainer"
+    problem: str = ""
+
+    def check(self, **kw: Any) -> str:
+        return self.problem
+
+    def install_hint(self) -> str:
+        return "INSTALL STEPS HERE"
 
 
 def test_find_image(tmp_path: Path) -> None:
@@ -25,6 +41,23 @@ def test_find_image(tmp_path: Path) -> None:
     new.rmdir()
     new.write_text("")
     assert img.find_image(tmp_path) == str(new)
+    # each runtime looks for the image in its own format
+    assert img.find_image(tmp_path, EnrootRuntime("enroot")) == ""
+    sqsh = new.with_suffix(".sqsh")
+    sqsh.write_text("")
+    assert img.find_image(tmp_path, EnrootRuntime("enroot")) == str(sqsh)
+
+
+def test_published_image_per_runtime_and_processor() -> None:
+    apptainer, enroot = ApptainerRuntime("apptainer"), EnrootRuntime("enroot")
+    assert img.published_name(apptainer, "x86_64") == "agent-py312.sif"
+    assert img.published_name(apptainer, "aarch64") == "agent-py312-arm64.sif"
+    assert img.published_name(enroot, "x86_64") == "agent-py312.sqsh"
+    assert img.published_name(enroot, "arm64") == "agent-py312-arm64.sqsh"
+    assert img.published_name(enroot, "ppc64le") == ""
+    # the file in the image dir has no processor in its name
+    assert img.image_name(apptainer) == "agent-py312.sif"
+    assert img.image_name(enroot) == "agent-py312.sqsh"
 
 
 class _Resp(io.BytesIO):
@@ -123,127 +156,139 @@ def test_download_requires_a_published_checksum(tmp_path: Path) -> None:
     assert not dest.with_name(dest.name + ".part").exists()
 
 
-def test_ensure_image_paths(tmp_path: Path, monkeypatch: Any) -> None:
-    fetched: list[Path] = []
+def test_ensure_image_paths(tmp_path: Path) -> None:
+    fetched: list[tuple[str, Path]] = []
 
     def fake_fetch(url: str, dest: Path, *, report: Any) -> Path:
-        fetched.append(dest)
+        fetched.append((url, dest))
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("")
         return dest
 
+    working = _Runtime()
+
+    def ensure(runtime: Any = working, **kw: Any) -> str:
+        options: dict[str, Any] = {
+            "interactive": False,
+            "home": tmp_path,
+            "fetch": fake_fetch,
+            "report": quiet,
+        }
+        return img.ensure_image(runtime=runtime, machine="x86_64", **(options | kw))
+
     # nothing to run it with: no download, no image
-    monkeypatch.setattr(
-        img, "containment_check", lambda: "apptainer is not installed (not on PATH)"
-    )
-    assert img.ensure_image(interactive=False, home=tmp_path, fetch=fake_fetch, report=quiet) == ""
+    assert ensure(_Runtime(problem="apptainer is not installed (not on PATH)")) == ""
     assert fetched == []
-    monkeypatch.setattr(img, "containment_check", lambda: "")
     # opted out
-    assert (
-        img.ensure_image(
-            interactive=False, want=False, home=tmp_path, fetch=fake_fetch, report=quiet
-        )
-        == ""
-    )
+    assert ensure(want=False) == ""
     # interactive no
-    assert (
-        img.ensure_image(
-            interactive=True, home=tmp_path, ask=lambda p: "n", fetch=fake_fetch, report=quiet
-        )
-        == ""
-    )
+    assert ensure(interactive=True, ask=lambda p: "n") == ""
     assert fetched == []
     # interactive Enter = yes: fetched into the image dir
-    got = img.ensure_image(
-        interactive=True, home=tmp_path, ask=lambda p: "", fetch=fake_fetch, report=quiet
-    )
-    assert got == str(tmp_path / "outerloop-images" / "agent-py312.sif") and len(fetched) == 1
+    got = ensure(interactive=True, ask=lambda p: "")
+    assert got == str(tmp_path / "outerloop-images" / "agent-py312.sif")
+    assert fetched == [(f"{img.IMAGE_REPO}/agent-py312.sif", Path(got))]
     # found afterwards: returned without another fetch
-    assert img.ensure_image(interactive=False, home=tmp_path, fetch=fake_fetch, report=quiet) == got
-    assert len(fetched) == 1
+    assert ensure() == got and len(fetched) == 1
 
 
-def test_ensure_image_download_failure_is_a_warning(tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setattr(img, "containment_check", lambda: "")
+def test_ensure_image_fetches_this_processors_image_in_the_runtimes_format(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(EnrootRuntime, "check", lambda self: "")
+    urls: list[str] = []
+
+    def fake_fetch(url: str, dest: Path, *, report: Any) -> Path:
+        urls.append(url)
+        return dest
+
+    got = img.ensure_image(
+        interactive=False,
+        home=tmp_path,
+        fetch=fake_fetch,
+        report=quiet,
+        runtime=EnrootRuntime("enroot"),
+        machine="aarch64",
+    )
+    assert urls == [f"{img.IMAGE_REPO}/agent-py312-arm64.sqsh"]
+    assert got == str(tmp_path / "outerloop-images" / "agent-py312.sqsh")
+    lines: list[str] = []
+    assert (
+        img.ensure_image(
+            interactive=False,
+            home=tmp_path / "other",
+            fetch=fake_fetch,
+            report=lines.append,
+            runtime=_Runtime(),
+            machine="riscv64",
+        )
+        == ""
+    )
+    assert any("no published image for this processor (riscv64)" in line for line in lines)
+
+
+def test_ensure_image_download_failure_is_a_warning(tmp_path: Path) -> None:
     lines: list[str] = []
 
     def failing(url: str, dest: Path, *, report: Any) -> Path:
         raise OSError("no route to host")
 
     assert (
-        img.ensure_image(interactive=False, home=tmp_path, fetch=failing, report=lines.append) == ""
+        img.ensure_image(
+            interactive=False,
+            home=tmp_path,
+            fetch=failing,
+            report=lines.append,
+            runtime=_Runtime(),
+            machine="x86_64",
+        )
+        == ""
     )
     assert any("download failed" in line for line in lines)
 
 
-def test_containment_check_probes_the_deployments_runtime(monkeypatch: Any) -> None:
-    """`init` probes with the runtime the deployment jails with, run as
-    OUTERLOOP_APPTAINER_BIN."""
+def test_ensure_image_probes_the_deployments_runtime(tmp_path: Path, monkeypatch: Any) -> None:
+    """Without a runtime handed in, `init` probes the one the deployment jails
+    with, run as OUTERLOOP_APPTAINER_BIN."""
     monkeypatch.setenv("OUTERLOOP_APPTAINER_BIN", "/apps/apptainer")
     monkeypatch.setattr(container.sys, "platform", "linux")
     looked_up: list[str] = []
     monkeypatch.setattr(container.shutil, "which", lambda name: looked_up.append(name))
-    assert img.containment_check() == "apptainer is not installed (not on PATH)"
-    assert looked_up == ["/apps/apptainer"]
-
-
-def test_install_hint_names_the_distribution(monkeypatch: Any) -> None:
-    monkeypatch.setattr(img.sys, "platform", "linux")
-    monkeypatch.setattr(img, "_linux_flavor", lambda: ("ubuntu", "24.04"))
-    for machine in ("x86_64", "aarch64"):  # the PPA covers both (terra, #306)
-        monkeypatch.setattr(img.platform, "machine", lambda m=machine: m)
-        hint = img.install_hint()
-        assert "ppa:apptainer/ppa" in hint and "AppArmor" in hint and "setgroups" in hint
-        assert "outerloop init --force" in hint and ".deb" not in hint
-    monkeypatch.setattr(img, "_linux_flavor", lambda: ("debian", "12"))
-    monkeypatch.setattr(img.platform, "machine", lambda: "x86_64")
-    assert "apptainer_1.5.5_amd64.deb" in img.install_hint()
-    monkeypatch.setattr(img.platform, "machine", lambda: "aarch64")
-    odd = img.install_hint()
-    assert "No Apptainer Debian package" in odd and "aarch64" in odd and ".deb" not in odd
-    monkeypatch.setattr(img, "_linux_flavor", lambda: ("fedora", "40"))
-    fedora = img.install_hint()
-    assert "dnf install -y apptainer" in fedora and "epel" not in fedora
-    monkeypatch.setattr(img, "_linux_flavor", lambda: ("rocky", "9"))
-    assert "epel-release" in img.install_hint()
-    monkeypatch.setattr(img, "_linux_flavor", lambda: ("arch", ""))
-    generic = img.install_hint()
-    # the installer is pinned to the release tag and never piped into a shell
-    assert "/v1.5.5/tools/install-unprivileged.sh" in generic and "| bash" not in generic
-    monkeypatch.setattr(img.sys, "platform", "darwin")
-    assert "macOS" in img.install_hint()
-
-
-def test_ensure_image_explains_why_runs_are_uncontained(tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        img, "containment_check", lambda: "apptainer is not installed (not on PATH)"
-    )
-    monkeypatch.setattr(img, "install_hint", lambda: "INSTALL STEPS HERE")
     lines: list[str] = []
     assert img.ensure_image(interactive=False, home=tmp_path, report=lines.append) == ""
+    assert looked_up == ["/apps/apptainer"]
+    assert any("apptainer is not installed (not on PATH)" in line for line in lines)
+
+
+def test_ensure_image_explains_why_runs_are_uncontained(tmp_path: Path) -> None:
+    lines: list[str] = []
+    runtime = _Runtime(problem="apptainer is not installed (not on PATH)")
+    assert (
+        img.ensure_image(interactive=False, home=tmp_path, report=lines.append, runtime=runtime)
+        == ""
+    )
     assert any("UNCONTAINED" in line and "not installed" in line for line in lines)
     assert any("INSTALL STEPS HERE" in line for line in lines)
 
 
-def test_ensure_image_probes_before_accepting_an_existing_image(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_ensure_image_probes_before_accepting_an_existing_image(tmp_path: Path) -> None:
     """An image on disk is not recorded when apptainer cannot run containers
     (terra, #306): a contained run would only fail later. Slurm skips the probe,
     since the login node cannot speak for the compute nodes."""
     existing = tmp_path / "outerloop-images" / "agent-py312.sif"
     existing.parent.mkdir()
     existing.write_text("")
-    monkeypatch.setattr(
-        img, "containment_check", lambda: "apptainer cannot create containers here (x)"
-    )
-    monkeypatch.setattr(img, "install_hint", lambda: "STEPS")
+    runtime = _Runtime(problem="apptainer cannot create containers here (x)")
     lines: list[str] = []
-    assert img.ensure_image(interactive=False, home=tmp_path, report=lines.append) == ""
-    assert any(str(existing) in line and "once apptainer works" in line for line in lines)
+    assert (
+        img.ensure_image(interactive=False, home=tmp_path, report=lines.append, runtime=runtime)
+        == ""
+    )
+    assert any(
+        str(existing) in line and "once the container runtime works" in line for line in lines
+    )
     assert img.ensure_image(
-        interactive=False, probe=False, home=tmp_path, report=lines.append
+        interactive=False, probe=False, home=tmp_path, report=lines.append, runtime=runtime
     ) == str(existing)
 
 

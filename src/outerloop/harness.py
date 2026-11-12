@@ -612,11 +612,12 @@ def _int(value: Any, default: int = 0) -> int:
 
 
 def _kill_and_drain(process: subprocess.Popen[str]) -> str:
-    """Kill a timed-out session's whole process group, then drain its pipe within
-    a bound so `run()` always returns — a descendant that left the group (setsid)
-    can hold the pipe open past the kill. Returns whatever stdout drained (may be
-    empty). Shared by every backend's timeout path; keep the sequence in one place
-    so the safety-sensitive termination cannot drift between them."""
+    """Kill a timed-out session's (or a stopped codex login's) whole process
+    group, then drain its pipe within a bound so the caller always returns — a
+    descendant that left the group (setsid) can hold the pipe open past the kill.
+    Returns whatever stdout drained (may be empty). Shared by every backend's
+    timeout path and the login; keep the sequence in one place so the
+    safety-sensitive termination cannot drift between them."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     try:
@@ -657,8 +658,8 @@ class ClaudeCodeHarness:
     # A judge on a subscription token runs --safe-mode instead, which disables
     # CLAUDE.md, hooks, plugins, skills and MCP servers but keeps OAuth auth.
     bare: bool = False
-    # Apptainer image for session containment. When set,
-    # the session runs under `apptainer exec --containall --cleanenv`: no host
+    # Container image for session containment. When set, the session runs in
+    # the deployment's jail (`container_runtime`): no host
     # $HOME, no host env, no same-user absolute paths — the session sees only
     # the workspace, its per-run HOME, and the read-only claude binary. This
     # closes the threat model's shared-filesystem residual risk. Images stay
@@ -1149,14 +1150,14 @@ class CodexHarness:
     invocation; operator-supplied rates provide dollars when configured.
 
     CONTAINED mode (`container_image` set): both `codex login` and `codex exec`
-    run inside `apptainer exec --containall --cleanenv`, sharing a bound
-    `--home` so the login's auth.json is visible to the exec. apptainer is the
-    boundary — no host FS beyond its binds; `--cleanenv` scrubs the env
+    run in the deployment's jail (`container_runtime`), sharing a bound
+    home so the login's auth.json is visible to the exec. The jail is the
+    boundary — no host FS beyond its binds; it scrubs the env
     down to the role's own key, so the process tree carries no foreign token
     for a /proc read to lift (the boundary is the scrubbed env, not PID
     isolation) — the same posture as the Claude backend. `--sandbox
     danger-full-access` uniformly: codex's own sandbox (`workspace-write`)
-    needs bubblewrap, absent in the image and unreliable nested in apptainer,
+    needs bubblewrap, absent in the image and unreliable nested in a container,
     and the deployment's boundary (this container, or the ephemeral runner in
     the uncontained case) already confines the session. The host codex binary
     is bind-mounted read-only into the container (like claude), so the image
@@ -1171,11 +1172,11 @@ class CodexHarness:
     # empty -> codex's configured default (a wrong id 404s); pin only a verified one
     model: str = ""
     # the deployment's container or ephemeral runner is the boundary; codex's own
-    # sandbox stays off (it needs bubblewrap — absent/unreliable in apptainer)
+    # sandbox stays off (it needs bubblewrap — absent/unreliable in a container)
     sandbox: str = "danger-full-access"
     timeout_s: int = DEFAULT_TIMEOUT_S
     extra_args: tuple[str, ...] = field(default_factory=tuple)
-    # when set, login+exec run inside this apptainer image; empty = uncontained
+    # when set, login+exec run inside this container image; empty = uncontained
     # (the deployment's runner is the boundary)
     container_image: str = ""
     container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)
@@ -1188,6 +1189,7 @@ class CodexHarness:
     # (no annotation) so the dataclass does not treat it as a field.
     CONTAINER_CODEX = "/opt/agent/codex"
     CONTAINER_CODE_MODE_HOST = "/opt/agent/codex-code-mode-host"
+    LOGIN_TIMEOUT_S = 60  # then `codex login` and everything it started are killed
 
     # Headless resume is validated on codex-cli 0.130.0: a contained
     # `codex exec resume <thread_id>` recalls prior-turn context (the session id
@@ -1249,23 +1251,32 @@ class CodexHarness:
         else:
             login_argv = [self.binary, "login", "--with-api-key"]
         try:
-            proc = subprocess.run(
+            # its own process group, as sessions have, so a timeout or an interruption
+            # kills every descendant (a container's processes too), not only the first
+            proc = subprocess.Popen(
                 login_argv,
-                input=self.api_key,
                 cwd=session_home,
                 env=env,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=60,
-                check=False,
+                start_new_session=True,
             )
         except OSError as exc:
             log.warning("could not spawn codex login: %s", exc)
             return _error_result("codex-login-error", detail=str(exc)[:200])
+        try:
+            stdout, stderr = proc.communicate(input=self.api_key, timeout=self.LOGIN_TIMEOUT_S)
         except subprocess.TimeoutExpired:
+            _kill_and_drain(proc)
+            self._purge_auth(session_home)  # it may have written the key before stalling
             return _error_result("codex-login-error", detail="codex login timed out")
+        except BaseException:
+            _kill_and_drain(proc)
+            raise
         if proc.returncode != 0:
-            detail = redact((proc.stderr or proc.stdout or "").strip(), (self.api_key,))[-300:]
+            detail = redact((stderr or stdout or "").strip(), (self.api_key,))[-300:]
             log.warning("codex login failed: %s", detail)
             return _error_result("codex-login-error", detail=detail or "codex login failed")
         return None
@@ -1674,9 +1685,9 @@ class HermesHarness:
         "memory",
     )
     extra_args: tuple[str, ...] = field(default_factory=tuple)
-    # Apptainer image for session containment, same stance as the other
-    # backends: when set, the session runs under `apptainer exec --containall
-    # --cleanenv` seeing only the workspace, the per-run home, and read-only
+    # Container image for session containment, same stance as the other
+    # backends: when set, the session runs in the deployment's jail
+    # seeing only the workspace, the per-run home, and read-only
     # binds of the pinned source and runtime (venv plus standalone Python).
     container_image: str = ""
     container_runtime: ContainerRuntime = field(default_factory=runtime_from_env)

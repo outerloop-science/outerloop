@@ -540,7 +540,7 @@ def test_start_validates_with_the_launched_tick_image(
     monkeypatch.setattr(
         "outerloop.author_overrides.validate_overrides", lambda env, image: seen.append(image)
     )
-    monkeypatch.setattr(tick, "_default_image", lambda: "DEFAULT")
+    monkeypatch.setattr(tick, "_default_image", lambda environ=None: "DEFAULT")
     if env_value is None:
         monkeypatch.delenv("OUTERLOOP_IMAGE", raising=False)
     else:
@@ -671,7 +671,7 @@ def test_start_validates_without_an_image_when_uncontained(
     # hermes author on an uncontained deployment exactly as the tick would
     from outerloop import cli, tick
 
-    monkeypatch.setattr(tick, "_default_image", lambda: "DEFAULT")
+    monkeypatch.setattr(tick, "_default_image", lambda environ=None: "DEFAULT")
     assert cli._tick_image(values, environ, mode) == expected
 
 

@@ -50,7 +50,7 @@ TERMINAL_STATES = (
 # A successful query that returns no record: the job left Slurm's memory.
 GONE = "GONE"
 # The GPU mask local compute applied to a job. The eval script forwards it past
-# its scrubbed environment (`env -i`, apptainer --cleanenv); Slurm jobs never
+# its scrubbed environment (`env -i`, or the jail's); Slurm jobs never
 # carry it, since their cgroups already confine the devices.
 LOCAL_GPU_MASK = "OUTERLOOP_CUDA_VISIBLE_DEVICES"
 
@@ -868,7 +868,7 @@ class LocalCompute:
 
         # An explicit env allowlist:
         # the submitting process holds live keys (and any inherited
-        # APPTAINERENV_* would cross --cleanenv into the container), so the
+        # APPTAINERENV_* or ENROOTENV_* would cross into the jail), so the
         # job script starts from a minimal environment and sets its own.
         # OUTERLOOP_* / REVIEW_HERMES_* pass through as a PREFIX rule:
         # Slurm jobs inherit the tick's whole environment, and local jobs

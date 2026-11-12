@@ -217,6 +217,11 @@ roadmap: docs/roadmap.md
         "APPTAINERENV_HOME",  # apptainer translates it INSIDE the container
         "UV_ANYTHING_FUTURE",  # whole families, not enumerable names
         "APPTAINER_BINDPATH",  # host-side apptainer CLI configuration
+        "ENROOTENV_HOME",  # the enroot launcher translates it INSIDE the jail
+        "ENROOT_CONFIG_PATH",  # enroot's own settings: which hooks and mounts apply
+        "NVIDIA_VISIBLE_DEVICES",  # enroot's GPU hook
+        "MELLANOX_VISIBLE_DEVICES",  # enroot's network-device hook
+        "BASH_ENV",  # the enroot launcher is bash, which sources this file
         "PYTHONPATH",
         "LD_PRELOAD",
         "GIT_DIR",

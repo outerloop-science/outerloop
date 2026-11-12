@@ -1741,9 +1741,11 @@ def test_panel_env_knobs_flow_into_the_spec(monkeypatch: Any, tmp_path: Path) ->
     image.write_text("")
     pat = tmp_path / "pat"
     pat.write_text("t")
-    monkeypatch.setattr(
-        "outerloop.image.containment_check", lambda: pytest.fail("tick must not probe Apptainer")
-    )
+    for runtime in ("ApptainerRuntime", "EnrootRuntime"):
+        monkeypatch.setattr(
+            f"outerloop.container.{runtime}.check",
+            lambda self, **kw: pytest.fail("tick must not probe the container runtime"),
+        )
     env = {
         "OUTERLOOP_QOS": "priority",
         "OUTERLOOP_PAT_FILE": str(pat),
@@ -3281,6 +3283,42 @@ def test_followup_spec_needs_placement_defaults_and_a_bot_login(
     _github, spec = _service_spec_from_env(tmp_path)
     assert spec is not None
     assert spec.account == "" and spec.partition == ""
+
+
+def test_an_accepted_isolation_gap_is_said_once_when_contained(
+    monkeypatch: Any, tmp_path: Path, caplog: Any
+) -> None:
+    """An enroot opt-in lets jails run without a wall Apptainer's keep on
+    machines where enroot cannot build it; the loop says so once, as it does
+    for running uncontained. Apptainer, or no opt-in, says nothing."""
+    import logging
+
+    import outerloop.tick as tick_mod
+    from outerloop.tick import _service_spec_from_env
+
+    image = tmp_path / "agent.sqsh"
+    image.write_text("")
+    pat = tmp_path / "pat"
+    pat.write_text("t")
+    env = {
+        "OUTERLOOP_PAT_FILE": str(pat),
+        "OUTERLOOP_IMAGE": str(image),
+        "OUTERLOOP_HOME": str(tmp_path),
+        "OUTERLOOP_TARGET": "org/repo",
+        "OUTERLOOP_BOT_LOGIN": "bot",
+        "OUTERLOOP_CONTAINER_RUNTIME": "enroot",
+    }
+    monkeypatch.setattr(tick_mod.os, "environ", env)
+    monkeypatch.setattr(tick_mod, "_GAP_WARNED", False)
+    with caplog.at_level(logging.WARNING):
+        assert _service_spec_from_env(tmp_path)[1] is not None
+    assert "OUTERLOOP_ENROOT" not in caplog.text
+    env["OUTERLOOP_ENROOT_SHARED_PROCESSES"] = "1"
+    with caplog.at_level(logging.WARNING):
+        _service_spec_from_env(tmp_path)
+        _service_spec_from_env(tmp_path)
+    said = "OUTERLOOP_ENROOT_SHARED_PROCESSES=1: where enroot cannot give a jail its own"
+    assert caplog.text.count(said) == 1
 
 
 def test_resume_gate_needs_only_the_containment_choice(

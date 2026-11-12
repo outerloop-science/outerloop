@@ -122,7 +122,7 @@ The wizard asks for the deployment settings and writes `~/.config/outerloop/.env
 - Your Anthropic API key or `claude setup-token` token when it asks for the author's key. The prompt hides it.
 - Enter for `app` at the auth prompt.
 
-On Linux with [Apptainer](https://apptainer.org) installed, init also offers to download the agent image, about 200 MB, so sessions run contained. Accept unless you have a reason not to. Without an image, runs on Linux are uncontained and can reach your account's files; on macOS they use Seatbelt if `sandbox-exec` is available, and are uncontained otherwise. The verification panel is off, and a pull request opened without a panel says so.
+On Linux with a container runtime installed ([Apptainer](https://apptainer.org), or [enroot](https://github.com/NVIDIA/enroot) on a pyxis cluster), init also offers to download the agent image, about 200 MB, so sessions run contained. Accept unless you have a reason not to. Without an image, runs on Linux are uncontained and can reach your account's files; on macOS they use Seatbelt if `sandbox-exec` is available, and are uncontained otherwise. The verification panel is off, and a pull request opened without a panel says so.
 
 The App flow is three steps, each printed by init:
 

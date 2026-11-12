@@ -35,9 +35,13 @@ over the inherited environment even when it is empty.
 | [`OUTERLOOP_AUTO_UPDATE`](#outerloop_auto_update) | how the deploy step moves the checkout | `off` |
 | [`OUTERLOOP_ENV_FILE`](#outerloop_env_file) | path to the operator settings file | `~/.config/outerloop/.env` |
 | [`OUTERLOOP_PAT_FILE`](#outerloop_pat_file) | path to the GitHub PAT file | unset |
-| [`OUTERLOOP_IMAGE`](#outerloop_image) | Apptainer image for sessions and evals | `~/outerloop-images/agent-py312.sif` |
+| [`OUTERLOOP_IMAGE`](#outerloop_image) | agent image for sessions and evals | `~/outerloop-images/agent-py312.sif` (`.sqsh` under enroot) |
 | [`OUTERLOOP_UNCONTAINED`](#outerloop_uncontained) | run a cluster deployment without a container | off |
+| [`OUTERLOOP_CONTAINER_RUNTIME`](#outerloop_container_runtime) | what contains sessions and evals | `apptainer` |
 | [`OUTERLOOP_APPTAINER_BIN`](#outerloop_apptainer_bin) | apptainer binary | `apptainer` on PATH |
+| [`OUTERLOOP_ENROOT_BIN`](#outerloop_enroot_bin) | enroot binary | `enroot` on PATH |
+| [`OUTERLOOP_ENROOT_SHARED_IPC`](#outerloop_enroot_shared_ipc) | accept an enroot jail with a shared IPC namespace | off |
+| [`OUTERLOOP_ENROOT_SHARED_PROCESSES`](#outerloop_enroot_shared_processes) | accept an enroot jail with a shared process view | off |
 | [`OUTERLOOP_CACHE_ROOT`](#outerloop_cache_root) | where downloaded runtimes are cached | `<root>/cache` |
 | [`OUTERLOOP_BRIDGE_RUNTIME`](#outerloop_bridge_runtime) | where the bridge runtime is installed | `<cache>/bridge` |
 | [`OUTERLOOP_TARGET`](#outerloop_target) | the repo being climbed | unset |
@@ -230,13 +234,14 @@ PAT rather than a GitHub App. One identity or the other, never both.
 
 ### `OUTERLOOP_IMAGE`
 
-The Apptainer image sessions and evals run in. An empty value is the
-off-switch for local Claude runs: they skip Apptainer even when an image
-is on disk. Without an image, macOS runs sessions and evaluations under the packaged
-Seatbelt profile; Linux runs them uncontained. On Slurm the tick does not service a target without an image,
+The agent image sessions and evals run in: a `.sif` under Apptainer, a
+`.sqsh` under enroot. An empty value is the off-switch for local Claude runs:
+they skip the container even when an image is on disk. Without an image, macOS
+runs sessions and evaluations under the packaged Seatbelt profile; Linux runs
+them uncontained. On Slurm the tick does not service a target without an image,
 and Codex and Hermes authors need one in every mode.
 
-- Default: `~/outerloop-images/agent-py312.sif`
+- Default: `~/outerloop-images/agent-py312.sif`, or `agent-py312.sqsh` under enroot
 
 ### `OUTERLOOP_UNCONTAINED`
 
@@ -248,11 +253,53 @@ included. See [running a cluster without a container](../install.md#running-a-cl
 - Values: `1`
 - Default: off
 
+### `OUTERLOOP_CONTAINER_RUNTIME`
+
+What contains sessions and evals on Linux: `apptainer` (the default) or
+`enroot`. `init` writes the runtime it is given (`--container-runtime`, or the
+shell's or the existing settings' value), `apptainer` included, and proposes
+`enroot` when it is installed and Apptainer is not. See [running on enroot](../install.md#running-on-enroot).
+
+- Values: `apptainer`, `enroot`
+- Default: `apptainer`
+
 ### `OUTERLOOP_APPTAINER_BIN`
 
-The apptainer binary the tick uses, for clusters where it is not on PATH.
+The apptainer binary the tick uses, for clusters where it is not on PATH. Read
+only when the runtime is Apptainer.
 
 - Default: `apptainer` on PATH
+
+### `OUTERLOOP_ENROOT_BIN`
+
+The enroot binary the tick uses, for clusters where it is not on PATH. Read
+only when `OUTERLOOP_CONTAINER_RUNTIME=enroot`.
+
+- Default: `enroot` on PATH
+
+### `OUTERLOOP_ENROOT_SHARED_IPC`
+
+`1` lets an enroot jail run where enroot cannot give it its own IPC namespace
+but can give it its own process namespace (enroot 4.2 on a node where `--ipc`
+cannot start). The jail then shares the node's System V IPC. Without this, such
+a jail is refused. Read only under enroot. See [running on
+enroot](../install.md#running-on-enroot).
+
+- Values: `1`
+- Default: off
+
+### `OUTERLOOP_ENROOT_SHARED_PROCESSES`
+
+`1` lets an enroot jail run where enroot can give it neither its own process
+nor its own IPC namespace (enroot older than 4.2). The jail then sees every
+process on the node and can signal this account's, and on a host that does not
+block it can read their environments, model keys included: the weakest
+containment short of none. It also accepts the shared IPC namespace. Without
+this, such a jail is refused. Read only under enroot. See [running on
+enroot](../install.md#running-on-enroot).
+
+- Values: `1`
+- Default: off
 
 ### `OUTERLOOP_CACHE_ROOT`
 

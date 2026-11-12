@@ -1,4 +1,4 @@
-"""Seatbelt containment for launches without an Apptainer image."""
+"""Seatbelt containment for launches without a container image."""
 
 from __future__ import annotations
 

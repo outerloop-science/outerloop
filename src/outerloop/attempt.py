@@ -5722,7 +5722,7 @@ def main() -> int:
         "--image",
         default=os.environ.get("OUTERLOOP_IMAGE", ""),
         type=image_file_arg,
-        help="apptainer image for session+eval",
+        help="container image for session+eval",
     )
     parser.add_argument("--account", default=os.environ.get("OUTERLOOP_ACCOUNT", ""))
     parser.add_argument("--partition", default=os.environ.get("OUTERLOOP_PARTITION", ""))
@@ -5744,7 +5744,7 @@ def main() -> int:
     parser.add_argument(
         "--codex-bin",
         default=default_binary("codex"),
-        help="host codex binary for the codex author; bind-mounted into apptainer "
+        help="host codex binary for the codex author; bind-mounted into the jail "
         "(must be an absolute path).",
     )
     parser.add_argument(
@@ -5759,7 +5759,7 @@ def main() -> int:
         choices=("claude", "codex", "hermes"),
         default=os.environ.get("OUTERLOOP_AUTHOR_BACKEND") or "claude",
         help="agent backend for the author/editor role (config-driven: default "
-        "from OUTERLOOP_AUTHOR_BACKEND). codex and hermes run contained (apptainer + "
+        "from OUTERLOOP_AUTHOR_BACKEND). codex and hermes run contained (a container + "
         "--sandbox danger-full-access) and REQUIRES --image and a codex/openai "
         "--model (e.g. gpt-x.y).",
     )

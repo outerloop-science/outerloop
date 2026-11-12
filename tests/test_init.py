@@ -168,6 +168,9 @@ def _no_image_download(monkeypatch, request):
     monkeypatch.setattr(init, "install_harness", lambda backend: "")
     monkeypatch.setattr(init, "ensure_image", lambda **kw: "")
     monkeypatch.setattr(init, "_token_login", lambda token: "")
+    # the runtime question comes only where enroot is installed and Apptainer
+    # is not, so it depends on the machine; answered here up front
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "apptainer")
     if not request.node.get_closest_marker("real_locate_harness"):
         monkeypatch.setattr(init, "locate_harness", lambda backend: "")
 
@@ -247,6 +250,110 @@ def test_main_checks_the_image_path_and_downloads_only_when_setup_proceeds(
     with pytest.raises(SystemExit):
         init.main([*base, "--target", "o/r", "--image", "/x.sif", "--no-image"])
     assert "not allowed with" in capsys.readouterr().err
+
+
+def test_render_env_writes_a_named_runtime_and_leaves_an_unnamed_one_out() -> None:
+    for name in ("enroot", "apptainer"):
+        named = InitAnswers(compute="local", target="o/r", container_runtime=name)
+        assert f"\nOUTERLOOP_CONTAINER_RUNTIME={name}\n" in render_env(named, "/p")
+    assert "CONTAINER_RUNTIME" not in render_env(InitAnswers(compute="local", target="o/r"), "/p")
+
+
+def test_main_records_the_runtime_and_probes_and_fetches_with_it(
+    configured: Path, monkeypatch
+) -> None:
+    from outerloop.container import ApptainerRuntime, EnrootRuntime
+
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    for key in ("OUTERLOOP_CONTAINER_RUNTIME", "OUTERLOOP_ENROOT_BIN", "OUTERLOOP_APPTAINER_BIN"):
+        monkeypatch.delenv(key, raising=False)
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main([*base, "--container-runtime", "enroot"]) == 0
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == EnrootRuntime("enroot")
+    # a later run keeps the recorded choice without the flag
+    assert init.main(base) == 0
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=enroot\n" in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == EnrootRuntime("enroot")
+    # the flag is written even for the default, so an exported value cannot win
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "enroot")
+    assert init.main([*base, "--container-runtime", "apptainer"]) == 0
+    assert "\nOUTERLOOP_CONTAINER_RUNTIME=apptainer\n" in (configured / ".env").read_text()
+    assert calls[-1]["runtime"] == ApptainerRuntime("apptainer")
+
+
+def test_main_keeps_the_container_settings_it_probes_with(configured: Path, monkeypatch) -> None:
+    """A full re-run rewrites .env; the runtime's settings survive it, and the
+    probe already reads them from the file."""
+    from outerloop.container import EnrootRuntime
+
+    calls: list[dict] = []
+
+    def record(**kw: Any) -> str:
+        calls.append(kw)
+        return ""
+
+    monkeypatch.setattr(init, "ensure_image", record)
+    kept = {
+        "OUTERLOOP_CONTAINER_RUNTIME": "enroot",
+        "OUTERLOOP_ENROOT_BIN": "/apps/enroot",
+        "OUTERLOOP_ENROOT_SHARED_IPC": "1",
+        "OUTERLOOP_APPTAINER_BIN": "/apps/apptainer",
+    }
+    for key in (*kept, "OUTERLOOP_ENROOT_SHARED_PROCESSES"):
+        monkeypatch.delenv(key, raising=False)
+    (configured / ".env").write_text("".join(f"{k}={v}\n" for k, v in kept.items()))
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 0
+    env = (configured / ".env").read_text()
+    assert all(f"\n{k}={v}\n" in f"\n{env}" for k, v in kept.items())
+    assert calls[-1]["runtime"] == EnrootRuntime("/apps/enroot", shared_ipc=True)
+
+
+def test_main_refuses_an_unknown_runtime(configured: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OUTERLOOP_CONTAINER_RUNTIME", "docker")
+    base = ["--yes", "--compute", "local", "--target", "o/r", "--pat-file", "/p", "--force"]
+    assert init.main(base) == 2
+    assert "choose apptainer or enroot" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        init.main([*base, "--container-runtime", "podman"])
+
+
+def test_enroot_is_proposed_only_when_it_is_installed_and_apptainer_is_not(monkeypatch) -> None:
+    """init never switches runtimes on its own: it asks, and only where
+    Apptainer is missing and enroot is on PATH."""
+    from argparse import Namespace
+
+    installed: set[str] = set()
+    monkeypatch.setattr(init.shutil, "which", lambda name: name if name in installed else None)
+    asked: list[str] = []
+    answer = ["y"]
+
+    def ask(prompt: str, default: str = "", **kw: Any) -> str:
+        asked.append(prompt)
+        return answer[0]
+
+    monkeypatch.setattr(init, "_ask", ask)
+    none = Namespace(container_runtime=None)
+    assert init._container_runtime(none, {}, True) == "" and asked == []
+    installed.add("enroot")
+    assert init._container_runtime(none, {}, True) == "enroot" and len(asked) == 1
+    answer[0] = "n"
+    assert init._container_runtime(none, {}, True) == ""
+    assert init._container_runtime(none, {}, False) == "" and len(asked) == 2
+    installed.add("apptainer")
+    assert init._container_runtime(none, {}, True) == "" and len(asked) == 2
+    # a flag or a recorded choice is never second-guessed
+    assert init._container_runtime(Namespace(container_runtime="enroot"), {}, True) == "enroot"
+    recorded = {"OUTERLOOP_CONTAINER_RUNTIME": "apptainer"}
+    assert init._container_runtime(none, recorded, True) == "apptainer"
+    assert len(asked) == 2
 
 
 def test_main_yes_requires_target(configured: Path, capsys) -> None:
@@ -1200,6 +1307,69 @@ def test_focused_github_app_drops_a_preserved_local_forge(configured: Path, monk
     result = dict(line.split("=", 1) for line in path.read_text().splitlines())
     assert "OUTERLOOP_FORGE" not in result
     assert result["OUTERLOOP_GITHUB_APP_FILE"] == str(app_json)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "flags", "written"),
+    [
+        ("enroot", ["--container-runtime", "apptainer", "--image", "agent.sif"], "apptainer"),
+        ("apptainer", ["--container-runtime", "enroot", "--image", "agent.sqsh"], "enroot"),
+        ("enroot", [], "enroot"),
+    ],
+)
+def test_focused_github_app_writes_the_runtime_its_flag_names(
+    configured: Path, monkeypatch, recorded, flags, written
+) -> None:
+    """--container-runtime wins over the deployment's recorded runtime in a
+    focused --github-app run, so an image is never paired with the other
+    runtime; without the flag the recorded one is kept."""
+    monkeypatch.delenv("OUTERLOOP_CONTAINER_RUNTIME", raising=False)
+    if flags:
+        image = configured / flags[-1]
+        image.write_text("")
+        flags = [*flags[:-1], str(image)]
+    old = configured / "agent.old"
+    old.write_text("")
+    path = configured / ".env"
+    path.write_text(
+        "OUTERLOOP_COMPUTE=local\nOUTERLOOP_TARGET=o/r\nOUTERLOOP_CLAUDE_MODEL=claude-x\n"
+        f"OUTERLOOP_CONTAINER_RUNTIME={recorded}\nOUTERLOOP_IMAGE={old}\n"
+    )
+    app_json = configured / "github_app.myapp.json"
+    app_json.write_text(json.dumps({"app_id": 1, "installation_id": 7, "private_key": "/k.pem"}))
+    monkeypatch.setattr("outerloop.appauth.app_provider_from_file", lambda path: object())
+    monkeypatch.setattr(
+        init, "app_permission_gaps", lambda *a: init.AppPermissionGaps((), "", "", "", known=True)
+    )
+    assert init.main(["--yes", "--force", "--github-app", *flags]) == 0
+    result = dict(line.split("=", 1) for line in path.read_text().splitlines())
+    assert result["OUTERLOOP_CONTAINER_RUNTIME"] == written
+    assert result["OUTERLOOP_IMAGE"] == (flags[-1] if flags else str(old))
+
+
+@pytest.mark.parametrize("focused", [True, False])
+def test_init_refuses_an_image_in_the_other_runtimes_format(
+    configured: Path, monkeypatch, capsys, focused
+) -> None:
+    """A focused run that switches runtimes keeps the recorded image, and an
+    explicit --image can name the wrong format: enroot cannot unpack a .sif
+    (nor Apptainer run a .sqsh), so init refuses and leaves .env as it was."""
+    monkeypatch.delenv("OUTERLOOP_CONTAINER_RUNTIME", raising=False)
+    sif = configured / "agent.sif"
+    sif.write_text("")
+    path = configured / ".env"
+    before = (
+        "OUTERLOOP_COMPUTE=local\nOUTERLOOP_TARGET=o/r\nOUTERLOOP_CLAUDE_MODEL=claude-x\n"
+        f"OUTERLOOP_IMAGE={sif}\n"
+    )
+    path.write_text(before)
+    full = ["--compute", "local", "--target", "o/r", "--pat-file", "/p", "--image", str(sif)]
+    flags = ["--github-app"] if focused else full
+    assert init.main(["--yes", "--force", "--container-runtime", "enroot", *flags]) == 2
+    err = capsys.readouterr().err
+    assert f"{sif} is an apptainer image and the runtime is enroot" in err
+    assert "pass --container-runtime apptainer, --image with a .sqsh image" in err
+    assert path.read_text() == before
 
 
 def test_init_local_forge_records_the_configured_kernel_login(tmp_path, monkeypatch):

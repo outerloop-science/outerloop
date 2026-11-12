@@ -799,7 +799,7 @@ def main() -> int:
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument(
-        "--image", default="", type=image_file_arg, help="apptainer image for session+validation"
+        "--image", default="", type=image_file_arg, help="container image for session+validation"
     )
     parser.add_argument(
         "--uncontained",

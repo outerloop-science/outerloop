@@ -1,8 +1,9 @@
 """The agent image on an adopter's machine: where it lives, and fetching the
-published one. The tick reads `~/outerloop-images/agent-py312.sif` unless
-`OUTERLOOP_IMAGE` names another file (tick._default_image); `init` fills that
-default on Linux when Apptainer is installed, so local mode runs contained
-without a hand step."""
+published one. The tick reads `~/outerloop-images/agent-py312.sif` (`.sqsh`
+under enroot) unless `OUTERLOOP_IMAGE` names another file (tick._default_image);
+`init` fills that in on Linux when the container runtime works, so local mode
+runs contained without a hand step. The build publishes the image for x86-64
+and ARM64 in both runtimes' formats; `init` fetches the one for this machine."""
 
 from __future__ import annotations
 
@@ -17,25 +18,15 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from outerloop.container import runtime_from_env
+from outerloop.container import ContainerRuntime, runtime_from_env
 
-IMAGE_NAME = "agent-py312.sif"
-IMAGE_URL = f"https://huggingface.co/outerloop-science/agent-image/resolve/main/{IMAGE_NAME}"
+IMAGE_STEM = "agent-py312"
+IMAGE_REPO = "https://huggingface.co/outerloop-science/agent-image/resolve/main"
 IMAGE_DIR_NAME = "outerloop-images"
+# the published file per processor (platform.machine()): x86-64 keeps the
+# original name, ARM64 adds -arm64
+_ARCH_SUFFIX = {"x86_64": "", "amd64": "", "aarch64": "-arm64", "arm64": "-arm64"}
 _CHUNK = 1 << 20
-APPTAINER_RELEASES = "https://github.com/apptainer/apptainer/releases"
-APPTAINER_VERSION = "1.5.5"
-# the GitHub release ships Debian packages for x86-64 only; the project's PPA
-# builds amd64 and arm64 for every current Ubuntu
-APPTAINER_DEB = f"apptainer_{APPTAINER_VERSION}_amd64.deb"
-APPTAINER_DEB_URL = f"{APPTAINER_RELEASES}/download/v{APPTAINER_VERSION}/{APPTAINER_DEB}"
-APPTAINER_PPA = "ppa:apptainer/ppa"
-# the unprivileged installer, pinned to the release tag (never a moving branch)
-APPTAINER_UNPRIV_URL = (
-    "https://raw.githubusercontent.com/apptainer/apptainer/"
-    f"v{APPTAINER_VERSION}/tools/install-unprivileged.sh"
-)
-PROBE_CMD = "apptainer exec docker://alpine:3.20 cat /etc/alpine-release"
 
 
 def uncontained_opt_in(environ: Mapping[str, str] | None = None) -> bool:
@@ -52,98 +43,22 @@ def image_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / IMAGE_DIR_NAME
 
 
-def find_image(home: Path | None = None) -> str:
+def image_name(runtime: ContainerRuntime) -> str:
+    """The image's file name in the image dir, in `runtime`'s format."""
+    return IMAGE_STEM + runtime.image_suffix
+
+
+def published_name(runtime: ContainerRuntime, machine: str) -> str:
+    """The file the build publishes for `runtime` on this processor, or "" when
+    none is built for it."""
+    arch = _ARCH_SUFFIX.get(machine.lower())
+    return "" if arch is None else IMAGE_STEM + arch + runtime.image_suffix
+
+
+def find_image(home: Path | None = None, runtime: ContainerRuntime | None = None) -> str:
     """The installed image, or an empty string when absent."""
-    path = image_dir(home) / IMAGE_NAME
+    path = image_dir(home) / image_name(runtime_from_env() if runtime is None else runtime)
     return str(path) if path.is_file() else ""
-
-
-def _linux_flavor() -> tuple[str, str]:
-    """(distribution id, version) from os-release, or ("", "")."""
-    try:
-        info = platform.freedesktop_os_release()
-    except OSError:
-        return "", ""
-    return info.get("ID", ""), info.get("VERSION_ID", "")
-
-
-def install_hint() -> str:
-    """The exact steps for THIS machine, written for someone installing Apptainer
-    for the first time. Every path is a root operation or an admin request, which
-    is why init never runs it."""
-    if sys.platform == "darwin":
-        return (
-            "macOS has no Apptainer; runs without an image use the kernel's Seatbelt profile\n"
-            "  (sandbox-exec) instead. A Linux machine, or Slurm, runs in the image."
-        )
-    dist, _version = _linux_flavor()
-    apparmor_note = (
-        "  Ubuntu 23.10+ blocks unprivileged user namespaces unless an AppArmor profile allows\n"
-        "  them; the official package carries that profile (the unprivileged installer does\n"
-        "  not, and fails with 'Could not write info to setgroups').\n"
-    )
-    check = (
-        f"    3. {PROBE_CMD}\n"
-        "       (prints a version number)\n"
-        "  then run `outerloop init --force` again to download the image."
-    )
-    if dist in ("ubuntu", "linuxmint", "pop"):
-        return (
-            "Install Apptainer from the project's Ubuntu PPA (amd64 and arm64):\n"
-            + apparmor_note
-            + f"    1. sudo add-apt-repository -y {APPTAINER_PPA}\n"
-            "    2. sudo apt-get update && sudo apt-get install -y apptainer\n" + check
-        )
-    if dist == "debian":
-        if platform.machine() == "x86_64":
-            return (
-                "Install the official Apptainer package (Debian, x86-64):\n"
-                + apparmor_note
-                + f"    1. curl -fsSLO {APPTAINER_DEB_URL}\n"
-                f"    2. sudo apt-get install -y ./{APPTAINER_DEB}\n" + check
-            )
-        return (
-            f"No Apptainer Debian package is published for this machine ({platform.machine()}).\n"
-            "  Build from source (https://apptainer.org/docs/admin/main/installation.html) or use\n"
-            "  the unprivileged installer. Download it, read it, then run it:\n"
-            f"    curl -fsSLO {APPTAINER_UNPRIV_URL}\n"
-            "    less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer\n"
-            "    export PATH=$HOME/apptainer/bin:$PATH\n"
-            f"  Check with `{PROBE_CMD}`, then run `outerloop init --force` again."
-        )
-    if dist == "fedora":
-        return (
-            "Install Apptainer from the Fedora repositories:\n"
-            "    sudo dnf install -y apptainer\n"
-            f"    {PROBE_CMD}   # prints a version number\n"
-            "  then run `outerloop init --force` again to download the image."
-        )
-    if dist in ("rhel", "centos", "rocky", "almalinux"):
-        return (
-            "Install Apptainer from EPEL:\n"
-            "    sudo dnf install -y epel-release\n"
-            "    sudo dnf install -y apptainer\n"
-            f"    {PROBE_CMD}   # prints a version number\n"
-            "  then run `outerloop init --force` again to download the image."
-        )
-    return (
-        "Install Apptainer for your distribution:\n"
-        "    https://apptainer.org/docs/admin/main/installation.html\n"
-        "  Without root, the project's unprivileged installer works on most systems.\n"
-        "  Download it, read it, then run it:\n"
-        f"    curl -fsSLO {APPTAINER_UNPRIV_URL}\n"
-        "    less install-unprivileged.sh && bash install-unprivileged.sh ~/apptainer\n"
-        "    export PATH=$HOME/apptainer/bin:$PATH\n"
-        "  On a Slurm cluster, ask the administrators; most already provide it.\n"
-        f"  Check with `{PROBE_CMD}`, then run\n"
-        "  `outerloop init --force` again to download the image."
-    )
-
-
-def containment_check() -> str:
-    """Why contained runs are NOT possible here, or "" when they are: the
-    deployment's container runtime probes this machine."""
-    return runtime_from_env().check()
 
 
 def _fmt_mb(n: int) -> str:
@@ -213,19 +128,18 @@ class _Progress:
 
 
 def download_image(
-    url: str = IMAGE_URL,
-    dest: Path | None = None,
+    url: str,
+    dest: Path,
     *,
     opener: Callable[..., Any] = urllib.request.urlopen,
     report: Callable[[str], None] = print,
     checksum_url: str = "",
 ) -> Path:
-    """Stream `url` to `dest` (default: the image dir), through a `.part`
+    """Stream `url` to `dest`, through a `.part`
     file renamed into place only after its sha256 matches the checksum the
     build published beside it (`<url>.sha256`); any failure, mismatch or
     interruption removes the part file. Progress: a live bar on a terminal,
     one line per 10% otherwise."""
-    dest = dest or image_dir() / IMAGE_NAME
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     digest = hashlib.sha256()
@@ -290,35 +204,44 @@ def ensure_image(
     ask: Callable[[str], str] = input,
     report: Callable[[str], None] = print,
     fetch: Callable[..., Path] = download_image,
+    runtime: ContainerRuntime | None = None,
+    machine: str = "",
 ) -> str:
     """The image path `init` records: an existing image, else the published
-    one downloaded to the image dir, when this machine can run it and the
-    adopter did not opt out. "" means uncontained (the loop says so at start);
-    when that is because Apptainer is missing or cannot run containers, the
-    exact install steps for this machine are printed, and an image already on
-    disk is NOT recorded (a contained run would only fail later). `probe=False`
-    skips the container check: on Slurm the image runs on compute nodes, which
-    the login node cannot speak for. A failed download is a warning, never a
-    failed setup."""
+    one for this processor downloaded to the image dir, when this machine can
+    run it and the adopter did not opt out. `runtime` (default: the
+    deployment's) decides the format and is the one probed. "" means
+    uncontained (the loop says so at start); when that is because the runtime
+    is missing or cannot run containers, the exact install steps for this
+    machine are printed, and an image already on disk is NOT recorded (a
+    contained run would only fail later). `probe=False` skips the container
+    check: on Slurm the image runs on compute nodes, which the login node
+    cannot speak for. A failed download is a warning, never a failed setup."""
     if not want:
         return ""
-    problem = containment_check() if probe else ""
-    found = find_image(home)
+    runtime = runtime_from_env() if runtime is None else runtime
+    problem = runtime.check() if probe else ""
+    found = find_image(home, runtime)
     if problem:
         report(f"Runs will be UNCONTAINED on this machine: {problem}.")
-        report("  " + install_hint())
+        report("  " + runtime.install_hint())
         if found:
-            report(f"  (the image at {found} will be used once apptainer works)")
+            report(f"  (the image at {found} will be used once the container runtime works)")
         return ""
     if found:
         return found
-    dest = image_dir(home) / IMAGE_NAME
+    machine = machine or platform.machine()
+    name = published_name(runtime, machine)
+    if not name:
+        report(f"  no published image for this processor ({machine}); pass --image to use your own")
+        return ""
+    dest = image_dir(home) / image_name(runtime)
     if interactive:
         answer = ask(f"Download the agent image to {dest} so runs are contained? [Y/n] ")
         if answer.strip().lower().startswith("n"):
             return ""
     try:
-        return str(fetch(IMAGE_URL, dest, report=report))
+        return str(fetch(f"{IMAGE_REPO}/{name}", dest, report=report))
     except (OSError, urllib.error.URLError) as exc:
         report(f"  image download failed ({exc}); continuing without one, pass --image later")
         return ""
