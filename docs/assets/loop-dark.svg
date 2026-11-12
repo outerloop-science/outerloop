@@ -11,7 +11,6 @@
   .dot { fill: var(--accent); }
   .score { font-size: 12px; font-variant-numeric: tabular-nums; fill: var(--fg); }
   .ok { fill: var(--good); font-weight: 600; }
-  .pr { fill: var(--accent); font-weight: 600; font-size: 12px; }
 
   .n1 { animation: lit1 12s infinite; } .n2 { animation: lit2 12s infinite; }
   .n3 { animation: lit3 12s infinite; } .n4 { animation: lit4 12s infinite; }
@@ -72,11 +71,6 @@
     values="0; 0; 1; 1; 0" keyTimes="0; 0.39; 0.42; 0.94; 1"/>
   <text class="score" x="452" y="124">base 9,472 steps → candidate 7,808</text>
   <text class="score ok" x="452" y="142">more than run-to-run noise</text>
-</g>
-<g class="badge" opacity="0">
-  <animate attributeName="opacity" dur="12s" repeatCount="indefinite"
-    values="0; 0; 1; 1; 0" keyTimes="0; 0.78; 0.81; 0.94; 1"/>
-  <text class="pr" x="784" y="124" text-anchor="middle">for a human to merge</text>
 </g>
 
 <!-- back to a new proposal: from the pull request, or from measure without a gain -->
