@@ -19,7 +19,7 @@ written report, including the attempts that failed.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/outerloop-science/outerloop/main/docs/assets/loop-dark.svg">
-  <img alt="One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report. Without a real gain the attempt ends in a report and the next hypothesis starts." src="https://raw.githubusercontent.com/outerloop-science/outerloop/main/docs/assets/loop.svg" width="880">
+  <img alt="One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report. Without a real gain the attempt ends in a report. Either way, the next hypothesis starts." src="https://raw.githubusercontent.com/outerloop-science/outerloop/main/docs/assets/loop.svg" width="880">
 </picture>
 
 You run it yourself, with your own keys, your own compute and your own
