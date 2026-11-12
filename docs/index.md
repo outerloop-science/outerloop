@@ -6,8 +6,8 @@ request when the kernel's own measurement shows the benchmark improved. Every
 attempt ends in a written report, including the ones that failed. You run
 Outerloop yourself, with your own keys, compute and repositories.
 
-![One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report.](assets/loop.svg#only-light)
-![One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report.](assets/loop-dark.svg#only-dark)
+![One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report. Without a real gain the attempt ends in a report and the next hypothesis starts; after a pull request, it starts once the pull request is merged or closed.](assets/loop.svg#only-light)
+![One attempt: an agent proposes a change, runs the experiment on your GPUs, the kernel re-measures it against the base, judges review the claim, and a pull request opens with a written report. Without a real gain the attempt ends in a report and the next hypothesis starts; after a pull request, it starts once the pull request is merged or closed.](assets/loop-dark.svg#only-dark)
 
 - [Getting started](getting-started.md) takes one repository through a first
   run on a single machine.
